@@ -1,4 +1,6 @@
-# Servitor
+<p align="center">
+  <img src="servitorLogo.png" alt="Servitor" width="300">
+</p>
 
 Workflow automation for the agentic stack. Self-hosted. MIT-licensed. X integrations.
 
