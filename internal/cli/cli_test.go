@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 )
@@ -45,5 +46,77 @@ func TestRunUsageError(t *testing.T) {
 	var out, errOut bytes.Buffer
 	if code := Run([]string{"run", "--addr"}, &out, &errOut); code != exitUsage {
 		t.Fatalf("run: exit code %d, want %d", code, exitUsage)
+	}
+}
+
+func writeTemp(t *testing.T, content string) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "wf-*.yml")
+	if err != nil {
+		t.Fatalf("create temp: %v", err)
+	}
+	if _, err := f.WriteString(content); err != nil {
+		t.Fatalf("write temp: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close temp: %v", err)
+	}
+	return f.Name()
+}
+
+func TestDryRunReadablePlan(t *testing.T) {
+	path := writeTemp(t, `
+name: demo
+on:
+  - type: cron
+    schedule: "0 * * * *"
+steps:
+  - type: transform
+    name: b
+    depends_on: [a]
+    expression: x
+  - type: http
+    name: a
+    url: "https://example.com"
+    method: GET
+    dedupe_key: k
+`)
+	var out, errOut bytes.Buffer
+	if code := Run([]string{"dry-run", path}, &out, &errOut); code != exitOK {
+		t.Fatalf("dry-run exit %d: %s", code, errOut.String())
+	}
+	text := out.String()
+	if !strings.Contains(text, "workflow: demo") {
+		t.Errorf("plan should name the workflow, got:\n%s", text)
+	}
+	if !strings.Contains(text, "triggers:") || !strings.Contains(text, "cron") {
+		t.Errorf("plan should list triggers, got:\n%s", text)
+	}
+	if !strings.Contains(text, "after a") {
+		t.Errorf("plan should show dependency, got:\n%s", text)
+	}
+}
+
+func TestDryRunJSONFlag(t *testing.T) {
+	path := writeTemp(t, `
+name: demo
+steps:
+  - type: transform
+    name: a
+    expression: x
+`)
+	var out, errOut bytes.Buffer
+	if code := Run([]string{"dry-run", "--json", path}, &out, &errOut); code != exitOK {
+		t.Fatalf("dry-run exit %d: %s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), `"dag"`) {
+		t.Errorf("--json output should include dag, got:\n%s", out.String())
+	}
+}
+
+func TestDryRunUsageError(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := Run([]string{"dry-run"}, &out, &errOut); code != exitUsage {
+		t.Fatalf("dry-run exit %d, want %d", code, exitUsage)
 	}
 }

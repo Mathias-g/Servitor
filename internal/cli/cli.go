@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Mathias-g/Servitor/internal/capabilities"
@@ -120,14 +121,26 @@ func cmdStop(args []string, stdout, stderr io.Writer) int {
 }
 
 // cmdDryRun validates a Wafer and resolves its dependency DAG without
-// executing, contacting, or persisting anything (SPEC: dry-run). It prints the
-// structured result as JSON and exits non-zero if there are blocking errors.
+// executing, contacting, or persisting anything (SPEC: dry-run). By default it
+// prints a readable plan (steps in run order with their dependencies); --json
+// prints the structured result instead. It exits non-zero if there are blocking
+// errors.
 func cmdDryRun(args []string, stdout, stderr io.Writer) int {
-	if len(args) != 1 {
-		_, _ = fmt.Fprintf(stderr, "servitor: usage: servitor dry-run <wafer>\n")
+	jsonOut := false
+	fs := flag.NewFlagSet("dry-run", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.BoolVar(&jsonOut, "json", false, "print the structured result as JSON instead of a readable plan")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return exitOK
+		}
 		return exitUsage
 	}
-	path := args[0]
+	if fs.NArg() != 1 {
+		_, _ = fmt.Fprintf(stderr, "servitor: usage: servitor dry-run [--json] <wafer>\n")
+		return exitUsage
+	}
+	path := fs.Arg(0)
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -137,11 +150,15 @@ func cmdDryRun(args []string, stdout, stderr io.Writer) int {
 
 	res := wafer.DryRun(data)
 
-	enc := json.NewEncoder(stdout)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(res); err != nil {
-		_, _ = fmt.Fprintf(stderr, "servitor: dry-run: %v\n", err)
-		return exitFailure
+	if jsonOut {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(res); err != nil {
+			_, _ = fmt.Fprintf(stderr, "servitor: dry-run: %v\n", err)
+			return exitFailure
+		}
+	} else {
+		renderDryRunPlan(stdout, res)
 	}
 
 	if !res.Result.Valid() {
@@ -150,6 +167,35 @@ func cmdDryRun(args []string, stdout, stderr io.Writer) int {
 	}
 	_, _ = fmt.Fprintf(stderr, "servitor: dry-run: valid\n")
 	return exitOK
+}
+
+// renderDryRunPlan prints a readable plan: the workflow name and triggers, then
+// the steps in run order with their dependencies.
+func renderDryRunPlan(w io.Writer, res wafer.DryRunResult) {
+	if !res.Result.Valid() {
+		_, _ = fmt.Fprintf(w, "workflow: (invalid)\n")
+		return
+	}
+	if res.Name != "" {
+		_, _ = fmt.Fprintf(w, "workflow: %s\n", res.Name)
+	}
+	if len(res.Triggers) > 0 {
+		_, _ = fmt.Fprintf(w, "triggers:\n")
+		for _, t := range res.Triggers {
+			_, _ = fmt.Fprintf(w, "  - %s\n", t.Type)
+		}
+	}
+	if res.DAG == nil {
+		return
+	}
+	_, _ = fmt.Fprintf(w, "\nplan (%d step(s), in run order):\n", len(res.DAG.Steps))
+	for i, s := range res.DAG.Steps {
+		deps := "start"
+		if len(s.DependsOn) > 0 {
+			deps = "after " + strings.Join(s.DependsOn, ", ")
+		}
+		_, _ = fmt.Fprintf(w, "  %d. %s\t%s\t[%s]\n", i+1, s.Name, s.Type, deps)
+	}
 }
 
 // cmdCapabilities writes the per-server capability set to a directory the agent

@@ -6,6 +6,10 @@ package wafer
 // dry-run).
 type DryRunResult struct {
 	Result Result `json:"result"`
+	// Name is the workflow name, present when the Wafer parsed.
+	Name string `json:"name,omitempty"`
+	// Triggers are the workflow's triggers, present when the Wafer parsed.
+	Triggers []Trigger `json:"triggers,omitempty"`
 	// DAG is the resolved run order, or null when validation found blocking
 	// errors.
 	DAG *DAG `json:"dag"`
@@ -24,6 +28,8 @@ func DryRun(data []byte) DryRunResult {
 		// Validate already reported parse problems; treat as not resolvable.
 		return out
 	}
+	out.Name = w.Name
+	out.Triggers = w.On
 	dag, issues := ResolveDAG(w)
 	if len(issues) > 0 {
 		res.Errors = append(res.Errors, issues...)

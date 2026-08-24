@@ -198,7 +198,7 @@ The command set, grouped by what you're doing. These are the contract humans and
 ```
 servitor run                        # boot the runner daemon (under varlock)
 servitor capabilities               # write step/trigger/secret/tap schemas + derived examples to files
-servitor dry-run <wafer>            # validate and resolve without executing
+servitor dry-run <wafer>            # validate and resolve without executing (--json for structured)
 servitor submit <wafer>             # validate and register a workflow
 servitor update <wafer>             # replace a workflow's definition
 servitor enable <name>              # register a workflow's triggers
