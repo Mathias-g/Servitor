@@ -96,7 +96,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	cfg := daemon.Config{
 		Addr:    addr,
 		DBPath:  dbPath,
-		ExtPath: os.Getenv("HONKER_EXT_PATH"),
+		ExtPath: os.Getenv("HONKER_EXTENSION_PATH"),
 		Started: func(a string) {
 			_, _ = fmt.Fprintf(stdout, "servitor: daemon listening on %s (loopback only, ADR-0009)\n", a)
 		},

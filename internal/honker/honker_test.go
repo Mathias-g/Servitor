@@ -8,15 +8,15 @@ import (
 
 // extPath returns the path to the Honker extension, or "" if it is not
 // configured. Honker-backed tests skip when it is unset, so plain `make check`
-// needs no setup; CI sets HONKER_EXT_PATH so the real tests run there.
+// needs no setup; CI sets HONKER_EXTENSION_PATH so the real tests run there.
 func extPath(t *testing.T) string {
 	t.Helper()
-	p := os.Getenv("HONKER_EXT_PATH")
+	p := os.Getenv("HONKER_EXTENSION_PATH")
 	if p == "" {
-		t.Skip("HONKER_EXT_PATH not set; skipping Honker test")
+		t.Skip("HONKER_EXTENSION_PATH not set; skipping Honker test")
 	}
 	if _, err := os.Stat(p); err != nil {
-		t.Skipf("HONKER_EXT_PATH %s not readable: %v", p, err)
+		t.Skipf("HONKER_EXTENSION_PATH %s not readable: %v", p, err)
 	}
 	return p
 }

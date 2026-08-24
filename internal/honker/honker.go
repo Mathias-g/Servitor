@@ -27,7 +27,7 @@ type Store struct {
 // single connection so writes are serialized through this process.
 func Open(path, extPath string) (*Store, error) {
 	if extPath == "" {
-		return nil, fmt.Errorf("honker: extension path is empty; set HONKER_EXT_PATH")
+		return nil, fmt.Errorf("honker: extension path is empty; set HONKER_EXTENSION_PATH")
 	}
 	db, err := hg.Open(path, extPath)
 	if err != nil {

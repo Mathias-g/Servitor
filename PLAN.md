@@ -49,7 +49,7 @@ The pre-deploy gate. It belongs in the pipeline (ADR-0009).
 
 The durability layer. Requires the cgo `mattn/go-sqlite3` driver to load the Honker extension (ADR-0004, ADR-0011).
 
-- [x] Load the Honker SQLite extension into the daemon's connection (honker-go; extension provided via `HONKER_EXT_PATH`, pinned and checksummed in CI).
+- [x] Load the Honker SQLite extension into the daemon's connection (honker-go; extension provided via `HONKER_EXTENSION_PATH`, pinned and checksummed in CI).
 - [x] The daemon owns the SQLite file (WAL mode) and its single write connection.
 - [x] The transactional atom: a `CommitStepAtom` primitive that writes {result, dedupe_record, downstream_enqueues, claim_ack} as one SQLite transaction, never split (SPEC: Execution model step 8). The dedupe table and lookup are in place.
 - [x] Workflow run queue worker loop (claim, execute, ack; visibility timeout and dead-letter on repeated failure) and cron triggers via Honker's scheduler. Built in Phase 6 alongside subprocess execution.

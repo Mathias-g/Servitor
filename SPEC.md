@@ -119,7 +119,7 @@ What each dependency is and what we use it for. Each is a stable interface, so e
 
 [Honker](https://honker.dev) is a SQLite extension that adds Postgres-style NOTIFY/LISTEN semantics to SQLite, plus a durable work queue, event streams, and a cron scheduler. One `.db` file is the entire system: no Redis, no separate broker.
 
-The extension is a native loadable library (`libhonker_ext.so`) the runner loads at startup. It is not committed to the repo; the operator supplies it and points the runner at it via `HONKER_EXT_PATH` (or a flag). The runner refuses to boot the durable store without it (ADR-0011).
+The extension is a native loadable library (`libhonker_ext.so`) the runner loads at startup. It is not committed to the repo; the operator supplies it and points the runner at it via `HONKER_EXTENSION_PATH` (or a flag). The runner refuses to boot the durable store without it (ADR-0011).
 
 What we use it for:
 

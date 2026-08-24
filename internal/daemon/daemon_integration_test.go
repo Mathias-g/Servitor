@@ -13,12 +13,12 @@ import (
 
 func daemonExtPath(t *testing.T) string {
 	t.Helper()
-	p := os.Getenv("HONKER_EXT_PATH")
+	p := os.Getenv("HONKER_EXTENSION_PATH")
 	if p == "" {
-		t.Skip("HONKER_EXT_PATH not set; skipping daemon runner integration test")
+		t.Skip("HONKER_EXTENSION_PATH not set; skipping daemon runner integration test")
 	}
 	if _, err := os.Stat(p); err != nil {
-		t.Skipf("HONKER_EXT_PATH %s not readable: %v", p, err)
+		t.Skipf("HONKER_EXTENSION_PATH %s not readable: %v", p, err)
 	}
 	return p
 }

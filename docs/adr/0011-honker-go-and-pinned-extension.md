@@ -34,7 +34,7 @@ is about the concrete binding and how the `.so` is supplied and kept versioned.
 
 - **honker-go + prebuilt extension, config-provided (chosen).** Use the
   maintained Go binding and load a prebuilt `libhonker_ext.so` that the
-  operator supplies via `HONKER_EXT_PATH` (or a flag). The daemon loads it at
+  operator supplies via `HONKER_EXTENSION_PATH` (or a flag). The daemon loads it at
   open time.
 - **Vendor the `.so` in the repo.** Simplest runtime (always present) but
   commits a 1.5 MB linux-x64 binary to git; wrong platform breaks it, and it
@@ -52,7 +52,7 @@ Chosen option: **honker-go + config-provided, pinned prebuilt extension.**
 
 The runner imports `github.com/russellromney/honker-go` (which wraps
 `mattn/go-sqlite3`). The daemon opens its SQLite file and loads the Honker
-extension from a path the operator provides via `HONKER_EXT_PATH` (or a flag);
+extension from a path the operator provides via `HONKER_EXTENSION_PATH` (or a flag);
 it refuses to run without it. The extension `.so` is not committed to the repo.
 The compatible extension version is pinned: ext-v0.5.0, with its published
 SHA256, and CI downloads that exact artifact so the Honker-backed tests run for
@@ -70,13 +70,13 @@ configured, so plain `make check` needs no setup.
 - Bad: a deploy without the extension cannot boot the durable runner; the
   operator/packaging must supply it. Acceptable: the runner needs varlock and
   Singer at runtime anyway.
-- Neutral: local Honker tests are skipped unless `HONKER_EXT_PATH` is set, so
+- Neutral: local Honker tests are skipped unless `HONKER_EXTENSION_PATH` is set, so
   developers must opt in to run them.
 
 ### Confirmation
 
 The daemon errors when `--db` is set but no extension path is available.
-`internal/honker` tests skip unless `HONKER_EXT_PATH` is set; CI sets it from
+`internal/honker` tests skip unless `HONKER_EXTENSION_PATH` is set; CI sets it from
 the pinned, checksum-verified ext-v0.5.0 download. The extension path is
 config, not a compiled-in constant.
 
@@ -84,7 +84,7 @@ config, not a compiled-in constant.
 
 No change to the Wafer schema, CLI surface, or daemon control protocol. The
 `servitor run` command gains a `--db` flag (the SQLite file to own) and reads
-`HONKER_EXT_PATH`; both are additions, not changes.
+`HONKER_EXTENSION_PATH`; both are additions, not changes.
 
 ## More information
 
