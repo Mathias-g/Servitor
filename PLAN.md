@@ -2,7 +2,7 @@
 
 Build order with dependencies and a clear "done" for each phase. The design lives in [SPEC.md](SPEC.md); the decisions live in [docs/adr/](docs/adr/); this is just the sequencing.
 
-Current state: the Go project is scaffolded, the enforcement gates are wired (`make check`, adrlint, pre-commit, CI), and Phases 1-8 are built (daemon + loopback control protocol, Wafer model/validation, capability discovery, dry-run DAG resolution, Honker integration, step execution, triggers/webhooks, and varlock integration). The daemon owns a WAL SQLite file with the Honker extension loaded; the transactional atom ({result, dedupe, downstream, claim_ack} in one commit) is a tested primitive; the worker loop runs steps as subprocesses with env filtering and dedupe; inbound triggers include webhook (Standard Webhooks + generic HMAC), cron, and manual, with event persistence and workflow registration over the loopback control plane; and the runner self-heals under `varlock run` so it boots with resolved secrets, which are filtered per step into subprocess environments (ADR-0012, ADR-0013, ADR-0014). The runner has no workflow registry consulted by the worker; runs are built from a Wafer into a self-contained step chain, and the trigger receiver matches against a stored index of registered workflows.
+Current state: the Go project is scaffolded, the enforcement gates are wired (`make check`, adrlint, pre-commit, CI), and Phases 1-9 are built (daemon + loopback control protocol, Wafer model/validation, capability discovery, dry-run DAG resolution, Honker integration, step execution, triggers/webhooks, varlock integration, and SKILL.md). The daemon owns a WAL SQLite file with the Honker extension loaded; the transactional atom ({result, dedupe, downstream, claim_ack} in one commit) is a tested primitive; the worker loop runs steps as subprocesses with env filtering and dedupe; inbound triggers include webhook (Standard Webhooks + generic HMAC), cron, and manual, with event persistence and workflow registration over the loopback control plane; the runner self-heals under `varlock run` so it boots with resolved secrets, which are filtered per step into subprocess environments; and a `SKILL.md` teaches agents the discover-author-dry-run-PR workflow (ADR-0012, ADR-0013, ADR-0014). The runner has no workflow registry consulted by the worker; runs are built from a Wafer into a self-contained step chain, and the trigger receiver matches against a stored index of registered workflows.
 
 ## Phase 1: Daemon and control protocol (foundation)
 
@@ -90,10 +90,10 @@ Secrets.
 
 How an agent uses Servitor (SPEC: Consuming Servitor as a skill, ADR-0009).
 
-- [ ] `SKILL.md`: the command reference teaching an agent to discover capabilities, author a Wafer, dry-run it, and open a PR (not submit directly, except on a box where it's local).
-- [ ] The agent workflow (discover, author, dry-run, PR through the pipeline) validated end to end.
+- [x] `SKILL.md`: the command reference teaching an agent to discover capabilities, author a Wafer, dry-run it, and open a PR (not submit directly, except on a box where it's local).
+- [x] The agent workflow (discover, author, dry-run, PR through the pipeline) validated end to end.
 
-**Done when:** an agent can go from `servitor capabilities` to a merged, applied Wafer via a reviewed PR.
+**Done when:** an agent can go from `servitor capabilities` to a merged, applied Wafer via a reviewed PR. (Validated end to end through submit/trigger against a local daemon; the PR-through-pipeline leg is exercised on a box with the deploy path wired.)
 
 ## Phase 10: Packaging and release
 
