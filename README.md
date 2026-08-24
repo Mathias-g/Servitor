@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="servitorLogo.png" alt="Servitor" width="300">
-</p>
+<img src="servitorLogo.png" alt="Servitor" width="400">
 
 Workflow automation for the agentic stack. Self-hosted. MIT-licensed. X integrations.
 
