@@ -14,7 +14,7 @@ interface-impact: none
 
 ## Context and problem statement
 
-Phase 6 builds the worker loop that executes steps. A workflow (Wafer) is a
+The worker loop executes steps (SPEC: Execution model). A workflow (Wafer) is a
 dependency DAG of steps, but the worker has no workflow registry to consult: it
 processes one claimed job at a time, and the SPEC says there is no separate
 coordinator that watches for completions, the finishing worker performs the
@@ -89,5 +89,4 @@ No change to the Wafer schema, CLI surface, or daemon control protocol. The
 ## More information
 
 - SPEC: Execution model (steps 6-8), Step execution (ADR-0008)
-- PLAN.md Phase 6
 - ADR-0004 (adopt Go; the subprocess model this builds on)

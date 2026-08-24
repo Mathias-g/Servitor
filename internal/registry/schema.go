@@ -92,6 +92,7 @@ func WaferSchema() map[string]any {
 			"name":       map[string]any{"type": "string", "description": "A name for this step, for referencing from other steps."},
 			"dedupe_key": map[string]any{"type": "string", "description": "A key making the step run at most once per value (SPEC: Idempotency)."},
 			"depends_on": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Step names this step depends on."},
+			"secrets":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Secret names this step declares; only these are passed to its subprocess (SPEC: Varlock)."},
 		},
 		"required":             []any{"type"},
 		"additionalProperties": true,

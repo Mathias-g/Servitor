@@ -14,6 +14,11 @@ interface-impact: none         # none | new | breaking  (Wafer schema, CLI surfa
 Based on MADR 4.0.0 (https://adr.github.io/madr/), adapted for Servitor.
 Copy this file to NNNN-short-kebab-title.md. Do not edit it in place.
 See docs/adr/README.md for the full convention.
+
+An ADR records a decision and its durable rationale. Do not reference the
+implementation plan's phases (for example "Phase 6") or the current state of
+the codebase; both drift. Anchor to the SPEC section instead (for example
+"SPEC: Execution model"). See docs/adr/README.md, "What an ADR records".
 -->
 
 # ADR-NNNN: Short title of the decision

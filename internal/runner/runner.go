@@ -71,6 +71,7 @@ func FromWafer(w *wafer.Wafer, event map[string]any) (*worker.StepJob, error) {
 			StepType:   s.Type,
 			Config:     s.Config,
 			Command:    cmd,
+			Secrets:    s.Secrets,
 			// Input and DedupeKey are filled by the trigger path: the event for
 			// the head step, and the resolved dedupe value once the expression
 			// language is settled (SPEC: open questions).

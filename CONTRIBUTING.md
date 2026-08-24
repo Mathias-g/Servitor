@@ -60,6 +60,13 @@ To check everything at once at any time:
 The checks on your machine are the fast warning. The checks on GitHub are the real
 gate. Same checks, two moments.
 
+## Writing an ADR
+
+When the agent drafts an ADR, follow the conventions in `docs/adr/README.md`,
+especially "What an ADR records (and what it does not)": keep it to the decision
+and its durable rationale, and do not reference plan phases or current codebase
+state, since both drift.
+
 ## When a check stops you, here is what it means
 
 You do not need to understand the internals. Read the message, do the fix, try

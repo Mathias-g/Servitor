@@ -38,6 +38,9 @@ type Step struct {
 	DedupeKey string
 	// DependsOn lists step names this step depends on.
 	DependsOn []string
+	// Secrets lists the names of the secrets this step declares. The
+	// subprocess environment is filtered to exactly these (SPEC: Varlock).
+	Secrets []string
 	// Config holds the step's type-specific fields.
 	Config map[string]any
 }
@@ -98,7 +101,14 @@ func fromRaw(raw map[string]any) (*Wafer, error) {
 					}
 				}
 			}
-			st.Config = copyMap(m, "type", "name", "dedupe_key", "depends_on")
+			if secs, ok := m["secrets"].([]any); ok {
+				for _, sec := range secs {
+					if s, ok := sec.(string); ok {
+						st.Secrets = append(st.Secrets, s)
+					}
+				}
+			}
+			st.Config = copyMap(m, "type", "name", "dedupe_key", "depends_on", "secrets")
 			w.Steps = append(w.Steps, st)
 		}
 	}

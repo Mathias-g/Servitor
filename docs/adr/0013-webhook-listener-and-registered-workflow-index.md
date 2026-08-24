@@ -15,7 +15,7 @@ interface-impact: new
 
 ## Context and problem statement
 
-Phase 7 adds inbound triggers (webhooks and manual). Two design questions had to
+Inbound triggers (webhooks and manual) added to the runner (SPEC: Triggers). Two design questions had to
 be settled. First, webhooks must be reachable by external senders, which appears
 to collide with the control plane's loopback-only rule (ADR-0009). Second, the
 worker executes runs as self-contained step chains with no registry (ADR-0012),
@@ -77,7 +77,7 @@ match (SPEC: Execution model steps 1-5).
   and the artifact remains authoritative.
 - Neutral: the `secret` field added to `http_webhook`/`standard_webhook` trigger
   config is an additive, optional schema change; an empty/absent secret leaves
-  the receiver open until varlock (Phase 8) supplies signing secrets.
+  the receiver open until varlock supplies signing secrets (SPEC: Varlock).
 
 ### Confirmation
 

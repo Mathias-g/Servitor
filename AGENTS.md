@@ -134,6 +134,7 @@ The automated checks enforce structure. This covers what they cannot:
 - Status lifecycle: `proposed` -> `accepted` -> (`deprecated` | `superseded`).
 - A change that breaks the Wafer schema, CLI surface, or daemon protocol requires an ADR with `interface-impact: breaking`.
 - ADRs are for decisions. Do not write one to describe current state, and do not write one for a change that involved no contested choice.
+- An ADR records the decision and its durable rationale, not the moment in time it was made. Do not reference the implementation plan's phases or step numbers (for example "Phase 6"), the current state of the codebase, or any other thing that will drift as the project moves. Use the SPEC section the decision concerns (for example "SPEC: Execution model") as the anchor instead. A future reader of an ADR should understand the decision without knowing what the plan looked like on the day it was written.
 
 ### Tests
 

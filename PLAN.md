@@ -2,7 +2,7 @@
 
 Build order with dependencies and a clear "done" for each phase. The design lives in [SPEC.md](SPEC.md); the decisions live in [docs/adr/](docs/adr/); this is just the sequencing.
 
-Current state: the Go project is scaffolded, the enforcement gates are wired (`make check`, adrlint, pre-commit, CI), and Phases 1-7 are built (daemon + loopback control protocol, Wafer model/validation, capability discovery, dry-run DAG resolution, Honker integration, step execution, and triggers/webhooks). The daemon owns a WAL SQLite file with the Honker extension loaded; the transactional atom ({result, dedupe, downstream, claim_ack} in one commit) is a tested primitive; the worker loop runs steps as subprocesses with env filtering and dedupe; and inbound triggers now include a webhook receiver (Standard Webhooks + generic HMAC), cron, and manual, with event persistence before matching and workflow registration (`submit`/`enable`/`disable`/`trigger`) over the loopback control plane. The runner has no workflow registry consulted by the worker; runs are built from a Wafer into a self-contained step chain (ADR-0012), and the trigger receiver matches against a stored index of registered workflows (ADR-0013).
+Current state: the Go project is scaffolded, the enforcement gates are wired (`make check`, adrlint, pre-commit, CI), and Phases 1-8 are built (daemon + loopback control protocol, Wafer model/validation, capability discovery, dry-run DAG resolution, Honker integration, step execution, triggers/webhooks, and varlock integration). The daemon owns a WAL SQLite file with the Honker extension loaded; the transactional atom ({result, dedupe, downstream, claim_ack} in one commit) is a tested primitive; the worker loop runs steps as subprocesses with env filtering and dedupe; inbound triggers include webhook (Standard Webhooks + generic HMAC), cron, and manual, with event persistence and workflow registration over the loopback control plane; and the runner self-heals under `varlock run` so it boots with resolved secrets, which are filtered per step into subprocess environments (ADR-0012, ADR-0013, ADR-0014). The runner has no workflow registry consulted by the worker; runs are built from a Wafer into a self-contained step chain, and the trigger receiver matches against a stored index of registered workflows.
 
 ## Phase 1: Daemon and control protocol (foundation)
 
@@ -80,9 +80,9 @@ Inbound events.
 
 Secrets.
 
-- [ ] Self-healing launch: `servitor` re-execs under `varlock run --no-inject-graph -- servitor run` if `__VARLOCK_RUN` is absent.
-- [ ] Per-step secret filtering at subprocess spawn (only the step's declared secrets).
-- [ ] Webhook signing secrets read from the runner's environment.
+- [x] Self-healing launch: `servitor` re-execs under `varlock run -- servitor run` if `__VARLOCK_RUN` is absent, and warns (booting without secret resolution) if varlock is not installed.
+- [x] Per-step secret filtering at subprocess spawn (only the step's declared secrets).
+- [x] Webhook signing secrets read from the runner's environment.
 
 **Done when:** the runner always boots with secrets resolved, and no step subprocess sees a secret it did not declare.
 

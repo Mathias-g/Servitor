@@ -14,6 +14,7 @@ import (
 	"github.com/Mathias-g/Servitor/internal/capabilities"
 	"github.com/Mathias-g/Servitor/internal/daemon"
 	"github.com/Mathias-g/Servitor/internal/protocol"
+	"github.com/Mathias-g/Servitor/internal/varlock"
 	"github.com/Mathias-g/Servitor/internal/wafer"
 )
 
@@ -100,11 +101,29 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
+	// Self-healing launch: if this process was not started under varlock,
+	// re-execute under `varlock run` so the runner always boots with secrets
+	// resolved (SPEC: Varlock). SelfHeal blocks until the child exits and
+	// returns true once it has taken over.
+	if healed, err := varlock.SelfHeal(); healed {
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "servitor: %v\n", err)
+			return exitFailure
+		}
+		return exitOK
+	}
+	if !varlock.Under() && !varlock.Available() {
+		_, _ = fmt.Fprintf(stderr, "servitor: warning: varlock not found on PATH; running without secret resolution (steps that declare secrets will fail)\n")
+	}
+
 	cfg := daemon.Config{
 		Addr:        addr,
 		DBPath:      dbPath,
 		ExtPath:     os.Getenv("HONKER_EXTENSION_PATH"),
 		WebhookAddr: webhookAddr,
+		// Resolved secrets (from varlock, when present) are exposed to the
+		// daemon; per-step filtering decides what a subprocess may see.
+		Secrets: varlock.ResolvedSecrets(),
 		Started: func(a string) {
 			_, _ = fmt.Fprintf(stdout, "servitor: daemon listening on %s (loopback only, ADR-0009)\n", a)
 		},

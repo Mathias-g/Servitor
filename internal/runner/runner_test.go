@@ -96,6 +96,28 @@ steps:
 	}
 }
 
+func TestFromWaferCarriesDeclaredSecrets(t *testing.T) {
+	w, err := wafer.Parse([]byte(`
+name: demo
+on: []
+steps:
+  - type: shell
+    name: a
+    secrets: [TOKEN, OTHER]
+    command: "echo hi"
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	head, err := FromWafer(w, nil)
+	if err != nil {
+		t.Fatalf("FromWafer: %v", err)
+	}
+	if len(head.Secrets) != 2 || head.Secrets[0] != "TOKEN" || head.Secrets[1] != "OTHER" {
+		t.Fatalf("head secrets = %v, want [TOKEN OTHER]", head.Secrets)
+	}
+}
+
 func TestStartRunEnqueuesHead(t *testing.T) {
 	store := openStore(t)
 	q := store.Queue("steps", 30, 3)
