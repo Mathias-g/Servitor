@@ -1,0 +1,22 @@
+# Build output
+/bin/
+/build/
+
+# Go
+*.test
+*.out
+coverage.*
+
+# Local databases (runner owns a SQLite file at runtime)
+*.db
+*.db-wal
+*.db-shm
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Environment / secrets
+.env
+.env.local
