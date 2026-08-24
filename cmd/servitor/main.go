@@ -1,15 +1,11 @@
 package main
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/Mathias-g/Servitor/internal/cli"
 )
 
 func main() {
-	if err := cli.Run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
-		fmt.Fprintln(os.Stderr, "servitor:", err)
-		os.Exit(1)
-	}
+	os.Exit(cli.Run(os.Args[1:], os.Stdout, os.Stderr))
 }

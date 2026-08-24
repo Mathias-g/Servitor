@@ -2,18 +2,18 @@
 
 Build order with dependencies and a clear "done" for each phase. The design lives in [SPEC.md](SPEC.md); the decisions live in [docs/adr/](docs/adr/); this is just the sequencing.
 
-Current state: the Go project is scaffolded (module, CLI skeleton, `version`/`help` working, daemon commands stubbed), and the enforcement gates are wired (`make check`, adrlint, pre-commit, CI). None of the runner is built yet.
+Current state: the Go project is scaffolded (module, CLI skeleton, `version`/`help` working), the enforcement gates are wired (`make check`, adrlint, pre-commit, CI), and Phase 1 (daemon + loopback control protocol, `run`/`stop`) is built. The runner has no workflow state yet.
 
 ## Phase 1: Daemon and control protocol (foundation)
 
 Everything else runs inside the daemon and is reached through the control protocol.
 
-- [ ] A long-lived runner daemon process that owns a SQLite file (WAL mode) and binds `127.0.0.1` only (ADR-0009).
-- [ ] A loopback control protocol (HTTP or unix socket) between the CLI and the daemon, independent of argument parsing (ADR-0005).
-- [ ] `servitor run` boots the daemon; `servitor stop` drains and shuts it down.
-- [ ] The daemon refuses to bind a non-loopback interface (ADR-0009).
+- [x] A long-lived runner daemon process that owns a SQLite file (WAL mode) and binds `127.0.0.1` only (ADR-0009). (SQLite file ownership is deferred to Phase 5 with Honker; the daemon lifecycle and loopback-only bind are built.)
+- [x] A loopback control protocol (HTTP over `127.0.0.1`) between the CLI and the daemon, independent of argument parsing (ADR-0005).
+- [x] `servitor run` boots the daemon; `servitor stop` drains and shuts it down.
+- [x] The daemon refuses to bind a non-loopback interface (ADR-0009).
 
-**Done when:** `servitor run` starts a daemon, the CLI talks to it over loopback, and `servitor stop` drains and shuts it down. `servitor capabilities` and `servitor dry-run` are the first commands wired through this protocol.
+**Done when:** `servitor run` starts a daemon, the CLI talks to it over loopback, and `servitor stop` drains and shuts it down. `servitor capabilities` and `servitor dry-run` are the first commands wired through this protocol. (Lifecycle and protocol are done; wiring `capabilities`/`dry-run` happens in Phases 3-4.)
 
 ## Phase 2: Wafer model and validation
 

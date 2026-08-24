@@ -33,7 +33,11 @@ Commands:
   cancel <id>      stop an in-flight run
   stop             drain and shut the daemon down
 
-The daemon and its control plane are not built yet; only 'version' and 'help'
-work in this scaffold.
+Flags:
+  --addr ADDR  loopback address of the daemon (default 127.0.0.1:7365)
+
+The daemon binds 127.0.0.1 only and the control plane is loopback-gated
+(ADR-0009). 'run' and 'stop' are implemented in this phase; the rest are not
+built yet.
 `)
 }
