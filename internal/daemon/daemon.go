@@ -1,10 +1,10 @@
 // Package daemon implements the long-lived runner daemon and its loopback
 // control-plane HTTP server (ADR-0005, ADR-0009).
 //
-// The daemon owns the runner's single SQLite write connection (Phase 5, with
-// Honker) and binds 127.0.0.1 only. This phase (Phase 1) builds the daemon
-// lifecycle and the control protocol: liveness and graceful shutdown. There is
-// no workflow state yet.
+// The daemon owns the runner's single SQLite write connection (via Honker) and
+// binds 127.0.0.1 only. It opens the Honker store at startup and releases it
+// cleanly on shutdown. The worker/execution loop is built in a later phase;
+// this phase owns the store and the transactional primitive.
 package daemon
 
 import (
@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Mathias-g/Servitor/internal/honker"
 	"github.com/Mathias-g/Servitor/internal/protocol"
 )
 
@@ -32,9 +33,16 @@ type Config struct {
 	// Empty means protocol.DefaultAddr.
 	Addr string
 
+	// DBPath is the SQLite file the daemon owns (via Honker). If empty, the
+	// daemon runs without a store; the runner's durable layers need it set.
+	DBPath string
+
+	// ExtPath is the Honker extension .so to load (ADR-0011). Required when
+	// DBPath is set.
+	ExtPath string
+
 	// DrainTimeout is how long a stop waits for in-flight work before it is
-	// hard-stopped. There is no in-flight work in this phase; the field exists
-	// so the graceful-shutdown path is already shaped for later phases.
+	// hard-stopped.
 	DrainTimeout time.Duration
 
 	// Started, if set, is called once the listener is bound and the server is
@@ -47,6 +55,9 @@ type Config struct {
 type Server struct {
 	cfg     Config
 	httpSrv *http.Server
+	// store is the daemon's Honker handle, set by Run when a DBPath is
+	// configured. Handlers reach it for durable operations.
+	store *honker.Store
 }
 
 // NewServer builds the control-plane server. It does not listen; call Serve.
@@ -114,6 +125,18 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	srv := NewServer(cfg)
+
+	// Open the durable store. The daemon owns this SQLite file and its single
+	// write connection; it is released cleanly on shutdown.
+	if cfg.DBPath != "" {
+		store, err := honker.Open(cfg.DBPath, cfg.ExtPath)
+		if err != nil {
+			_ = lis.Close()
+			return err
+		}
+		defer func() { _ = store.Close() }()
+		srv.store = store
+	}
 
 	if cfg.Started != nil {
 		cfg.Started(lis.Addr().String())

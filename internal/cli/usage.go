@@ -35,6 +35,8 @@ Commands:
 
 Flags:
   --addr ADDR  loopback address of the daemon (default 127.0.0.1:7365)
+  --db PATH    SQLite file the daemon owns (via Honker)
+  HONKER_EXT_PATH  path to the Honker extension .so (ADR-0011)
 
 The daemon binds 127.0.0.1 only and the control plane is loopback-gated
 (ADR-0009). 'run', 'stop', 'dry-run', and 'capabilities' are implemented in

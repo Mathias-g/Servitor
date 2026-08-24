@@ -76,13 +76,27 @@ func parseAddr(args []string, name string, stderr io.Writer) (string, int) {
 }
 
 func cmdRun(args []string, stdout, stderr io.Writer) int {
-	addr, code := parseAddr(args, "run", stderr)
-	if code != exitOK {
-		return code
+	addr := protocol.DefaultAddr
+	dbPath := ""
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.StringVar(&addr, "addr", protocol.DefaultAddr, "loopback address of the daemon")
+	fs.StringVar(&dbPath, "db", "", "SQLite file the daemon owns (via Honker)")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return exitOK
+		}
+		return exitUsage
+	}
+	if fs.NArg() > 0 {
+		_, _ = fmt.Fprintf(stderr, "servitor: run: unexpected argument %q\n", fs.Arg(0))
+		return exitUsage
 	}
 
 	cfg := daemon.Config{
-		Addr: addr,
+		Addr:    addr,
+		DBPath:  dbPath,
+		ExtPath: os.Getenv("HONKER_EXT_PATH"),
 		Started: func(a string) {
 			_, _ = fmt.Fprintf(stdout, "servitor: daemon listening on %s (loopback only, ADR-0009)\n", a)
 		},

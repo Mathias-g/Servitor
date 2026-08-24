@@ -2,7 +2,7 @@
 
 Build order with dependencies and a clear "done" for each phase. The design lives in [SPEC.md](SPEC.md); the decisions live in [docs/adr/](docs/adr/); this is just the sequencing.
 
-Current state: the Go project is scaffolded, the enforcement gates are wired (`make check`, adrlint, pre-commit, CI), and Phase 1 (daemon + loopback control protocol, `run`/`stop`) is built. Phase 2 (Wafer model and structured validation, `dry-run`) is built. Phase 3 (capability discovery, `capabilities` writing schemas and derived examples grouped by integration) is built; reporting varlock secrets and Singer taps is deferred to those integrations. Phase 4 (dry-run DAG resolution) is built; secret redaction is deferred to varlock. The runner has no workflow state yet.
+Current state: the Go project is scaffolded, the enforcement gates are wired (`make check`, adrlint, pre-commit, CI), and Phases 1-4 are built (daemon + loopback control protocol, Wafer model/validation, capability discovery, dry-run DAG resolution). Phase 5 (Honker integration) is partially built: the daemon owns a WAL SQLite file with the Honker extension loaded, and the transactional atom ({result, dedupe, downstream, claim_ack} in one commit) is a tested primitive. The worker loop and cron triggers await Phase 6 subprocess execution. The runner has no workflow state yet.
 
 ## Phase 1: Daemon and control protocol (foundation)
 
@@ -47,14 +47,14 @@ The pre-deploy gate. It belongs in the pipeline (ADR-0009).
 
 ## Phase 5: Honker integration (durable queue)
 
-The durability layer. Requires the cgo `mattn/go-sqlite3` driver to load the Honker extension (ADR-0004).
+The durability layer. Requires the cgo `mattn/go-sqlite3` driver to load the Honker extension (ADR-0004, ADR-0011).
 
-- [ ] Load the Honker SQLite extension into the daemon's connection.
-- [ ] Workflow run queue: each step is a job; workers claim, execute, ack; visibility timeout and dead-letter on repeated failure.
-- [ ] The transactional atom is {result, dedupe_record, downstream_enqueues, claim_ack}, committed as one SQLite transaction, never split (SPEC: Execution model step 8).
-- [ ] Cron triggers via Honker's scheduler.
+- [x] Load the Honker SQLite extension into the daemon's connection (honker-go; extension provided via `HONKER_EXT_PATH`, pinned and checksummed in CI).
+- [x] The daemon owns the SQLite file (WAL mode) and its single write connection.
+- [x] The transactional atom: a `CommitStepAtom` primitive that writes {result, dedupe_record, downstream_enqueues, claim_ack} as one SQLite transaction, never split (SPEC: Execution model step 8). The dedupe table and lookup are in place.
+- [ ] Workflow run queue worker loop (claim, execute, ack; visibility timeout and dead-letter on repeated failure) and cron triggers via Honker's scheduler. The worker loop depends on Phase 6 subprocess execution and is built there.
 
-**Done when:** a step's completion commits result + dedupe + downstream enqueues + claim ack in one transaction, and a crashed worker's claim is re-issued on visibility timeout.
+**Done when:** a step's completion commits result + dedupe + downstream enqueues + claim ack in one transaction (this phase), and a crashed worker's claim is re-issued on visibility timeout (Phase 6).
 
 ## Phase 6: Step execution
 

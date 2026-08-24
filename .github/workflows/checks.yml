@@ -27,6 +27,16 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Fetch Honker extension (pinned, ADR-0011)
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/honker
+          curl -sL -o /tmp/honker/ext.tgz \
+            https://github.com/russellromney/honker/releases/download/ext-v0.5.0/honker-ext-linux-x64.tar.gz
+          echo "4275604003e6c450277d9036b854af198462dfb0212ec6f0a0e72aeaf02e5507  /tmp/honker/ext.tgz" | sha256sum -c -
+          (cd /tmp/honker && tar xzf ext.tgz)
+          echo "HONKER_EXT_PATH=/tmp/honker/libhonker_ext.so" >> "$GITHUB_ENV"
+
       - name: Test
         run: go test ./...
 

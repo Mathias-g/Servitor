@@ -119,6 +119,8 @@ What each dependency is and what we use it for. Each is a stable interface, so e
 
 [Honker](https://honker.dev) is a SQLite extension that adds Postgres-style NOTIFY/LISTEN semantics to SQLite, plus a durable work queue, event streams, and a cron scheduler. One `.db` file is the entire system: no Redis, no separate broker.
 
+The extension is a native loadable library (`libhonker_ext.so`) the runner loads at startup. It is not committed to the repo; the operator supplies it and points the runner at it via `HONKER_EXT_PATH` (or a flag). The runner refuses to boot the durable store without it (ADR-0011).
+
 What we use it for:
 
 - **Workflow run queue.** Each step is a job. Workers claim, execute, and ack.
@@ -409,7 +411,7 @@ Things deliberately out of scope for v1, kept here so the design doesn't quietly
 
 ## Status
 
-Early development. The daemon lifecycle, loopback control protocol, Wafer model and structured validation, and capability discovery are built (`servitor run`, `stop`, `dry-run`, `capabilities`). The runner's durable execution (Honker queue), subprocess step execution, triggers, and varlock integration are not yet built. Open questions, to be resolved as implementation progresses and tracked in ADRs in the `docs/adr/` directory:
+Early development. The daemon lifecycle, loopback control protocol, Wafer model and structured validation, capability discovery, dry-run DAG resolution, and the Honker durability store (with the transactional atom) are built (`servitor run`, `stop`, `dry-run`, `capabilities`). The runner's worker/execution loop, triggers, and varlock integration are not yet built. Open questions, to be resolved as implementation progresses and tracked in ADRs in the `docs/adr/` directory:
 
 - Worker concurrency limits.
 - The exact shape of the `dedupe_key` expression language.
