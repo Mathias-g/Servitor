@@ -119,9 +119,9 @@ func cmdStop(args []string, stdout, stderr io.Writer) int {
 	return exitOK
 }
 
-// cmdDryRun validates a Wafer without executing it (SPEC: Phase 2; full
-// resolution through the daemon arrives in Phase 4). It prints the structured
-// validation result as JSON and exits non-zero if there are blocking errors.
+// cmdDryRun validates a Wafer and resolves its dependency DAG without
+// executing, contacting, or persisting anything (SPEC: dry-run). It prints the
+// structured result as JSON and exits non-zero if there are blocking errors.
 func cmdDryRun(args []string, stdout, stderr io.Writer) int {
 	if len(args) != 1 {
 		_, _ = fmt.Fprintf(stderr, "servitor: usage: servitor dry-run <wafer>\n")
@@ -135,7 +135,7 @@ func cmdDryRun(args []string, stdout, stderr io.Writer) int {
 		return exitFailure
 	}
 
-	res := wafer.Validate(data)
+	res := wafer.DryRun(data)
 
 	enc := json.NewEncoder(stdout)
 	enc.SetIndent("", "  ")
@@ -144,8 +144,8 @@ func cmdDryRun(args []string, stdout, stderr io.Writer) int {
 		return exitFailure
 	}
 
-	if !res.Valid() {
-		_, _ = fmt.Fprintf(stderr, "servitor: dry-run: %d error(s)\n", len(res.Errors))
+	if !res.Result.Valid() {
+		_, _ = fmt.Fprintf(stderr, "servitor: dry-run: %d error(s)\n", len(res.Result.Errors))
 		return exitFailure
 	}
 	_, _ = fmt.Fprintf(stderr, "servitor: dry-run: valid\n")

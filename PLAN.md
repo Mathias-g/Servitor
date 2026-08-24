@@ -2,7 +2,7 @@
 
 Build order with dependencies and a clear "done" for each phase. The design lives in [SPEC.md](SPEC.md); the decisions live in [docs/adr/](docs/adr/); this is just the sequencing.
 
-Current state: the Go project is scaffolded, the enforcement gates are wired (`make check`, adrlint, pre-commit, CI), and Phase 1 (daemon + loopback control protocol, `run`/`stop`) is built. Phase 2 (Wafer model and structured validation, `dry-run`) is built. Phase 3 (capability discovery, `capabilities` writing schemas and derived examples grouped by integration) is built; reporting varlock secrets and Singer taps is deferred to those integrations. The runner has no workflow state yet.
+Current state: the Go project is scaffolded, the enforcement gates are wired (`make check`, adrlint, pre-commit, CI), and Phase 1 (daemon + loopback control protocol, `run`/`stop`) is built. Phase 2 (Wafer model and structured validation, `dry-run`) is built. Phase 3 (capability discovery, `capabilities` writing schemas and derived examples grouped by integration) is built; reporting varlock secrets and Singer taps is deferred to those integrations. Phase 4 (dry-run DAG resolution) is built; secret redaction is deferred to varlock. The runner has no workflow state yet.
 
 ## Phase 1: Daemon and control protocol (foundation)
 
@@ -40,10 +40,10 @@ How an agent learns what the server supports and how to use it (SPEC: How an age
 
 The pre-deploy gate. It belongs in the pipeline (ADR-0009).
 
-- [ ] `servitor dry-run <wafer>` resolves the whole workflow (including secret references) and returns the DAG the runner would execute, without running anything, contacting anything, or persisting anything.
-- [ ] Secret references shown as `<redacted:secret_name>`.
+- [x] `servitor dry-run <wafer>` validates and resolves the workflow's dependency DAG (run order, dependencies, cycle and unknown-reference detection) and returns it as structured output, without running anything, contacting anything, or persisting anything.
+- [ ] Secret references resolved and shown as `<redacted:secret_name>`, when varlock secret resolution is built (Phase 8).
 
-**Done when:** the pipeline can dry-run a Wafer before applying it, and an agent can verify structure, secret availability, and step config before a PR.
+**Done when:** an agent can verify structure and step config before a PR. (Secret availability checking is deferred to the varlock phase.)
 
 ## Phase 5: Honker integration (durable queue)
 
