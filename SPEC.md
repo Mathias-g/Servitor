@@ -42,7 +42,7 @@ Most workflow tools were designed for humans clicking through a builder, with an
 Designing for agents first changes specific decisions:
 
 - **The artifact is the Wafer, not a database row.** Agents read, write, diff, and version-control the same file a human would. There is no "form state" living somewhere the agent can't see.
-- **Capability discovery is a first-class operation.** `servitor capabilities` returns every step type, every trigger type, every declared secret, and every Singer tap available, with full JSON Schemas. An agent never has to guess what fields a step takes.
+- **Capability discovery is a first-class operation.** `servitor capabilities` returns every step type, every trigger type, every declared secret, and every Singer tap available, each with its JSON Schema and an example rendered from that schema. An agent never has to guess what fields a step takes.
 - **Validation errors are structured, not stringified.** Errors are returned as JSON with paths, codes, and suggestions. An agent that submits a workflow with `type: slak` gets back an `unknown_step_type` error with `suggestion: slack`, the way an IDE would flag the typo. (See the Structured validation errors section for the full shape.)
 - **Dry-run is a real primitive.** `servitor dry-run` resolves the entire workflow, including secret references, and returns the DAG the runner *would* execute. No steps run, no external services are contacted, nothing is persisted. An agent can verify structure, secret availability, and step configuration before committing.
 - **The same CLI serves humans and agents.** No private API the agent doesn't have access to. If a future UI exists, it talks to the same control plane.
@@ -88,7 +88,7 @@ Read this once and the rest of the document fills in the details. The split: ste
 2. **Discover what's possible.** `servitor capabilities` lists step types, trigger types, secrets, and Singer taps with schemas. An agent reads this instead of guessing.
 3. **Write a Wafer.** A human edits a YAML file, or an agent generates one from the capabilities schema. The Wafer declares triggers and steps.
 4. **Dry-run it.** `servitor dry-run ./wf.yml` validates and resolves the workflow without running anything, so the author sees the DAG and confirms secrets resolve.
-5. **Submit and enable.** `servitor submit ./wf.yml` validates it (structured errors if not), then `servitor enable <name>` registers its triggers.
+5. **Deploy via the pipeline.** The agent (or human) opens a pull request for the Wafer; the pipeline dry-runs it and applies it on the box with `servitor submit`, then `servitor enable <name>` registers its triggers (ADR-0009).
 6. **Run.** A webhook arrives, a cron fires, or `servitor trigger <name>` runs it manually. Workers execute steps durably; downstream steps fire as dependencies complete.
 7. **Inspect and react.** `servitor runs` / `servitor run <id>` shows history and outcomes. The author fixes a Wafer or a step and resubmits.
 8. **Stop.** `servitor stop` drains and shuts the daemon down. Crashes are recovered by the queue on restart.
@@ -109,7 +109,7 @@ How a step runs:
 
 This means SQLite writes are serialized through the parent process, which is the only thing holding a write connection. SQLite's single-writer rule is honored by design, not worked around.
 
-Go keeps subprocess startup fast (roughly a millisecond), which is why every step runs as a subprocess rather than in-process (ADR-0009). Read concurrency is fine: workers reading their own claim, the control plane reading workflow state, and the trigger receivers reading config can all happen against WAL-mode SQLite without blocking the writer.
+Go keeps subprocess startup fast (roughly a millisecond), which is why every step runs as a subprocess rather than in-process (ADR-0008). Read concurrency is fine: workers reading their own claim, the control plane reading workflow state, and the trigger receivers reading config can all happen against WAL-mode SQLite without blocking the writer.
 
 ### Building blocks (reference)
 
@@ -134,7 +134,7 @@ What we use it for:
 What we use it for:
 
 - **Secret resolution at process start.** The operator just runs `servitor`. The process checks whether it is already running under varlock; if not, it re-execs itself as `varlock run --no-inject-graph -- servitor run`. Varlock resolves secrets from their backing store, validates them against the schema, and injects them as individual env vars before any of the runner's real code executes.
-- **Per-step secret filtering at subprocess spawn.** When the runner spawns a step subprocess, it constructs the subprocess's env from scratch and includes *only* the secrets the step declared. Webhook secrets, runner-internal secrets, and other steps' secrets never appear in the subprocess env. Because every step runs as a subprocess (ADR-0009), no step ever runs in the runner's process where it could reach the resolved-secret cache.
+- **Per-step secret filtering at subprocess spawn.** When the runner spawns a step subprocess, it constructs the subprocess's env from scratch and includes *only* the secrets the step declared. Webhook secrets, runner-internal secrets, and other steps' secrets never appear in the subprocess env. Because every step runs as a subprocess (ADR-0008), no step ever runs in the runner's process where it could reach the resolved-secret cache.
 - **Webhook signature secrets.** Each integrated service's webhook signing key is declared in the varlock schema. The receiver reads them from the process environment at verification time, in the runner process only.
 - **Log redaction.** Sensitive values are redacted from runner output by Varlock at runtime.
 
@@ -168,7 +168,7 @@ For non-compliant services (Grist, GitHub, Stripe, Slack, etc.), provider-specif
 
 ### Step execution
 
-Every step runs as a subprocess. There is no in-process mode (ADR-0009). When a step executor claims a job, it launches a subprocess with a filtered environment containing only the secrets that step declared, the subprocess writes its result as structured JSON to stdout and exits, and the parent commits the result.
+Every step runs as a subprocess. There is no in-process mode (ADR-0008). When a step executor claims a job, it launches a subprocess with a filtered environment containing only the secrets that step declared, the subprocess writes its result as structured JSON to stdout and exits, and the parent commits the result.
 
 The subprocess is the isolation boundary. Because nothing runs inside the runner's own process, there is no "not a sandbox" surface: code that might be untrusted or buggy is contained by OS process isolation, and since a step cannot see secrets it did not declare, its environment contains nothing worth stealing. This is why Go's cheap subprocess startup makes a uniform subprocess model the simplest and safest choice.
 
@@ -197,7 +197,7 @@ The command set, grouped by what you're doing. These are the contract humans and
 
 ```
 servitor run                        # boot the runner daemon (under varlock)
-servitor capabilities               # write step/trigger/secret/tap schemas to files
+servitor capabilities               # write step/trigger/secret/tap schemas + derived examples to files
 servitor dry-run <wafer>            # validate and resolve without executing
 servitor submit <wafer>             # validate and register a workflow
 servitor update <wafer>             # replace a workflow's definition
@@ -216,15 +216,37 @@ Each command maps to an operation on the daemon; the full list and the exit code
 
 The CLI talks to the daemon over a plain loopback protocol (HTTP or unix socket; the transport is an implementation detail). The protocol is kept independent of argument parsing, so a future MCP adapter can sit beside the CLI without a rewrite (ADR-0005). It exposes the same operations as the CLI: discover, dry-run, submit, update, enable, disable, trigger, inspect, cancel, stop.
 
+### How the control plane is reached
+
+The daemon binds `127.0.0.1` only. It has no direct network surface, and changing behavior is gated (ADR-0009). There are two distinct paths:
+
+- **Deploy (changing behavior): CI/CD-gated.** Wafers live in a git repo. The agent authors them and submits a pull request; a pipeline validates, dry-runs, and applies them via `servitor submit`/`update`/`enable`/`disable` on the box itself. The agent's write is a reviewed PR, never a direct socket to the runner.
+- **Operate (inspect, trigger, cancel): operator-gated.** Inspection (`runs`, `run <id>`) is read-only. State-changing operations (`trigger`, `cancel`) and `stop` run on the box by the pipeline or an operator, not through a wide-open agent socket.
+
+Getting onto the box is the operator's existing access (SSH or VPN). The CLI stays loopback-to-daemon; SSH/VPN is what brings the operator or pipeline onto the box. There is no public HTTP endpoint for the control plane.
+
 ### Consuming Servitor as a skill
 
-Agents learn the CLI from a shipped `SKILL.md`, the command reference that teaches an agent how to use Servitor. The agent discovers capabilities on demand (`servitor capabilities`), generates or edits a Wafer, dry-runs it, submits it, and inspects runs, all through the CLI. This mirrors the skill-first model: a CLI stays quiet until the agent types a command, so Servitor costs nothing in the agent's context until it is used.
+Agents learn the CLI from a shipped `SKILL.md`, the command reference that teaches an agent how to use Servitor. The agent discovers capabilities on demand (`servitor capabilities`), generates or edits a Wafer, dry-runs it, and opens a pull request for it; the pipeline applies it on the box (ADR-0009). Where the agent runs on the same box as the runner (local development, the pipeline's own runner), it can also inspect runs and trigger/cancel directly through the CLI. This mirrors the skill-first model: a CLI stays quiet until the agent types a command, so Servitor costs nothing in the agent's context until it is used.
 
 ---
 
 ## The Wafer
 
 A Wafer declares two things: **triggers** (what starts a workflow, written under `on:`) and **steps** (what it does once running, written under `steps:`). Both lists are representative, not exhaustive; `servitor capabilities` returns the authoritative live set, each entry with its JSON Schema.
+
+### How an agent discovers integrations
+
+Before writing a Wafer, an agent needs to know what the *target* server supports and how to use it. `servitor capabilities` answers both, and it is a per-server query: the authoritative set is what that runner has compiled in (step types, trigger types), what its varlock schema declares (secrets, present or not), and which Singer taps are installed. The agent asks the server rather than trusting a doc, because the answer differs per deployment.
+
+For each step type and trigger type, `capabilities` returns:
+
+- its **JSON Schema** (fields, required, types, constraints), and
+- an **example Wafer fragment** rendered from that schema.
+
+The example is **derived from the schema, not written by hand**: the structural skeleton (required fields in order, nested objects and arrays) is generated from the schema, and meaningful sample values come from each property's `examples` keyword in the same schema definition. Because the example is rendered from the schema, it cannot drift from it: a field added to the schema appears in the generated example, and a curated value like `channel: "#sales"` lives in the schema's `examples` next to the field's type, so they version together. The same generator applies to Singer taps, whose config schemas (from `--about`/`--discover`) carry `examples` too, so an agent gets an example `singer-tap` config as well.
+
+This is how "what integrations exist and how do I use them" is answered: the agent runs `capabilities`, reads the schemas and their derived examples, and generates a valid Wafer. The pipeline then re-validates the Wafer against the live server's capabilities on deploy (ADR-0009).
 
 ### Triggers
 
@@ -282,7 +304,7 @@ Each helper uses varlock-injected secrets for auth and exposes its actions/trigg
 3. **Signature verification.** The receiver verifies the signature against the relevant secret from varlock, in the parent process.
 4. **Workflow matching.** The runner finds workflows whose `on:` block matches the event.
 5. **Run enqueued.** A workflow run is created in Honker with the event payload as input. The run's initial step(s) are enqueued in the same transaction.
-6. **Workers claim and execute.** A step executor in the parent process claims a job and checks the step's `dedupe_key` against the dedupe table. It spawns a subprocess with a filtered env containing only the secrets the step declared (every step runs as a subprocess; ADR-0009).
+6. **Workers claim and execute.** A step executor in the parent process claims a job and checks the step's `dedupe_key` against the dedupe table. It spawns a subprocess with a filtered env containing only the secrets the step declared (every step runs as a subprocess; ADR-0008).
 7. **Step runs.** Step types dispatch to handlers: HTTP, shell, transform, Singer tap, Singer target, integration helpers. A step writes its result as structured JSON to stdout and exits.
 8. **Result committed transactionally.** When a step completes, its writes happen as a single atomic SQLite transaction: the step's result is persisted, the `dedupe_key` record is written (if any), all downstream steps whose dependencies are now satisfied are enqueued, and the step's own claim is acked, all in one commit. (For Singer steps, the updated bookmark is part of the same commit.) There is no separate scheduler process watching for completions; the worker that just finished the step performs these writes itself. This is non-negotiable because each possible split produces a distinct silent failure: result-without-enqueue stalls the workflow (a step is "done" but successors never run); enqueue-without-ack re-issues the claim on visibility timeout and re-runs the step, fanning out *again* and doubling every downstream side effect; dedupe-without-result causes future retries to skip the step without ever returning a value. The transactional atom is therefore **{result, dedupe_record, downstream_enqueues, claim_ack}**, all in one commit. If implementation pressure ever tempts splitting this transaction, the answer is no; redesign the data model instead.
 9. **Crashes are safe, with a caveat.** If a subprocess dies, the parent records the failure and the executor reclaims through normal retry. If the parent dies mid-job, Honker's visibility timeout re-issues the claim to another runner instance (or to itself on restart). **Crash safety against double-firing of side effects only applies to steps that declare a `dedupe_key`.** Steps without one inherit Honker's at-least-once contract: a step whose side effect completes before the result is persisted may be re-issued and the side effect re-performed. The validator warns when a side-effecting step omits `dedupe_key` precisely to make this contract visible to authors.
@@ -341,9 +363,9 @@ The full workflow JSON Schema and every step type's config schema are also retri
 
 ## Authentication
 
-The control plane is a CLI talking to the daemon over loopback. On a single-host deployment the daemon binds to `127.0.0.1` only, so the only thing that can reach it is a process already running on that host. For the self-hosted single-team case the SPEC targets, that is the whole story: there is no operator authentication in v1, and the daemon refuses to bind to a non-loopback interface, which prevents the most common self-hosted footgun (binding to `0.0.0.0` with auth off).
+The control plane is a CLI talking to the daemon over loopback. The daemon binds `127.0.0.1` only and refuses a non-loopback interface, so the only thing that can reach it is a process already on that host. Changing behavior is gated through a reviewed pipeline, and operating the runner runs on the box (ADR-0009); there is no operator authentication inside the daemon because the network surface it would protect does not exist.
 
-Managing the runner from another machine is a reverse-proxy concern, not a Servitor feature: put the daemon behind a proxy (Authentik, oauth2-proxy, Authelia, a VPN) that enforces authentication before requests reach it. That is the operator's integration, deferred until a deployment needs it.
+Getting onto the box is the operator's existing access (SSH or VPN), not a Servitor feature. A deployment that wants remote management puts the box itself behind the operator's network boundary; Servitor does not stand up its own auth/proxy stack.
 
 "Auth" also shows up in two places that are not operator authentication:
 

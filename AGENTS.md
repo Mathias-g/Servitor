@@ -36,7 +36,7 @@ These are decisions already made and recorded in ADRs, with their alternatives a
 - **The Wafer is the artifact, nowhere else.** The workflow is fully defined by the YAML file. No workflow state lives in a UI or database row that a human or agent cannot see.
 - **One runner process owns the SQLite file and its single write connection.** SQLite single-writer is honored by design, not worked around.
 - **The transactional atom is {result, dedupe_record, downstream_enqueues, claim_ack}.** Each possible split produces a distinct silent failure; see the execution model in SPEC.md.
-- **Every step runs as a subprocess; there is no in-process mode.** (ADR-0009) The subprocess is the isolation boundary; nothing runs inside the runner's process. Go's cheap subprocess startup makes this the simplest, safest model.
+- **Every step runs as a subprocess; there is no in-process mode.** (ADR-0008) The subprocess is the isolation boundary; nothing runs inside the runner's process. Go's cheap subprocess startup makes this the simplest, safest model.
 - **Steps should carry a `dedupe_key`** when they have externally-visible side effects; the validator warns when one omits it.
 
 ## The context layers

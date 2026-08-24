@@ -9,7 +9,7 @@ scope:
 interface-impact: breaking
 ---
 
-# ADR-0009: Run every step as a subprocess
+# ADR-0008: Run every step as a subprocess
 
 ## Context and problem statement
 
