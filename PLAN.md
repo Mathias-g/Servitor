@@ -2,7 +2,7 @@
 
 Build order with dependencies and a clear "done" for each phase. The design lives in [SPEC.md](SPEC.md); the decisions live in [docs/adr/](docs/adr/); this is just the sequencing.
 
-Current state: the Go project is scaffolded, the enforcement gates are wired (`make check`, adrlint, pre-commit, CI), and Phases 1-6 are built (daemon + loopback control protocol, Wafer model/validation, capability discovery, dry-run DAG resolution, Honker integration, and step execution). The daemon owns a WAL SQLite file with the Honker extension loaded; the transactional atom ({result, dedupe, downstream, claim_ack} in one commit) is a tested primitive; and the worker loop now claims jobs, runs each step as a subprocess with env filtering and dedupe, commits the fan-out atom, and handles visibility-timeout reclaim, dead-lettering, and cron triggers via the Honker scheduler. The runner has no workflow registry yet; runs are built from a Wafer into a self-contained step chain (ADR-0012).
+Current state: the Go project is scaffolded, the enforcement gates are wired (`make check`, adrlint, pre-commit, CI), and Phases 1-7 are built (daemon + loopback control protocol, Wafer model/validation, capability discovery, dry-run DAG resolution, Honker integration, step execution, and triggers/webhooks). The daemon owns a WAL SQLite file with the Honker extension loaded; the transactional atom ({result, dedupe, downstream, claim_ack} in one commit) is a tested primitive; the worker loop runs steps as subprocesses with env filtering and dedupe; and inbound triggers now include a webhook receiver (Standard Webhooks + generic HMAC), cron, and manual, with event persistence before matching and workflow registration (`submit`/`enable`/`disable`/`trigger`) over the loopback control plane. The runner has no workflow registry consulted by the worker; runs are built from a Wafer into a self-contained step chain (ADR-0012), and the trigger receiver matches against a stored index of registered workflows (ADR-0013).
 
 ## Phase 1: Daemon and control protocol (foundation)
 
@@ -70,11 +70,11 @@ Every step runs as a subprocess; there is no in-process mode (ADR-0008).
 
 Inbound events.
 
-- [ ] HTTP receiver bound for webhooks, signature verification (Standard Webhooks + per-provider bespoke schemes).
-- [ ] Event persisted before matching; run enqueued with the event payload as input.
-- [ ] Trigger types: `http_webhook`, `standard_webhook`, provider-specific, `cron`, `manual`, `internal`.
+- [x] HTTP receiver bound for webhooks, signature verification (Standard Webhooks + generic HMAC). Provider-specific receivers (grist/github/slack/atomic/email) are deferred.
+- [x] Event persisted before matching; run enqueued with the event payload as input.
+- [x] Trigger types: `http_webhook`, `standard_webhook`, `cron`, `manual`. Provider-specific types and `internal` are deferred; registration (`submit`/`enable`/`disable`) and manual `trigger` are wired through the control plane.
 
-**Done when:** a signed webhook is verified, the event persisted, the workflow matched, and a run enqueued.
+**Done when:** a signed webhook is verified, the event persisted, the workflow matched, and a run enqueued. (Done for `standard_webhook`/`http_webhook`/`manual`; provider-specific and `internal` remain.)
 
 ## Phase 8: Varlock integration
 

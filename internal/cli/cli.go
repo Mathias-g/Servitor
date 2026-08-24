@@ -49,6 +49,14 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return cmdDryRun(args[1:], stdout, stderr)
 	case "capabilities":
 		return cmdCapabilities(args[1:], stdout, stderr)
+	case "submit":
+		return cmdSubmit(args[1:], stdout, stderr)
+	case "enable":
+		return cmdEnable(args[1:], stdout, stderr)
+	case "disable":
+		return cmdDisable(args[1:], stdout, stderr)
+	case "trigger":
+		return cmdTrigger(args[1:], stdout, stderr)
 	}
 
 	// The remaining commands are daemon operations scheduled for later phases.
@@ -56,32 +64,31 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	return exitFailure
 }
 
-// parseAddr parses the shared --addr flag shared by run and stop.
-func parseAddr(args []string, name string, stderr io.Writer) (string, int) {
-	addr := protocol.DefaultAddr
+// parseAddr parses the shared --addr flag and returns the remaining positional
+// arguments.
+func parseAddr(args []string, name string, stderr io.Writer) (addr string, rest []string, code int) {
+	addr = protocol.DefaultAddr
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&addr, "addr", protocol.DefaultAddr, "loopback address of the daemon")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			return "", exitOK
+			return "", nil, exitOK
 		}
-		return "", exitUsage
+		return "", nil, exitUsage
 	}
-	if fs.NArg() > 0 {
-		_, _ = fmt.Fprintf(stderr, "servitor: %s: unexpected argument %q\n", name, fs.Arg(0))
-		return "", exitUsage
-	}
-	return addr, exitOK
+	return addr, fs.Args(), exitOK
 }
 
 func cmdRun(args []string, stdout, stderr io.Writer) int {
 	addr := protocol.DefaultAddr
 	dbPath := ""
+	webhookAddr := ""
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&addr, "addr", protocol.DefaultAddr, "loopback address of the daemon")
 	fs.StringVar(&dbPath, "db", "", "SQLite file the daemon owns (via Honker)")
+	fs.StringVar(&webhookAddr, "webhook-addr", "", "address for the inbound webhook receiver (empty disables)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return exitOK
@@ -94,9 +101,10 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	}
 
 	cfg := daemon.Config{
-		Addr:    addr,
-		DBPath:  dbPath,
-		ExtPath: os.Getenv("HONKER_EXTENSION_PATH"),
+		Addr:        addr,
+		DBPath:      dbPath,
+		ExtPath:     os.Getenv("HONKER_EXTENSION_PATH"),
+		WebhookAddr: webhookAddr,
 		Started: func(a string) {
 			_, _ = fmt.Fprintf(stdout, "servitor: daemon listening on %s (loopback only, ADR-0009)\n", a)
 		},
@@ -110,9 +118,13 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 }
 
 func cmdStop(args []string, stdout, stderr io.Writer) int {
-	addr, code := parseAddr(args, "stop", stderr)
+	addr, rest, code := parseAddr(args, "stop", stderr)
 	if code != exitOK {
 		return code
+	}
+	if len(rest) > 0 {
+		_, _ = fmt.Fprintf(stderr, "servitor: stop: unexpected argument %q\n", rest[0])
+		return exitUsage
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -180,6 +192,125 @@ func cmdDryRun(args []string, stdout, stderr io.Writer) int {
 		return exitFailure
 	}
 	_, _ = fmt.Fprintf(stderr, "servitor: dry-run: valid\n")
+	return exitOK
+}
+
+// cmdSubmit validates and registers a workflow on the daemon (SPEC: CLI,
+// submit). It reads the Wafer, validates locally first so the common cases
+// fail fast without a daemon, then sends it to the daemon to register.
+func cmdSubmit(args []string, stdout, stderr io.Writer) int {
+	addr, rest, code := parseAddr(args, "submit", stderr)
+	if code != exitOK {
+		return code
+	}
+	if len(rest) != 1 {
+		_, _ = fmt.Fprintf(stderr, "servitor: usage: servitor submit <wafer>\n")
+		return exitUsage
+	}
+	path := rest[0]
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: submit: %v\n", err)
+		return exitFailure
+	}
+	res := wafer.Validate(data)
+	if !res.Valid() {
+		_, _ = fmt.Fprintf(stderr, "servitor: submit: %d error(s)\n", len(res.Errors))
+		return exitFailure
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c := protocol.NewClient(addr)
+	if err := c.Health(ctx); err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: daemon not running at %s\n", addr)
+		return exitNoDaemon
+	}
+	if msg, err := c.Submit(ctx, data); err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: submit: %v\n", err)
+		return exitFailure
+	} else if msg != "" {
+		_, _ = fmt.Fprint(stdout, msg)
+	}
+	_, _ = fmt.Fprintf(stdout, "servitor: submitted %s\n", path)
+	return exitOK
+}
+
+// cmdEnable and cmdDisable toggle a registered workflow's triggers.
+func cmdEnable(args []string, stdout, stderr io.Writer) int {
+	return cmdSetEnabled(args, true, stdout, stderr)
+}
+
+func cmdDisable(args []string, stdout, stderr io.Writer) int {
+	return cmdSetEnabled(args, false, stdout, stderr)
+}
+
+func cmdSetEnabled(args []string, enabled bool, stdout, stderr io.Writer) int {
+	verb := "enable"
+	if !enabled {
+		verb = "disable"
+	}
+	addr, rest, code := parseAddr(args, verb, stderr)
+	if code != exitOK {
+		return code
+	}
+	if len(rest) != 1 {
+		_, _ = fmt.Fprintf(stderr, "servitor: usage: servitor %s <name>\n", verb)
+		return exitUsage
+	}
+	name := rest[0]
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c := protocol.NewClient(addr)
+	if err := c.Health(ctx); err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: daemon not running at %s\n", addr)
+		return exitNoDaemon
+	}
+	var err error
+	if enabled {
+		err = c.Enable(ctx, name)
+	} else {
+		err = c.Disable(ctx, name)
+	}
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: %s: %v\n", verb, err)
+		return exitFailure
+	}
+	_, _ = fmt.Fprintf(stdout, "servitor: %sd %s\n", verb[:len(verb)-1], name)
+	return exitOK
+}
+
+// cmdTrigger fires a manual run of a workflow with optional JSON inputs (SPEC:
+// CLI, trigger).
+func cmdTrigger(args []string, stdout, stderr io.Writer) int {
+	addr, rest, code := parseAddr(args, "trigger", stderr)
+	if code != exitOK {
+		return code
+	}
+	if len(rest) == 0 || rest[0] == "" {
+		_, _ = fmt.Fprintf(stderr, "servitor: usage: servitor trigger <name> [json-inputs]\n")
+		return exitUsage
+	}
+	name := rest[0]
+	var inputs []byte
+	if len(rest) > 1 {
+		inputs = []byte(rest[1])
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c := protocol.NewClient(addr)
+	if err := c.Health(ctx); err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: daemon not running at %s\n", addr)
+		return exitNoDaemon
+	}
+	if err := c.Trigger(ctx, name, inputs); err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: trigger: %v\n", err)
+		return exitFailure
+	}
+	_, _ = fmt.Fprintf(stdout, "servitor: triggered %s\n", name)
 	return exitOK
 }
 

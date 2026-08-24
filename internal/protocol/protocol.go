@@ -16,4 +16,15 @@ const (
 
 	// PathStop asks the daemon to drain and shut down gracefully.
 	PathStop = "/v1/stop"
+
+	// PathSubmit registers a workflow from a Wafer (body = Wafer YAML).
+	PathSubmit = "/v1/submit"
+
+	// PathEnable and PathDisable toggle a workflow's triggers (query: name).
+	PathEnable  = "/v1/enable"
+	PathDisable = "/v1/disable"
+
+	// PathTrigger fires a manual run of a workflow (query: name; body = JSON
+	// inputs).
+	PathTrigger = "/v1/trigger"
 )

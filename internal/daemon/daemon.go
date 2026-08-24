@@ -9,6 +9,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -21,6 +22,8 @@ import (
 
 	"github.com/Mathias-g/Servitor/internal/honker"
 	"github.com/Mathias-g/Servitor/internal/protocol"
+	"github.com/Mathias-g/Servitor/internal/trigger"
+	"github.com/Mathias-g/Servitor/internal/wafer"
 	"github.com/Mathias-g/Servitor/internal/worker"
 )
 
@@ -68,6 +71,12 @@ type Config struct {
 	// when a DBPath is set.
 	DisableRunner bool
 
+	// WebhookAddr is the address the webhook receiver listens on for inbound
+	// events (for example ":8080"). Unlike the control plane it may bind any
+	// interface, because webhooks must be reachable by external senders
+	// (SPEC: Triggers). Empty disables the webhook listener.
+	WebhookAddr string
+
 	// Started, if set, is called once the listener is bound and the server is
 	// serving. It lets the caller report readiness only after a real bind, not
 	// before a loopback check or listen error.
@@ -81,6 +90,9 @@ type Server struct {
 	// store is the daemon's Honker handle, set by Run when a DBPath is
 	// configured. Handlers reach it for durable operations.
 	store *honker.Store
+	// receiver handles inbound webhooks and manual triggers, set by Run when a
+	// store and webhook address are configured.
+	receiver *trigger.Receiver
 }
 
 // NewServer builds the control-plane server. It does not listen; call Serve.
@@ -89,6 +101,10 @@ func NewServer(cfg Config) *Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc(protocol.PathHealth, s.handleHealth)
 	mux.HandleFunc(protocol.PathStop, s.handleStop)
+	mux.HandleFunc(protocol.PathSubmit, s.handleSubmit)
+	mux.HandleFunc(protocol.PathEnable, s.handleEnable)
+	mux.HandleFunc(protocol.PathDisable, s.handleDisable)
+	mux.HandleFunc(protocol.PathTrigger, s.handleTrigger)
 	s.httpSrv = &http.Server{Handler: mux}
 	return s
 }
@@ -125,6 +141,95 @@ func (s *Server) handleStop(w http.ResponseWriter, _ *http.Request) {
 		defer cancel()
 		_ = s.httpSrv.Shutdown(ctx)
 	}()
+}
+
+// handleSubmit registers a workflow from a Wafer in the request body. It
+// validates the Wafer first; an invalid Wafer is a 422 with the structured
+// validation errors as the body.
+func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		http.Error(w, "no store; run the daemon with --db", http.StatusConflict)
+		return
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "read body", http.StatusBadRequest)
+		return
+	}
+	res := wafer.Validate(body)
+	if !res.Valid() {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = json.NewEncoder(w).Encode(res)
+		return
+	}
+	wf, err := wafer.Parse(body)
+	if err != nil {
+		http.Error(w, "parse wafer: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.store.RegisterWorkflow(wf.Name, string(body)); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_, _ = io.WriteString(w, "ok\n")
+}
+
+// handleEnable and handleDisable toggle a registered workflow's triggers.
+func (s *Server) handleEnable(w http.ResponseWriter, r *http.Request) {
+	s.handleSetEnabled(w, r, true)
+}
+
+func (s *Server) handleDisable(w http.ResponseWriter, r *http.Request) {
+	s.handleSetEnabled(w, r, false)
+}
+
+func (s *Server) handleSetEnabled(w http.ResponseWriter, r *http.Request, enabled bool) {
+	if s.store == nil {
+		http.Error(w, "no store; run the daemon with --db", http.StatusConflict)
+		return
+	}
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		http.Error(w, "missing name", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.SetWorkflowEnabled(name, enabled); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	_, _ = io.WriteString(w, "ok\n")
+}
+
+// handleTrigger fires a manual run of a workflow with the request body as the
+// run's JSON inputs.
+func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
+	if s.receiver == nil {
+		http.Error(w, "no trigger receiver; run the daemon with --db", http.StatusConflict)
+		return
+	}
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		http.Error(w, "missing name", http.StatusBadRequest)
+		return
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "read body", http.StatusBadRequest)
+		return
+	}
+	var inputs map[string]any
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &inputs); err != nil {
+			http.Error(w, "inputs must be JSON", http.StatusBadRequest)
+			return
+		}
+	}
+	if err := s.receiver.Manual(r.Context(), name, inputs); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	_, _ = io.WriteString(w, "ok\n")
 }
 
 // Run starts the daemon on cfg.Addr and blocks until it is shut down, either by
@@ -171,6 +276,11 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 		defer func() { _ = store.Close() }()
 		srv.store = store
+
+		// The trigger receiver drives inbound webhooks and manual triggers
+		// against the same store.
+		queue := store.Queue(cfg.QueueName, cfg.VisibilityTimeoutS, cfg.MaxAttempts)
+		srv.receiver = trigger.NewReceiver(store, queue, cfg.Secrets)
 	}
 
 	if cfg.Started != nil {
@@ -194,6 +304,26 @@ func Run(ctx context.Context, cfg Config) error {
 	defer func() {
 		if cancelRunner != nil {
 			cancelRunner()
+		}
+	}()
+
+	// Start the webhook listener when configured. It is separate from the
+	// loopback control plane and may bind any interface, because webhooks must
+	// be reachable by external senders.
+	var webhookSrv *http.Server
+	var webhookLis net.Listener
+	if cfg.WebhookAddr != "" && srv.receiver != nil {
+		webhookLis, err = net.Listen("tcp", cfg.WebhookAddr)
+		if err != nil {
+			_ = lis.Close()
+			return fmt.Errorf("daemon: listen for webhooks on %s: %w", cfg.WebhookAddr, err)
+		}
+		webhookSrv = &http.Server{Handler: srv.receiver}
+		go func() { _ = webhookSrv.Serve(webhookLis) }()
+	}
+	defer func() {
+		if webhookSrv != nil {
+			_ = webhookSrv.Close()
 		}
 	}()
 

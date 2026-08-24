@@ -39,7 +39,7 @@ Flags:
   HONKER_EXTENSION_PATH  path to the Honker extension .so (ADR-0011)
 
 The daemon binds 127.0.0.1 only and the control plane is loopback-gated
-(ADR-0009). 'run', 'stop', 'dry-run', and 'capabilities' are implemented in
-this phase; the rest are not built yet.
+(ADR-0009). 'run', 'stop', 'dry-run', 'capabilities', 'submit', 'enable',
+'disable', and 'trigger' are implemented; the rest are not built yet.
 `)
 }

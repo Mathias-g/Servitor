@@ -27,10 +27,24 @@ func TestHelp(t *testing.T) {
 	}
 }
 
-func TestUnimplementedCommandFails(t *testing.T) {
+func TestSubmitMissingFileFails(t *testing.T) {
 	var out, errOut bytes.Buffer
-	if code := Run([]string{"submit", "wf.yml"}, &out, &errOut); code != exitFailure {
+	if code := Run([]string{"submit", "does-not-exist.yml"}, &out, &errOut); code != exitFailure {
 		t.Fatalf("submit: exit code %d, want %d", code, exitFailure)
+	}
+}
+
+func TestTriggerUsageError(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := Run([]string{"trigger"}, &out, &errOut); code != exitUsage {
+		t.Fatalf("trigger: exit code %d, want %d", code, exitUsage)
+	}
+}
+
+func TestEnableUsageError(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := Run([]string{"enable"}, &out, &errOut); code != exitUsage {
+		t.Fatalf("enable: exit code %d, want %d", code, exitUsage)
 	}
 }
 

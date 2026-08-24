@@ -202,6 +202,16 @@ func (s *Store) ResultJSON(runID, stepID string) (string, error) {
 	return r, nil
 }
 
+// StepResultCount returns the number of step result rows. It is how tests (and
+// later the run inspector) observe that runs have executed.
+func (s *Store) StepResultCount() (int, error) {
+	var n int
+	if err := s.db.Raw().QueryRow(`SELECT COUNT(*) FROM step_results`).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
 // ensureSchema creates the runner's business tables on the store's single
 // connection. It runs at Open time so the tables always exist.
 func (s *Store) ensureSchema() error {
@@ -228,5 +238,17 @@ var schemaStmts = []string{
 		result      TEXT,
 		created_at  TEXT NOT NULL DEFAULT (datetime('now')),
 		PRIMARY KEY (workflow_id, step_name, dedupe_key)
+	)`,
+	`CREATE TABLE IF NOT EXISTS workflows (
+		name       TEXT PRIMARY KEY,
+		wafer      TEXT NOT NULL,
+		enabled    INTEGER NOT NULL DEFAULT 1,
+		created_at TEXT NOT NULL DEFAULT (datetime('now'))
+	)`,
+	`CREATE TABLE IF NOT EXISTS events (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		source      TEXT NOT NULL,
+		payload     TEXT NOT NULL,
+		received_at TEXT NOT NULL DEFAULT (datetime('now'))
 	)`,
 }

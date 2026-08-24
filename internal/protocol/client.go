@@ -1,9 +1,13 @@
 package protocol
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 )
 
@@ -23,28 +27,67 @@ func NewClient(addr string) *Client {
 	}
 }
 
-// Health reports whether a daemon is reachable at the client's address.
-func (c *Client) Health(ctx context.Context) error {
-	return c.do(ctx, http.MethodGet, PathHealth)
-}
-
 // Stop asks the daemon to drain and shut down gracefully.
 func (c *Client) Stop(ctx context.Context) error {
-	return c.do(ctx, http.MethodPost, PathStop)
+	_, err := c.do(ctx, http.MethodPost, PathStop, nil)
+	return err
 }
 
-func (c *Client) do(ctx context.Context, method, path string) error {
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, nil)
+// Health reports whether a daemon is reachable at the client's address.
+func (c *Client) Health(ctx context.Context) error {
+	_, err := c.do(ctx, http.MethodGet, PathHealth, nil)
+	return err
+}
+
+// Submit registers a workflow from a Wafer (YAML). It returns the daemon's
+// response body, which is an empty string on success and a message on failure.
+func (c *Client) Submit(ctx context.Context, wafer []byte) (string, error) {
+	return c.doBody(ctx, http.MethodPost, PathSubmit, wafer)
+}
+
+// Enable enables a workflow's triggers.
+func (c *Client) Enable(ctx context.Context, name string) error {
+	_, err := c.do(ctx, http.MethodPost, PathEnable+"?name="+url.QueryEscape(name), nil)
+	return err
+}
+
+// Disable disables a workflow's triggers.
+func (c *Client) Disable(ctx context.Context, name string) error {
+	_, err := c.do(ctx, http.MethodPost, PathDisable+"?name="+url.QueryEscape(name), nil)
+	return err
+}
+
+// Trigger fires a manual run of a workflow with the given JSON inputs.
+func (c *Client) Trigger(ctx context.Context, name string, inputs []byte) error {
+	_, err := c.do(ctx, http.MethodPost, PathTrigger+"?name="+url.QueryEscape(name), inputs)
+	return err
+}
+
+func (c *Client) do(ctx context.Context, method, path string, body []byte) (string, error) {
+	return c.doBody(ctx, method, path, body)
+}
+
+func (c *Client) doBody(ctx context.Context, method, path string, body []byte) (string, error) {
+	var rdr io.Reader
+	if body != nil {
+		rdr = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, rdr)
 	if err != nil {
-		return err
+		return "", err
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer resp.Body.Close() //nolint:errcheck // best-effort on a read body
+	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("daemon %s failed: %s", path, resp.Status)
+		msg := strings.TrimSpace(string(respBody))
+		if msg == "" {
+			msg = resp.Status
+		}
+		return "", fmt.Errorf("daemon %s failed: %s", path, msg)
 	}
-	return nil
+	return string(respBody), nil
 }

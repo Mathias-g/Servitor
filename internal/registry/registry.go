@@ -130,8 +130,8 @@ var stepTypes = []*StepType{
 }
 
 var triggerTypes = []*TriggerType{
-	{Name: "http_webhook", Desc: "Generic inbound HTTP receiver with configurable HMAC verification.", Group: Core, Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/things"}}}},
-	{Name: "standard_webhook", Desc: "Standard Webhooks-compliant receiver.", Group: Core, Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/std"}}}},
+	{Name: "http_webhook", Desc: "Generic inbound HTTP receiver with configurable HMAC verification.", Group: Core, Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/things"}}, "secret": {Type: "string", Desc: "Secret name to verify the x-servitor-signature HMAC header with."}}},
+	{Name: "standard_webhook", Desc: "Standard Webhooks-compliant receiver.", Group: Core, Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/std"}}, "secret": {Type: "string", Desc: "Secret name to verify the Standard Webhooks signature with."}}},
 	{Name: "grist_webhook", Desc: "Grist-specific receiver.", Group: "grist", Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/grist"}}}},
 	{Name: "github_webhook", Desc: "GitHub-specific receiver.", Group: "github", Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/github"}}}},
 	{Name: "slack_event", Desc: "Slack events (messages, mentions).", Group: "slack", Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/slack"}}}},
