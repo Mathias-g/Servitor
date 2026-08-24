@@ -22,6 +22,16 @@ set up and what to do day to day.
 
        go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 
+   Two notes:
+
+   - **Use golangci-lint v2.x.** v1 cannot handle the Go version in `go.mod`;
+     install v2 (`@latest` resolves to v2 today) or a pinned v2 release.
+   - **`go install` puts the binary in `~/go/bin`, which may not be on your
+     `PATH`.** `make check` invokes `golangci-lint` by name, so if it is not on
+     `PATH` you will see `make: golangci-lint: No such file or directory`. Run
+     `make check` with `PATH="$HOME/go/bin:$PATH"`, or add `~/go/bin` to your
+     `PATH`.
+
 3. **Install pre-commit** (the tool that runs checks when you commit):
 
        go install github.com/pre-commit/pre-commit@latest

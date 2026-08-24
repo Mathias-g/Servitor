@@ -10,7 +10,7 @@ This file governs how context about the codebase (why things are the way they ar
 
 ## The docs
 
-- **SPEC.md**: the full product and behavior spec: what Servitor is, the control-plane (CLI) surface, the Wafer format, how it works end to end. This is the source of truth for what to build and why. (The earlier draft was archived to `old-spec.md`.)
+- **SPEC.md**: the full product and behavior spec: what Servitor is, the control-plane (CLI) surface, the Wafer format, how it works end to end. This is the source of truth for what to build and why. (An earlier draft is in git history under `old-spec.md`; it was deleted and is not part of the current docs.)
 - **PLAN.md**: the implementation plan: build phases in order, dependencies, and what "done" means for each. Follow this when building.
 - **docs/adr/**: the decision log. Each significant decision, with its alternatives and rationale, recorded as a numbered, immutable ADR. This is where the "why" of the design lives.
 - **README.md**: what Servitor is and how to get started.
