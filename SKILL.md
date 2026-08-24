@@ -60,7 +60,8 @@ codes: `0` ok, `1` operation failed, `2` usage error, `3` daemon not running.
 | `servitor run <id>` | Inspect one run and its step outcomes |
 | `servitor cancel <id>` | Stop an in-flight run |
 
-`update` replaces a registered workflow's definition (not yet built).
+`update` replaces a registered workflow's definition (submit without one first
+errors, pointing you to submit).
 
 ## Agent workflow
 

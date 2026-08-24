@@ -104,6 +104,6 @@ How an agent uses Servitor (SPEC: Consuming Servitor as a skill, ADR-0009).
 
 ## Cross-cutting
 
-- [ ] Each CLI command implemented per the SPEC's command set and its mapping to daemon operations. (`update` remains; `runs`/`run <id>`/`cancel` are done.)
+- [x] Each CLI command implemented per the SPEC's command set and its mapping to daemon operations.
 - [x] Exit codes carry the signal (0 ok, 1 operation failed, 2 usage error, 3 daemon not running).
 - [ ] The control plane stays gated and loopback-only throughout (ADR-0009); the deploy path is CI/CD-gated.

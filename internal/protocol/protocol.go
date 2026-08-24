@@ -20,6 +20,9 @@ const (
 	// PathSubmit registers a workflow from a Wafer (body = Wafer YAML).
 	PathSubmit = "/v1/submit"
 
+	// PathUpdate replaces an already-registered workflow (body = Wafer YAML).
+	PathUpdate = "/v1/update"
+
 	// PathEnable and PathDisable toggle a workflow's triggers (query: name).
 	PathEnable  = "/v1/enable"
 	PathDisable = "/v1/disable"

@@ -407,3 +407,52 @@ steps:
     name: a
     command: "printf '{\"ok\":true}'"
 `
+
+// TestDaemonUpdate verifies update replaces a registered workflow and errors
+// when the workflow is not yet registered.
+func TestDaemonUpdate(t *testing.T) {
+	ext := daemonExtPath(t)
+	dbPath := filepath.Join(t.TempDir(), "d.db")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan string, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, Config{
+			Addr:         "127.0.0.1:0",
+			DBPath:       dbPath,
+			ExtPath:      ext,
+			DrainTimeout: 2 * time.Second,
+			Started:      func(a string) { started <- a },
+		})
+	}()
+
+	var cpAddr string
+	select {
+	case cpAddr = <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("daemon did not start")
+	}
+	ctl := protocol.NewClient(cpAddr)
+
+	// Update before submit must fail.
+	if _, err := ctl.Update(ctx, []byte(wfManualYAML)); err == nil {
+		t.Fatal("update before submit should fail")
+	}
+
+	// Submit then update succeeds.
+	if _, err := ctl.Submit(ctx, []byte(wfManualYAML)); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if _, err := ctl.Update(ctx, []byte(wfManualYAML)); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("daemon did not shut down")
+	}
+}

@@ -102,6 +102,7 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc(protocol.PathHealth, s.handleHealth)
 	mux.HandleFunc(protocol.PathStop, s.handleStop)
 	mux.HandleFunc(protocol.PathSubmit, s.handleSubmit)
+	mux.HandleFunc(protocol.PathUpdate, s.handleUpdate)
 	mux.HandleFunc(protocol.PathEnable, s.handleEnable)
 	mux.HandleFunc(protocol.PathDisable, s.handleDisable)
 	mux.HandleFunc(protocol.PathTrigger, s.handleTrigger)
@@ -150,6 +151,16 @@ func (s *Server) handleStop(w http.ResponseWriter, _ *http.Request) {
 // validates the Wafer first; an invalid Wafer is a 422 with the structured
 // validation errors as the body.
 func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
+	s.handleRegister(w, r, false)
+}
+
+// handleUpdate replaces an already-registered workflow. It is like submit but
+// errors when the workflow is not yet registered.
+func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
+	s.handleRegister(w, r, true)
+}
+
+func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request, requireExisting bool) {
 	if s.store == nil {
 		http.Error(w, "no store; run the daemon with --db", http.StatusConflict)
 		return
@@ -170,6 +181,17 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "parse wafer: "+err.Error(), http.StatusBadRequest)
 		return
+	}
+	if requireExisting {
+		existing, gerr := s.store.GetWorkflow(wf.Name)
+		if gerr != nil {
+			http.Error(w, gerr.Error(), http.StatusInternalServerError)
+			return
+		}
+		if existing == nil {
+			http.Error(w, "workflow "+wf.Name+" is not registered; use submit to register it", http.StatusNotFound)
+			return
+		}
 	}
 	if err := s.store.RegisterWorkflow(wf.Name, string(body)); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

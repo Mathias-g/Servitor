@@ -51,7 +51,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "capabilities":
 		return cmdCapabilities(args[1:], stdout, stderr)
 	case "submit":
-		return cmdSubmit(args[1:], stdout, stderr)
+		return cmdRegister(args[1:], false, stdout, stderr)
+	case "update":
+		return cmdRegister(args[1:], true, stdout, stderr)
 	case "enable":
 		return cmdEnable(args[1:], stdout, stderr)
 	case "disable":
@@ -218,28 +220,33 @@ func cmdDryRun(args []string, stdout, stderr io.Writer) int {
 	return exitOK
 }
 
-// cmdSubmit validates and registers a workflow on the daemon (SPEC: CLI,
-// submit). It reads the Wafer, validates locally first so the common cases
-// fail fast without a daemon, then sends it to the daemon to register.
-func cmdSubmit(args []string, stdout, stderr io.Writer) int {
-	addr, rest, code := parseAddr(args, "submit", stderr)
+// cmdRegister validates and registers a workflow on the daemon (SPEC: CLI,
+// submit / update). update (requireExisting) replaces an already-registered
+// workflow. It reads the Wafer, validates locally first so the common cases
+// fail fast without a daemon, then sends it to the daemon.
+func cmdRegister(args []string, requireExisting bool, stdout, stderr io.Writer) int {
+	name := "submit"
+	if requireExisting {
+		name = "update"
+	}
+	addr, rest, code := parseAddr(args, name, stderr)
 	if code != exitOK {
 		return code
 	}
 	if len(rest) != 1 {
-		_, _ = fmt.Fprintf(stderr, "servitor: usage: servitor submit <wafer>\n")
+		_, _ = fmt.Fprintf(stderr, "servitor: usage: servitor %s <wafer>\n", name)
 		return exitUsage
 	}
 	path := rest[0]
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "servitor: submit: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "servitor: %s: %v\n", name, err)
 		return exitFailure
 	}
 	res := wafer.Validate(data)
 	if !res.Valid() {
-		_, _ = fmt.Fprintf(stderr, "servitor: submit: %d error(s)\n", len(res.Errors))
+		_, _ = fmt.Fprintf(stderr, "servitor: %s: %d error(s)\n", name, len(res.Errors))
 		return exitFailure
 	}
 
@@ -250,13 +257,20 @@ func cmdSubmit(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "servitor: daemon not running at %s\n", addr)
 		return exitNoDaemon
 	}
-	if msg, err := c.Submit(ctx, data); err != nil {
-		_, _ = fmt.Fprintf(stderr, "servitor: submit: %v\n", err)
+	var msg string
+	if requireExisting {
+		msg, err = c.Update(ctx, data)
+	} else {
+		msg, err = c.Submit(ctx, data)
+	}
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: %s: %v\n", name, err)
 		return exitFailure
-	} else if msg != "" {
+	}
+	if msg != "" {
 		_, _ = fmt.Fprint(stdout, msg)
 	}
-	_, _ = fmt.Fprintf(stdout, "servitor: submitted %s\n", path)
+	_, _ = fmt.Fprintf(stdout, "servitor: %sd %s\n", name, path)
 	return exitOK
 }
 

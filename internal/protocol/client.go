@@ -45,6 +45,11 @@ func (c *Client) Submit(ctx context.Context, wafer []byte) (string, error) {
 	return c.doBody(ctx, http.MethodPost, PathSubmit, wafer)
 }
 
+// Update replaces an already-registered workflow from a Wafer (YAML).
+func (c *Client) Update(ctx context.Context, wafer []byte) (string, error) {
+	return c.doBody(ctx, http.MethodPost, PathUpdate, wafer)
+}
+
 // Enable enables a workflow's triggers.
 func (c *Client) Enable(ctx context.Context, name string) error {
 	_, err := c.do(ctx, http.MethodPost, PathEnable+"?name="+url.QueryEscape(name), nil)

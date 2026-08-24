@@ -34,6 +34,13 @@ func TestSubmitMissingFileFails(t *testing.T) {
 	}
 }
 
+func TestUpdateUsageError(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := Run([]string{"update"}, &out, &errOut); code != exitUsage {
+		t.Fatalf("update with no arg: exit code %d, want %d", code, exitUsage)
+	}
+}
+
 func TestTriggerUsageError(t *testing.T) {
 	var out, errOut bytes.Buffer
 	if code := Run([]string{"trigger"}, &out, &errOut); code != exitUsage {
