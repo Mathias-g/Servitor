@@ -285,6 +285,28 @@ Step types come in three kinds, roughly from most general to most specific:
 - `singer-tap`. Run a Singer tap with config, capture records and state.
 - `singer-target`. Run a Singer target consuming records.
 
+#### MCP integration
+
+- `mcp-call`. Invoke one named tool on one named MCP server as a subprocess
+  (ADR-0015). An MCP server is a subprocess that exposes named tools, each with
+  a JSON Schema for its input, over stdio. The step runs the server with a
+  filtered secret env, sends a single `tools/call` request on stdin, reads the
+  structured JSON response on stdout, and exits. Fields: `server` (which MCP
+  server to run), `tool` (which named tool), and `input` (the tool arguments).
+  Server packages are pinned the same way Singer taps are.
+
+  `mcp-call` supports both the original MCP protocol (the `initialize` /
+  `initialized` handshake) and the stateless revision that carries protocol
+  version and capabilities inline in a `_meta` field, detecting which a server
+  expects at discovery time and caching it. Tool schemas are discovered from the
+  server once during a `capabilities` refresh and cached, not queried on every
+  step execution. MCP tool results (an `isError` flag plus content blocks) map
+  onto Servitor's structured validation error format.
+
+  MCP is an integration mechanism for this step type, unrelated to the
+  control-plane question of whether Servitor's own daemon interface is ever
+  exposed over MCP, which stays out of scope (ADR-0005).
+
 #### Curated integration helpers
 
 Small wrappers around official SDKs for the services most commonly used. Each one is well-typed, well-documented, and ships with appropriate triggers and actions.
@@ -295,9 +317,13 @@ Initial set (subject to your stack's priorities):
 - `slack`. Post messages, read events.
 - `github`. Issues, PRs, releases.
 - `email`. Send, parse incoming.
-- `atomic`. Knowledge base read/write (designed alongside this runner).
 
-Each helper uses varlock-injected secrets for auth and exposes its actions/triggers via `servitor capabilities`.
+(Atomic is reached via the `mcp-call` step type against its native MCP server
+rather than a hand-written helper, since it is low-frequency and the server is
+self-hostable alongside the runner.)
+
+Each helper uses varlock-injected secrets for auth and exposes its
+actions/triggers via `servitor capabilities`.
 
 **What counts as an integration.** The "X integrations" number in the tagline counts services, not mechanisms. Any service the runner can talk to via any dedicated mechanism (a Singer tap, a Singer target, a trigger type, a curated helper, or any combination) counts as one integration. Slack having both a `slack_event` trigger and a `slack` helper is one integration, not two.
 

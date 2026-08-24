@@ -102,6 +102,20 @@ How an agent uses Servitor (SPEC: Consuming Servitor as a skill, ADR-0009).
 
 **Done when:** downloading and running the binary works with nothing else installed. (The runner is a single Go binary built with `make build`/`make release`; the only runtime dependency is the operator-supplied Honker extension, per ADR-0011, and varlock for secrets.)
 
+## Phase 11: MCP integration (mcp-call)
+
+A standards-based integration path alongside the curated helpers (ADR-0015). The curated helpers remain; `mcp-call` reaches the long tail of self-hostable MCP servers.
+
+- [ ] `mcp-call` step type: spawn the named MCP server as a subprocess with a filtered secret env, send one `tools/call` over stdio, read the structured JSON response, and exit (client-mode executor, distinct from the singer run-and-read executor).
+- [ ] Capability discovery: call the server's tool-listing method (`tools/list` / `server/discover`) once during a capabilities refresh and cache the per-tool schemas, not per step execution.
+- [ ] Support both MCP protocol versions: probe once at discovery, cache the detected mode, speak the old `initialize` handshake or the new stateless `_meta`-carrying protocol accordingly.
+- [ ] Map MCP tool results (the `isError` flag and content blocks) onto Servitor's structured validation error format (`path`, `code`, `message`, `suggestion`).
+- [ ] Pin server package versions the same way Singer taps are pinned.
+
+**Done when:** an agent can discover an MCP server's tools via `servitor capabilities`, author an `mcp-call` step, and run it as a subprocess with filtered secrets and correct error mapping, against both old- and new-spec servers.
+
+**v1 consumers:** Atomic via `mcp-call`; Grist, Slack, GitHub, email on curated helpers.
+
 ## Cross-cutting
 
 - [x] Each CLI command implemented per the SPEC's command set and its mapping to daemon operations.

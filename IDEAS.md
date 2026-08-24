@@ -56,5 +56,27 @@ How to check later: `go list -m -u github.com/russellromney/honker-go`, or look
 for a tagged honker-go release newer than `v0.0.0-20260502020136-bdbe80df13ef`
 that ships `extension.go`.
 
+## OpenAPI-backed integration steps (parked, not a step type in v1)
+
+Discussed alongside the `mcp-call` decision (ADR-0015) and deliberately not
+built. The idea: an OpenAPI document already carries an operation id, a request
+schema, and a response shape, so a step type could drive integrations from a
+published spec instead of a hand-written helper.
+
+Why it was rejected for v1: an OpenAPI document is not an executable. Singer and
+MCP multiply integrations because each has a prebuilt subprocess to run (a tap,
+a server); OpenAPI has none, so it does not multiply integrations, it multiplies
+the "call-and-map glue" the operator must write per operation. It also breaks
+the subprocess isolation model (ADR-0008), since there is no subprocess to run
+the call in. It largely overlaps the curated helpers' niche with worse
+ergonomics.
+
+What remains attractive, cheap, and worth doing independently: OpenAPI 3.1 added
+a top-level `webhooks` object describing the shape of a payload a service sends
+you, in the same format as a regular operation. That does not replace Standard
+Webhooks (which verifies the envelope) but is a standard place to describe what
+is inside one, for services that publish it. This could enrich `capabilities`
+without a new executor.
+
 ## (Add more ideas here as they come up; delete them when they become ADRs or
 ## are discarded.)
