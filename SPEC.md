@@ -409,7 +409,7 @@ Things deliberately out of scope for v1, kept here so the design doesn't quietly
 
 ## Status
 
-Early development, before implementation begins. The runner is written in Go. The high-level architecture is sketched but not settled. Open questions, to be resolved as implementation progresses and tracked in ADRs in the `docs/adr/` directory:
+Early development. The daemon lifecycle, loopback control protocol, Wafer model and structured validation, and capability discovery are built (`servitor run`, `stop`, `dry-run`, `capabilities`). The runner's durable execution (Honker queue), subprocess step execution, triggers, and varlock integration are not yet built. Open questions, to be resolved as implementation progresses and tracked in ADRs in the `docs/adr/` directory:
 
 - Worker concurrency limits.
 - The exact shape of the `dedupe_key` expression language.
