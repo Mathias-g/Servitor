@@ -38,5 +38,23 @@ Open question for later: decide between a Wafer-driven publish and a plain CI
 step. The Wafer version is the more interesting default; a plain CI step is the
 simpler fallback.
 
+## Adopt honker's `ExtensionPath()` locator when a newer binding is published
+
+Honker 0.5.0 (PR #100, "extension reach for every binding") added a Go locator,
+`honker.ExtensionPath()`, that resolves the extension from `HONKER_EXTENSION_PATH`
+(falling back to next to the binary and the working directory). We renamed our
+env var to match (`HONKER_EXTENSION_PATH`), but the newest `honker-go` on the Go
+proxy is still the pre-0.5.0 version we pin, which has no `ExtensionPath()`.
+
+Next time we check in on honker-go versions, if a newer binding is published
+that has `ExtensionPath()`, bump to it and swap our hand-rolled path resolution
+in `internal/honker` for the locator. The env var already matches, so the change
+should be small and local to that package. This also pulls in the 0.5.0 WAL-open
+retry fix (#102).
+
+How to check later: `go list -m -u github.com/russellromney/honker-go`, or look
+for a tagged honker-go release newer than `v0.0.0-20260502020136-bdbe80df13ef`
+that ships `extension.go`.
+
 ## (Add more ideas here as they come up; delete them when they become ADRs or
 ## are discarded.)
