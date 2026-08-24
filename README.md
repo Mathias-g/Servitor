@@ -67,6 +67,7 @@ The runner composes well-defined, maintained pieces, each doing a narrow job:
 ## The docs
 
 - **SPEC.md**: the full product and behavior spec: what Servitor is, the control-plane (CLI) surface, the Wafer format, and how it works end to end. The source of truth for what to build and why.
+- **PLAN.md**: the implementation plan: build phases in order, dependencies, and what "done" means for each.
 - **AGENTS.md**: how an agent (or developer) works in this repository: where context lives, the decision log, and the process.
 - **docs/adr/**: the decision log. Each significant decision recorded as a numbered, immutable ADR.
 
