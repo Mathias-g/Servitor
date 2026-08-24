@@ -27,4 +27,11 @@ const (
 	// PathTrigger fires a manual run of a workflow (query: name; body = JSON
 	// inputs).
 	PathTrigger = "/v1/trigger"
+
+	// PathRuns lists run history (GET). PathRun inspects one run (query: id).
+	PathRuns = "/v1/runs"
+	PathRun  = "/v1/run"
+
+	// PathCancel cancels an in-flight run (query: id).
+	PathCancel = "/v1/cancel"
 )

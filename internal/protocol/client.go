@@ -63,6 +63,22 @@ func (c *Client) Trigger(ctx context.Context, name string, inputs []byte) error 
 	return err
 }
 
+// ListRuns returns the run history as raw JSON text from the daemon.
+func (c *Client) ListRuns(ctx context.Context) (string, error) {
+	return c.do(ctx, http.MethodGet, PathRuns, nil)
+}
+
+// GetRun returns one run (with its step outcomes) as raw JSON text from the daemon.
+func (c *Client) GetRun(ctx context.Context, id string) (string, error) {
+	return c.do(ctx, http.MethodGet, PathRun+"?id="+url.QueryEscape(id), nil)
+}
+
+// Cancel cancels an in-flight run.
+func (c *Client) Cancel(ctx context.Context, id string) error {
+	_, err := c.do(ctx, http.MethodPost, PathCancel+"?id="+url.QueryEscape(id), nil)
+	return err
+}
+
 func (c *Client) do(ctx context.Context, method, path string, body []byte) (string, error) {
 	return c.doBody(ctx, method, path, body)
 }

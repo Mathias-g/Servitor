@@ -136,6 +136,14 @@ func (w *Worker) handle(ctx context.Context, claimed *honker.Job) error {
 		return fmt.Errorf("worker: decode job %d: %w", claimed.ID, err)
 	}
 
+	// A cancelled (or already finished) run must not continue: ack the job
+	// without running it or enqueueing its successors. This is what actually
+	// stops a cancelled chain even if a step was already claimed.
+	if status, _ := w.store.RunStatus(sj.RunID); status != "" && status != honker.RunRunning {
+		_, _ = claimed.Ack()
+		return nil
+	}
+
 	result, ran, err := w.runStep(ctx, sj)
 	if err != nil {
 		w.recordFailure(sj, claimed, err)
@@ -162,6 +170,11 @@ func (w *Worker) handle(ctx context.Context, claimed *honker.Job) error {
 	}
 	if err := w.store.CommitStepAtom(atom); err != nil {
 		return fmt.Errorf("worker: commit step %s (job %d): %w", sj.StepID, claimed.ID, err)
+	}
+
+	// The last step in a run's chain (no downstream) marks the run done.
+	if len(sj.Downstream) == 0 {
+		_ = w.store.SetRunStatus(sj.RunID, honker.RunCompleted)
 	}
 	return nil
 }
@@ -222,5 +235,9 @@ func (w *Worker) recordFailure(sj StepJob, claimed *honker.Job, cause error) {
 	_ = w.store.CommitStepAtom(atom)
 	if claimed != nil {
 		_, _ = claimed.Retry(0, cause.Error())
+	}
+	// A failing final step (no downstream) marks the run failed.
+	if len(sj.Downstream) == 0 {
+		_ = w.store.SetRunStatus(sj.RunID, honker.RunFailed)
 	}
 }

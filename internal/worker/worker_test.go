@@ -294,3 +294,61 @@ func TestVisibilityTimeoutReclaimsUnackedClaim(t *testing.T) {
 		t.Fatalf("reclaimed id %d, want the original %d", reclaimed.ID, job.ID)
 	}
 }
+
+func TestCancelledRunIsSkippedByWorker(t *testing.T) {
+	w, store, q := newWorker(t, 30, 3, nil)
+	if err := store.CreateRun("run-cancel", "wf"); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if err := store.CancelRun("run-cancel"); err != nil {
+		t.Fatalf("CancelRun: %v", err)
+	}
+
+	if _, err := q.Enqueue(StepJob{
+		RunID: "run-cancel", WorkflowID: "wf", StepID: "a", StepName: "a",
+		StepType: "shell", Command: shellCmd(`printf '{"ok":true}'`),
+	}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	job, err := q.ClaimOne("worker-1")
+	if err != nil || job == nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := w.handle(context.Background(), job); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+
+	// The step must not have run: no result written, and the job acked.
+	if res := claimResultJSON(t, store, "run-cancel", "a"); res != nil {
+		t.Fatalf("cancelled run wrote a result: %v", res)
+	}
+	if again, _ := q.ClaimOne("worker-1"); again != nil {
+		t.Fatalf("cancelled job not acked (id %d)", again.ID)
+	}
+}
+
+func TestRunMarkedCompletedAfterLastStep(t *testing.T) {
+	w, store, q := newWorker(t, 30, 3, nil)
+	if err := store.CreateRun("run-done", "wf"); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+
+	// A single-step run: the only step has no downstream, so completing it
+	// marks the run completed.
+	if _, err := q.Enqueue(StepJob{
+		RunID: "run-done", WorkflowID: "wf", StepID: "a", StepName: "a",
+		StepType: "shell", Command: shellCmd(`printf '{"ok":true}'`),
+	}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	job, err := q.ClaimOne("worker-1")
+	if err != nil || job == nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := w.handle(context.Background(), job); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if st, _ := store.RunStatus("run-done"); st != honker.RunCompleted {
+		t.Fatalf("status = %q, want completed", st)
+	}
+}

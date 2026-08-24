@@ -48,6 +48,24 @@ func TestEnableUsageError(t *testing.T) {
 	}
 }
 
+func TestRunsNoDaemon(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := Run([]string{"runs", "--addr", "127.0.0.1:1"}, &out, &errOut); code != exitNoDaemon {
+		t.Fatalf("runs: exit code %d, want %d (daemon not running)", code, exitNoDaemon)
+	}
+}
+
+func TestRunDetailUsageError(t *testing.T) {
+	var out, errOut bytes.Buffer
+	// `run` with a run id but no daemon -> daemon-not-running exit code.
+	if code := Run([]string{"run", "--addr", "127.0.0.1:1", "run-1"}, &out, &errOut); code != exitNoDaemon {
+		t.Fatalf("run <id> with no daemon: exit code %d, want %d", code, exitNoDaemon)
+	}
+	if code := Run([]string{"cancel"}, &out, &errOut); code != exitUsage {
+		t.Fatalf("cancel with no id: exit code %d, want %d", code, exitUsage)
+	}
+}
+
 func TestStopNoDaemon(t *testing.T) {
 	// Point stop at an unused loopback port so no real daemon is disturbed.
 	var out, errOut bytes.Buffer

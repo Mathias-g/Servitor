@@ -251,4 +251,10 @@ var schemaStmts = []string{
 		payload     TEXT NOT NULL,
 		received_at TEXT NOT NULL DEFAULT (datetime('now'))
 	)`,
+	`CREATE TABLE IF NOT EXISTS runs (
+		run_id        TEXT PRIMARY KEY,
+		workflow_name TEXT NOT NULL,
+		status        TEXT NOT NULL,
+		created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+	)`,
 }

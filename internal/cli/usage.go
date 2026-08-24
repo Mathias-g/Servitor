@@ -40,6 +40,7 @@ Flags:
 
 The daemon binds 127.0.0.1 only and the control plane is loopback-gated
 (ADR-0009). 'run', 'stop', 'dry-run', 'capabilities', 'submit', 'enable',
-'disable', and 'trigger' are implemented; the rest are not built yet.
+'disable', 'trigger', 'runs', 'run <id>', and 'cancel' are implemented;
+'update' is not built yet.
 `)
 }

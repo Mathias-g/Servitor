@@ -6,11 +6,13 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -302,6 +304,104 @@ on:
   - type: standard_webhook
     path: /hooks/demo
     secret: WH_SECRET
+steps:
+  - type: shell
+    name: a
+    command: "printf '{\"ok\":true}'"
+`
+
+// TestDaemonRunsAndCancel verifies the runs/run/cancel control-plane surface:
+// submit a manual workflow, trigger it, list runs, and cancel a run.
+func TestDaemonRunsAndCancel(t *testing.T) {
+	ext := daemonExtPath(t)
+	dbPath := filepath.Join(t.TempDir(), "d.db")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan string, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, Config{
+			Addr:         "127.0.0.1:0",
+			DBPath:       dbPath,
+			ExtPath:      ext,
+			Workers:      1,
+			DrainTimeout: 2 * time.Second,
+			Started:      func(a string) { started <- a },
+		})
+	}()
+
+	var cpAddr string
+	select {
+	case cpAddr = <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("daemon did not start")
+	}
+	ctl := protocol.NewClient(cpAddr)
+
+	if _, err := ctl.Submit(ctx, []byte(wfManualYAML)); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if err := ctl.Trigger(ctx, "demo", []byte(`{}`)); err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+
+	// Find the run id from runs history.
+	var runsBody string
+	deadline := time.After(5 * time.Second)
+	for {
+		var err error
+		runsBody, err = ctl.ListRuns(ctx)
+		if err != nil {
+			t.Fatalf("runs: %v", err)
+		}
+		if runsBody != "[]" && runsBody != "null" && runsBody != "" {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("no runs appeared")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	var runs []struct {
+		ID     string `json:"ID"`
+		Status string `json:"Status"`
+	}
+	if err := json.Unmarshal([]byte(runsBody), &runs); err != nil {
+		t.Fatalf("decode runs %q: %v", runsBody, err)
+	}
+	if len(runs) == 0 {
+		t.Fatal("expected at least one run")
+	}
+	runID := runs[0].ID
+
+	// Inspect the run.
+	body, err := ctl.GetRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !strings.Contains(body, runID) {
+		t.Fatalf("run body %q missing id %s", body, runID)
+	}
+
+	// Cancel it (idempotent enough; if it already completed, cancel still works).
+	if err := ctl.Cancel(ctx, runID); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("daemon did not shut down")
+	}
+}
+
+const wfManualYAML = `
+name: demo
+on:
+  - type: manual
 steps:
   - type: shell
     name: a

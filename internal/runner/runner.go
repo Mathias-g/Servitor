@@ -85,9 +85,9 @@ func FromWafer(w *wafer.Wafer, event map[string]any) (*worker.StepJob, error) {
 	return head, nil
 }
 
-// StartRun builds a run's head job and enqueues it onto the queue, assigning
-// it a fresh run id to every step in the chain. It returns the run id and the
-// head job.
+// StartRun builds a run's head job, records the run, and enqueues the head
+// onto the queue, assigning a fresh run id to every step in the chain. It
+// returns the run id and the head job.
 func StartRun(store *honker.Store, queue *honker.Queue, w *wafer.Wafer, event map[string]any, runID string) (string, error) {
 	head, err := FromWafer(w, event)
 	if err != nil {
@@ -97,6 +97,9 @@ func StartRun(store *honker.Store, queue *honker.Queue, w *wafer.Wafer, event ma
 		return "", nil
 	}
 	assignRunID(head, runID)
+	if err := store.CreateRun(runID, w.Name); err != nil {
+		return "", err
+	}
 	if _, err := queue.Enqueue(head); err != nil {
 		return "", fmt.Errorf("run: enqueue head step: %w", err)
 	}

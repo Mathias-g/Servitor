@@ -105,6 +105,9 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc(protocol.PathEnable, s.handleEnable)
 	mux.HandleFunc(protocol.PathDisable, s.handleDisable)
 	mux.HandleFunc(protocol.PathTrigger, s.handleTrigger)
+	mux.HandleFunc(protocol.PathRuns, s.handleRuns)
+	mux.HandleFunc(protocol.PathRun, s.handleRun)
+	mux.HandleFunc(protocol.PathCancel, s.handleCancel)
 	s.httpSrv = &http.Server{Handler: mux}
 	return s
 }
@@ -230,6 +233,80 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = io.WriteString(w, "ok\n")
+}
+
+// handleRuns returns the run history as JSON.
+func (s *Server) handleRuns(w http.ResponseWriter, _ *http.Request) {
+	if s.store == nil {
+		http.Error(w, "no store; run the daemon with --db", http.StatusConflict)
+		return
+	}
+	runs, err := s.store.ListRuns()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, runs)
+}
+
+// handleRun returns one run and its step outcomes as JSON.
+func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		http.Error(w, "no store; run the daemon with --db", http.StatusConflict)
+		return
+	}
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Error(w, "missing id", http.StatusBadRequest)
+		return
+	}
+	run, err := s.store.GetRun(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if run == nil {
+		http.Error(w, "run not found", http.StatusNotFound)
+		return
+	}
+	steps, err := s.store.RunSteps(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"run": run, "steps": steps})
+}
+
+// handleCancel cancels an in-flight run.
+func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		http.Error(w, "no store; run the daemon with --db", http.StatusConflict)
+		return
+	}
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Error(w, "missing id", http.StatusBadRequest)
+		return
+	}
+	run, err := s.store.GetRun(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if run == nil {
+		http.Error(w, "run not found", http.StatusNotFound)
+		return
+	}
+	if err := s.store.CancelRun(id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_, _ = io.WriteString(w, "ok\n")
+}
+
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 // Run starts the daemon on cfg.Addr and blocks until it is shut down, either by

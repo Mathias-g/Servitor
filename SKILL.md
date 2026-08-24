@@ -56,8 +56,11 @@ codes: `0` ok, `1` operation failed, `2` usage error, `3` daemon not running.
 | `servitor trigger <name> [json]` | Fire a manual run with optional JSON inputs |
 | `servitor run` | Boot the runner daemon (self-heals under varlock) |
 | `servitor stop` | Drain and shut the daemon down |
+| `servitor runs` | List run history |
+| `servitor run <id>` | Inspect one run and its step outcomes |
+| `servitor cancel <id>` | Stop an in-flight run |
 
-`runs`, `run <id>`, and `cancel <id>` are the read-only/operational surface.
+`update` replaces a registered workflow's definition (not yet built).
 
 ## Agent workflow
 

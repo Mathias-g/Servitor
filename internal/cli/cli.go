@@ -43,7 +43,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		printUsage(stdout)
 		return exitOK
 	case "run":
-		return cmdRun(args[1:], stdout, stderr)
+		return cmdRunDispatch(args[1:], stdout, stderr)
 	case "stop":
 		return cmdStop(args[1:], stdout, stderr)
 	case "dry-run":
@@ -58,6 +58,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return cmdDisable(args[1:], stdout, stderr)
 	case "trigger":
 		return cmdTrigger(args[1:], stdout, stderr)
+	case "runs":
+		return cmdRuns(args[1:], stdout, stderr)
+	case "cancel":
+		return cmdCancel(args[1:], stdout, stderr)
 	}
 
 	// The remaining commands are daemon operations scheduled for later phases.
@@ -330,6 +334,104 @@ func cmdTrigger(args []string, stdout, stderr io.Writer) int {
 		return exitFailure
 	}
 	_, _ = fmt.Fprintf(stdout, "servitor: triggered %s\n", name)
+	return exitOK
+}
+
+// cmdRunDispatch disambiguates `servitor run`: it parses with the boot flag
+// set so flag values (like `--db PATH`) are consumed, then boots the daemon
+// when no positional run id remains, or inspects that run when one does (SPEC:
+// CLI, `run <id>`).
+func cmdRunDispatch(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.String("addr", protocol.DefaultAddr, "")
+	fs.String("db", "", "")
+	fs.String("webhook-addr", "", "")
+	if err := fs.Parse(args); err != nil {
+		// A flag parsing error here is not diagnostic; fall through to the real
+		// command which reports it.
+		return cmdRun(args, stdout, stderr)
+	}
+	if fs.NArg() > 0 {
+		return cmdRunDetail(args, stdout, stderr)
+	}
+	return cmdRun(args, stdout, stderr)
+}
+
+// cmdRuns lists run history.
+func cmdRuns(args []string, stdout, stderr io.Writer) int {
+	addr, rest, code := parseAddr(args, "runs", stderr)
+	if code != exitOK {
+		return code
+	}
+	if len(rest) > 0 {
+		_, _ = fmt.Fprintf(stderr, "servitor: runs: unexpected argument %q\n", rest[0])
+		return exitUsage
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c := protocol.NewClient(addr)
+	if err := c.Health(ctx); err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: daemon not running at %s\n", addr)
+		return exitNoDaemon
+	}
+	body, err := c.ListRuns(ctx)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: runs: %v\n", err)
+		return exitFailure
+	}
+	_, _ = fmt.Fprintln(stdout, body)
+	return exitOK
+}
+
+// cmdRunDetail inspects one run and its step outcomes.
+func cmdRunDetail(args []string, stdout, stderr io.Writer) int {
+	addr, rest, code := parseAddr(args, "run", stderr)
+	if code != exitOK {
+		return code
+	}
+	if len(rest) != 1 {
+		_, _ = fmt.Fprintf(stderr, "servitor: usage: servitor run <id>\n")
+		return exitUsage
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c := protocol.NewClient(addr)
+	if err := c.Health(ctx); err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: daemon not running at %s\n", addr)
+		return exitNoDaemon
+	}
+	body, err := c.GetRun(ctx, rest[0])
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: run: %v\n", err)
+		return exitFailure
+	}
+	_, _ = fmt.Fprintln(stdout, body)
+	return exitOK
+}
+
+// cmdCancel stops an in-flight run.
+func cmdCancel(args []string, stdout, stderr io.Writer) int {
+	addr, rest, code := parseAddr(args, "cancel", stderr)
+	if code != exitOK {
+		return code
+	}
+	if len(rest) != 1 {
+		_, _ = fmt.Fprintf(stderr, "servitor: usage: servitor cancel <id>\n")
+		return exitUsage
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c := protocol.NewClient(addr)
+	if err := c.Health(ctx); err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: daemon not running at %s\n", addr)
+		return exitNoDaemon
+	}
+	if err := c.Cancel(ctx, rest[0]); err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: cancel: %v\n", err)
+		return exitFailure
+	}
+	_, _ = fmt.Fprintf(stdout, "servitor: cancelled %s\n", rest[0])
 	return exitOK
 }
 
