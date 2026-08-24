@@ -2,7 +2,7 @@
 
 Build order with dependencies and a clear "done" for each phase. The design lives in [SPEC.md](SPEC.md); the decisions live in [docs/adr/](docs/adr/); this is just the sequencing.
 
-Current state: the Go project is scaffolded (module, CLI skeleton, `version`/`help` working), the enforcement gates are wired (`make check`, adrlint, pre-commit, CI), and Phase 1 (daemon + loopback control protocol, `run`/`stop`) is built. The runner has no workflow state yet.
+Current state: the Go project is scaffolded, the enforcement gates are wired (`make check`, adrlint, pre-commit, CI), and Phase 1 (daemon + loopback control protocol, `run`/`stop`) is built. Phase 2 (Wafer model and structured validation) is built: `servitor dry-run <wafer>` validates and reports the structured error shape. The runner has no workflow state yet.
 
 ## Phase 1: Daemon and control protocol (foundation)
 
@@ -19,11 +19,11 @@ Everything else runs inside the daemon and is reached through the control protoc
 
 The artifact. Everything else reads, validates, and executes Wafers.
 
-- [ ] A Go representation of the Wafer (name, `on:` triggers, `steps:`).
-- [ ] The JSON Schema for the Wafer format, and per-step and per-trigger JSON Schemas.
-- [ ] Structured validation: errors returned with `path` (JSON Pointer), stable `code`, and `suggestion`; multiple errors at once; `warnings` for things like a side-effecting step missing `dedupe_key` (SPEC: Structured validation errors).
+- [x] A Go representation of the Wafer (name, `on:` triggers, `steps:`).
+- [x] The JSON Schema for the Wafer format, and per-step and per-trigger JSON Schemas (generated from the registry; surfaced to agents by `capabilities` in Phase 3).
+- [x] Structured validation: errors returned with `path` (JSON Pointer), stable `code`, and `suggestion`; multiple errors at once; `warnings` for things like a side-effecting step missing `dedupe_key` (SPEC: Structured validation errors).
 
-**Done when:** a malformed Wafer produces the structured error shape from the SPEC, and `servitor dry-run` can validate a Wafer against the schema.
+**Done when:** a malformed Wafer produces the structured error shape from the SPEC, and `servitor dry-run` can validate a Wafer against the schema. (`dry-run` currently validates locally; full resolution through the daemon is Phase 4.)
 
 ## Phase 3: Capability discovery
 

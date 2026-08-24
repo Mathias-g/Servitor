@@ -2,14 +2,17 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"time"
 
 	"github.com/Mathias-g/Servitor/internal/daemon"
 	"github.com/Mathias-g/Servitor/internal/protocol"
+	"github.com/Mathias-g/Servitor/internal/wafer"
 )
 
 // Exit codes are the CLI's signal to scripts and to the pipeline (SPEC:
@@ -40,10 +43,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return cmdRun(args[1:], stdout, stderr)
 	case "stop":
 		return cmdStop(args[1:], stdout, stderr)
+	case "dry-run":
+		return cmdDryRun(args[1:], stdout, stderr)
 	}
 
 	// The remaining commands are daemon operations scheduled for later phases.
-	_, _ = fmt.Fprintf(stderr, "servitor: command %q is not implemented yet (this phase builds run and stop only)\n", args[0])
+	_, _ = fmt.Fprintf(stderr, "servitor: command %q is not implemented yet (this phase builds run, stop, and dry-run)\n", args[0])
 	return exitFailure
 }
 
@@ -108,5 +113,38 @@ func cmdStop(args []string, stdout, stderr io.Writer) int {
 		return exitFailure
 	}
 	_, _ = fmt.Fprintf(stdout, "servitor: stop requested; daemon draining and shutting down\n")
+	return exitOK
+}
+
+// cmdDryRun validates a Wafer without executing it (SPEC: Phase 2; full
+// resolution through the daemon arrives in Phase 4). It prints the structured
+// validation result as JSON and exits non-zero if there are blocking errors.
+func cmdDryRun(args []string, stdout, stderr io.Writer) int {
+	if len(args) != 1 {
+		_, _ = fmt.Fprintf(stderr, "servitor: usage: servitor dry-run <wafer>\n")
+		return exitUsage
+	}
+	path := args[0]
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: dry-run: %v\n", err)
+		return exitFailure
+	}
+
+	res := wafer.Validate(data)
+
+	enc := json.NewEncoder(stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(res); err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: dry-run: %v\n", err)
+		return exitFailure
+	}
+
+	if !res.Valid() {
+		_, _ = fmt.Fprintf(stderr, "servitor: dry-run: %d error(s)\n", len(res.Errors))
+		return exitFailure
+	}
+	_, _ = fmt.Fprintf(stderr, "servitor: dry-run: valid\n")
 	return exitOK
 }
