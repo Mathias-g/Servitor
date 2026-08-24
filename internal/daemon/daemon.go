@@ -21,6 +21,7 @@ import (
 
 	"github.com/Mathias-g/Servitor/internal/honker"
 	"github.com/Mathias-g/Servitor/internal/protocol"
+	"github.com/Mathias-g/Servitor/internal/worker"
 )
 
 // ErrNonLoopback is returned when the daemon is asked to bind a non-loopback
@@ -44,6 +45,28 @@ type Config struct {
 	// DrainTimeout is how long a stop waits for in-flight work before it is
 	// hard-stopped.
 	DrainTimeout time.Duration
+
+	// QueueName is the queue the runner's worker loop claims steps from.
+	// Empty means "steps".
+	QueueName string
+	// VisibilityTimeoutS is how long a worker's claim lasts before it is
+	// re-issued to another worker after a crash (SPEC: Execution model step 9).
+	// Zero means 30s.
+	VisibilityTimeoutS int
+	// MaxAttempts is how many times a step is tried before it is dead-lettered.
+	// Zero means 3.
+	MaxAttempts int
+	// Secrets are the runner's resolved secrets (name to value). Only the
+	// secrets a step declares are passed to its subprocess. In later phases
+	// this comes from varlock.
+	Secrets map[string]string
+	// Workers is how many worker loops to run. When DBPath is set and Workers
+	// is zero, one worker runs; set Workers to 0 with DisableRunner to run
+	// the daemon without executing steps.
+	Workers int
+	// DisableRunner stops the worker loop and scheduler from starting even
+	// when a DBPath is set.
+	DisableRunner bool
 
 	// Started, if set, is called once the listener is bound and the server is
 	// serving. It lets the caller report readiness only after a real bind, not
@@ -114,6 +137,18 @@ func Run(ctx context.Context, cfg Config) error {
 	if cfg.DrainTimeout <= 0 {
 		cfg.DrainTimeout = 30 * time.Second
 	}
+	if cfg.QueueName == "" {
+		cfg.QueueName = "steps"
+	}
+	if cfg.VisibilityTimeoutS <= 0 {
+		cfg.VisibilityTimeoutS = 30
+	}
+	if cfg.MaxAttempts <= 0 {
+		cfg.MaxAttempts = 3
+	}
+	if cfg.Workers <= 0 {
+		cfg.Workers = 1
+	}
 
 	if err := checkLoopback(cfg.Addr); err != nil {
 		return err
@@ -141,6 +176,26 @@ func Run(ctx context.Context, cfg Config) error {
 	if cfg.Started != nil {
 		cfg.Started(lis.Addr().String())
 	}
+
+	// Start the runner's worker loop(s) and the cron scheduler when the daemon
+	// owns a store and execution is enabled. They stop when the daemon shuts
+	// down; in-flight steps drain as claims expire (SPEC: Graceful shutdown).
+	var cancelRunner context.CancelFunc
+	if srv.store != nil && !cfg.DisableRunner {
+		var rctx context.Context
+		rctx, cancelRunner = context.WithCancel(context.Background())
+		queue := srv.store.Queue(cfg.QueueName, cfg.VisibilityTimeoutS, cfg.MaxAttempts)
+		for i := 0; i < cfg.Workers; i++ {
+			w := worker.New(srv.store, queue, fmt.Sprintf("worker-%d", i), worker.Config{Secrets: cfg.Secrets})
+			go func() { _ = w.Run(rctx) }()
+		}
+		go func() { _ = srv.store.Scheduler().Run(rctx, "scheduler") }()
+	}
+	defer func() {
+		if cancelRunner != nil {
+			cancelRunner()
+		}
+	}()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, os.Interrupt)

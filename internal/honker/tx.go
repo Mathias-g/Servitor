@@ -184,6 +184,24 @@ func (s *Store) LookupDedupe(workflowID, stepName, key string) (*DedupeOutcome, 
 	return out, nil
 }
 
+// ResultJSON returns the stored result JSON for a completed step, or "" when
+// no result row exists. It is how a downstream step or the run inspector reads
+// a prior step's output.
+func (s *Store) ResultJSON(runID, stepID string) (string, error) {
+	var r string
+	err := s.db.Raw().QueryRow(
+		`SELECT result FROM step_results WHERE run_id = ? AND step_id = ?`,
+		runID, stepID,
+	).Scan(&r)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return "", err
+	}
+	return r, nil
+}
+
 // ensureSchema creates the runner's business tables on the store's single
 // connection. It runs at Open time so the tables always exist.
 func (s *Store) ensureSchema() error {

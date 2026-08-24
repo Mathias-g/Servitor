@@ -2,7 +2,7 @@
 
 Build order with dependencies and a clear "done" for each phase. The design lives in [SPEC.md](SPEC.md); the decisions live in [docs/adr/](docs/adr/); this is just the sequencing.
 
-Current state: the Go project is scaffolded, the enforcement gates are wired (`make check`, adrlint, pre-commit, CI), and Phases 1-4 are built (daemon + loopback control protocol, Wafer model/validation, capability discovery, dry-run DAG resolution). Phase 5 (Honker integration) is partially built: the daemon owns a WAL SQLite file with the Honker extension loaded, and the transactional atom ({result, dedupe, downstream, claim_ack} in one commit) is a tested primitive. The worker loop and cron triggers await Phase 6 subprocess execution. The runner has no workflow state yet.
+Current state: the Go project is scaffolded, the enforcement gates are wired (`make check`, adrlint, pre-commit, CI), and Phases 1-6 are built (daemon + loopback control protocol, Wafer model/validation, capability discovery, dry-run DAG resolution, Honker integration, and step execution). The daemon owns a WAL SQLite file with the Honker extension loaded; the transactional atom ({result, dedupe, downstream, claim_ack} in one commit) is a tested primitive; and the worker loop now claims jobs, runs each step as a subprocess with env filtering and dedupe, commits the fan-out atom, and handles visibility-timeout reclaim, dead-lettering, and cron triggers via the Honker scheduler. The runner has no workflow registry yet; runs are built from a Wafer into a self-contained step chain (ADR-0012).
 
 ## Phase 1: Daemon and control protocol (foundation)
 
@@ -52,7 +52,7 @@ The durability layer. Requires the cgo `mattn/go-sqlite3` driver to load the Hon
 - [x] Load the Honker SQLite extension into the daemon's connection (honker-go; extension provided via `HONKER_EXT_PATH`, pinned and checksummed in CI).
 - [x] The daemon owns the SQLite file (WAL mode) and its single write connection.
 - [x] The transactional atom: a `CommitStepAtom` primitive that writes {result, dedupe_record, downstream_enqueues, claim_ack} as one SQLite transaction, never split (SPEC: Execution model step 8). The dedupe table and lookup are in place.
-- [ ] Workflow run queue worker loop (claim, execute, ack; visibility timeout and dead-letter on repeated failure) and cron triggers via Honker's scheduler. The worker loop depends on Phase 6 subprocess execution and is built there.
+- [x] Workflow run queue worker loop (claim, execute, ack; visibility timeout and dead-letter on repeated failure) and cron triggers via Honker's scheduler. Built in Phase 6 alongside subprocess execution.
 
 **Done when:** a step's completion commits result + dedupe + downstream enqueues + claim ack in one transaction (this phase), and a crashed worker's claim is re-issued on visibility timeout (Phase 6).
 
@@ -60,11 +60,11 @@ The durability layer. Requires the cgo `mattn/go-sqlite3` driver to load the Hon
 
 Every step runs as a subprocess; there is no in-process mode (ADR-0008).
 
-- [ ] Step executors spawn a subprocess per job with a filtered environment containing only the secrets the step declared.
-- [ ] The subprocess writes structured JSON to stdout and exits; the parent reads it and commits the fan-out transaction.
-- [ ] The `dedupe_key` contract: skip on a prior successful run, proceed on a prior failed run, retention window.
+- [x] Step executors spawn a subprocess per job with a filtered environment containing only the secrets the step declared.
+- [x] The subprocess writes structured JSON to stdout and exits; the parent reads it and commits the fan-out transaction.
+- [x] The `dedupe_key` contract: skip on a prior successful run, proceed on a prior failed run, retention window.
 
-**Done when:** `transform`/`branch`/`foreach` and the integration steps run as subprocesses with env filtering and dedupe, and a crash mid-job re-runs safely per the `dedupe_key` contract.
+**Done when:** the `shell` step runs as a subprocess with env filtering and dedupe, the fan-out transaction commits atomically, and a crash mid-job re-runs safely per the `dedupe_key` contract. (The worker machinery is built; `transform`/`branch`/`foreach` and the integration handlers dispatch through the same subprocess machinery in later phases.)
 
 ## Phase 7: Triggers and webhooks
 

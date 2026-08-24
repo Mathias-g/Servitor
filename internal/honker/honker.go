@@ -62,9 +62,36 @@ func (s *Store) Close() error { return s.db.Close() }
 // defaults (300s / 3 attempts).
 func (s *Store) Queue(name string, visibilityTimeoutS, maxAttempts int) *Queue {
 	return &Queue{
+		name: name,
 		q: s.db.Queue(name, hg.QueueOptions{
 			VisibilityTimeoutS: visibilityTimeoutS,
 			MaxAttempts:        maxAttempts,
 		}),
 	}
+}
+
+// Scheduler returns the Honker scheduler facade, used for cron triggers
+// (SPEC: Triggers, `cron`). The daemon runs Scheduler.Run; registering a task
+// here enqueues a job to its queue on each fire.
+func (s *Store) Scheduler() *hg.Scheduler {
+	return s.db.Scheduler()
+}
+
+// ScheduledTask is a cron registration: when Schedule fires, Honker enqueues
+// Payload to Queue. RegisterScheduledTask is idempotent by Name.
+type ScheduledTask struct {
+	Name     string
+	Queue    string
+	Schedule string
+	Payload  any
+}
+
+// RegisterScheduledTask registers a cron task on the Honker scheduler.
+func (s *Store) RegisterScheduledTask(t ScheduledTask) error {
+	return s.db.Scheduler().Add(hg.ScheduledTask{
+		Name:     t.Name,
+		Queue:    t.Queue,
+		Schedule: t.Schedule,
+		Payload:  t.Payload,
+	})
 }

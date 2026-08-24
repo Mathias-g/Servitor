@@ -411,10 +411,10 @@ Things deliberately out of scope for v1, kept here so the design doesn't quietly
 
 ## Status
 
-Early development. The daemon lifecycle, loopback control protocol, Wafer model and structured validation, capability discovery, dry-run DAG resolution, and the Honker durability store (with the transactional atom) are built (`servitor run`, `stop`, `dry-run`, `capabilities`). The runner's worker/execution loop, triggers, and varlock integration are not yet built. Open questions, to be resolved as implementation progresses and tracked in ADRs in the `docs/adr/` directory:
+Early development. The daemon lifecycle, loopback control protocol, Wafer model and structured validation, capability discovery, dry-run DAG resolution, the Honker durability store (with the transactional atom), and step execution (the worker loop, subprocess isolation with env filtering, the dedupe contract, and cron triggers) are built (`servitor run`, `stop`, `dry-run`, `capabilities`). The remaining step handlers (transform, branch, foreach, integration helpers), the webhook receivers and run/trigger wiring, and the varlock integration are not yet built. Open questions, to be resolved as implementation progresses and tracked in ADRs in the `docs/adr/` directory:
 
-- Worker concurrency limits.
-- The exact shape of the `dedupe_key` expression language.
+- Worker concurrency limits; runs currently execute as a sequential step chain, and parallel fan-out is deferred (ADR-0012).
+- The exact shape of the `dedupe_key` expression language (resolved values are supplied at enqueue time for now).
 - Which expression language `transform` uses. It runs as a subprocess, so the evaluator has no host access by construction (no file, shell, or network reach); the only remaining constraint is that evaluation is bounded.
 - The trigger receiver's framing of bespoke per-provider signing schemes.
 - How the varlock parent handles termination signals: whether `varlock run` forwards SIGTERM/SIGINT to the runner child and propagates its exit code. If it does not, the runner is wrapped with a minimal init such as `tini` or `dumb-init` so signals reach it cleanly.
