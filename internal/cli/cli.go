@@ -270,7 +270,11 @@ func cmdRegister(args []string, requireExisting bool, stdout, stderr io.Writer) 
 	if msg != "" {
 		_, _ = fmt.Fprint(stdout, msg)
 	}
-	_, _ = fmt.Fprintf(stdout, "servitor: %sd %s\n", name, path)
+	verb := "submitted"
+	if requireExisting {
+		verb = "updated"
+	}
+	_, _ = fmt.Fprintf(stdout, "servitor: %s %s\n", verb, path)
 	return exitOK
 }
 

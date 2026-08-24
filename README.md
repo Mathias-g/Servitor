@@ -44,12 +44,41 @@ Submit it, enable it, and the next time a row is added to your Grist `Leads` tab
 
 ## Getting started
 
-Servitor is early in development; the scaffolding is not yet in place. This section describes the intended flow, and the exact commands will be pinned down in `SPEC.md` as the CLI is built.
+Servitor is a single Go binary. Build it, then run it; the runner re-execs
+itself under varlock to resolve secrets and boots the daemon.
 
-- Install the runner (packaging TBD; expect a single binary).
-- Write a `.env.schema` declaring the secrets your integrations need, and populate the values via [varlock](https://varlock.dev) from whichever backing store you use.
-- Run `servitor`. It re-execs itself under varlock to resolve secrets into the environment, then boots the runner.
-- Write a Wafer and submit it: `servitor submit ./my-workflow.yml`.
+1. **Build.** Requires Go (the version in `go.mod`) and `make`:
+
+       make build        # produces bin/servitor
+
+   For a release build with a version stamped in, use
+   `make release <new-version>` (for example `make release 0.2.0`), which bumps
+   `VERSION`, rebuilds, and prints the git tag/push commands.
+
+2. **Declare and populate secrets.** Write a `.env.schema` declaring the secrets
+   your integrations need, and populate the values via
+   [varlock](https://varlock.dev) from whichever backing store you use.
+
+3. **Run the runner.** `servitor` re-execs itself under varlock to resolve
+   secrets into its environment, then boots the daemon and owns its SQLite file:
+
+       HONKER_EXTENSION_PATH=/path/to/libhonker_ext.so \
+         ./bin/servitor run --db ./servitor.db --webhook-addr :8080
+
+   `HONKER_EXTENSION_PATH` points at the Honker SQLite extension (a loadable
+   `.so`; see [ADR-0011](docs/adr/0011-honker-go-and-pinned-extension.md)).
+   `--webhook-addr` enables the inbound webhook receiver; omit it if you only
+   use `manual`/`cron` triggers.
+
+4. **Author and submit a Wafer.**
+
+       ./bin/servitor dry-run ./my-workflow.yml   # validate first
+       ./bin/servitor submit ./my-workflow.yml    # register it
+       ./bin/servitor enable <name>               # arm its triggers
+       ./bin/servitor trigger <name>              # fire a manual run
+
+Inspect results with `servitor runs` and `servitor run <id>`, and stop the
+daemon with `servitor stop`.
 
 ## Connecting your agent
 

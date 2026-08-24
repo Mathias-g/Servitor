@@ -154,7 +154,7 @@ The automated checks enforce structure. This covers what they cannot:
 - **Build the runner and CLI with `make build`** (or `make` for all targets). `go build ./...` compiles everything.
 - **Run the checks with `make check`** (or `make test` for tests alone): `go test ./...`, `go vet ./...`, `golangci-lint run`, and `gofmt -l`. These are the same checks CI runs.
 - **The runner loads the Honker SQLite extension at runtime.** Loading a loadable SQLite extension requires the cgo driver `mattn/go-sqlite3`; the pure-Go driver cannot load extensions. So the build needs cgo and is not fully static. This is a deliberate, recorded cost (ADR-0004), not something to "fix" by dropping Honker.
-- **Releasing** is a future `make release <new-version>` that bumps `VERSION`, rebuilds, and prints the git tag/push commands. Not wired up until there is something to release.
+- **Releasing** is `make release <new-version>`: it bumps `VERSION`, rebuilds, and prints the git tag/push commands. It does not tag or push; the operator verifies the build and runs the printed commands. Release a version when there is something worth shipping.
 
 ## Guardrails
 
