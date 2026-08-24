@@ -18,10 +18,16 @@ type Field struct {
 	Required bool
 	// Desc is a plain-language description surfaced to agents.
 	Desc string
-	// Examples are sample values rendered by the schema-to-example generator
-	// (Phase 3). They version alongside the field's type.
+	// Examples are sample values rendered by the schema-to-example generator.
+	// They version alongside the field's type.
 	Examples []any
 }
+
+// Core is the group name for step and trigger types that are part of Servitor
+// itself rather than a third-party integration (SPEC: What counts as an
+// integration). Universal primitives and generic/webhook triggers are core;
+// integration helpers and their triggers belong to that integration.
+const Core = "core"
 
 // StepType describes one step type (for example `http` or `singer-tap`).
 type StepType struct {
@@ -32,14 +38,20 @@ type StepType struct {
 	// SideEffect is true when the step performs externally-visible actions,
 	// which is what the missing_dedupe_key warning keys off (SPEC: Idempotency).
 	SideEffect bool
+	// Group is the integration this step belongs to, or Core for Servitor's
+	// own primitives (SPEC: What counts as an integration).
+	Group string
 	// Fields is the step's config schema, keyed by field name.
 	Fields map[string]*Field
 }
 
 // TriggerType describes one trigger type (for example `cron` or `http_webhook`).
 type TriggerType struct {
-	Name   string
-	Desc   string
+	Name string
+	Desc string
+	// Group is the integration this trigger belongs to, or Core for Servitor's
+	// own triggers (SPEC: What counts as an integration).
+	Group  string
 	Fields map[string]*Field
 }
 
@@ -48,6 +60,7 @@ var stepTypes = []*StepType{
 		Name:       "http",
 		Desc:       "Make an HTTP request and capture the response.",
 		SideEffect: true,
+		Group:      Core,
 		Fields: map[string]*Field{
 			"url":     {Type: "string", Required: true, Desc: "The URL to request.", Examples: []any{"https://api.example.com/things"}},
 			"method":  {Type: "string", Required: true, Desc: "HTTP method.", Examples: []any{"GET"}},
@@ -60,6 +73,7 @@ var stepTypes = []*StepType{
 		Name:       "shell",
 		Desc:       "Execute a command on the runner host.",
 		SideEffect: true,
+		Group:      Core,
 		Fields: map[string]*Field{
 			"command": {Type: "string", Required: true, Desc: "The command to run.", Examples: []any{"echo hello"}},
 		},
@@ -68,6 +82,7 @@ var stepTypes = []*StepType{
 		Name:       "transform",
 		Desc:       "Reshape, extract, or compute over previous steps' JSON output.",
 		SideEffect: false,
+		Group:      Core,
 		Fields: map[string]*Field{
 			"expression": {Type: "string", Required: true, Desc: "An expression over the input.", Examples: []any{"input.items | map(select(.active))"}},
 		},
@@ -76,6 +91,7 @@ var stepTypes = []*StepType{
 		Name:       "branch",
 		Desc:       "Conditionally route based on inputs.",
 		SideEffect: false,
+		Group:      Core,
 		Fields: map[string]*Field{
 			"when": {Type: "string", Required: true, Desc: "A condition over the input.", Examples: []any{"input.status == 'ok'"}},
 		},
@@ -84,6 +100,7 @@ var stepTypes = []*StepType{
 		Name:       "foreach",
 		Desc:       "Fan a step out over a list.",
 		SideEffect: false,
+		Group:      Core,
 		Fields: map[string]*Field{
 			"over": {Type: "array", Required: true, Desc: "The list to iterate over.", Examples: []any{[]any{"a", "b", "c"}}},
 			"as":   {Type: "string", Desc: "Name for each element in the loop.", Examples: []any{"item"}},
@@ -93,6 +110,7 @@ var stepTypes = []*StepType{
 		Name:       "singer-tap",
 		Desc:       "Run a Singer tap and capture records and state.",
 		SideEffect: true,
+		Group:      "singer",
 		Fields: map[string]*Field{
 			"tap":     {Type: "string", Required: true, Desc: "The tap to run.", Examples: []any{"tap-stripe"}},
 			"config":  {Type: "object", Desc: "Tap config."},
@@ -103,6 +121,7 @@ var stepTypes = []*StepType{
 		Name:       "singer-target",
 		Desc:       "Run a Singer target consuming records.",
 		SideEffect: true,
+		Group:      "singer",
 		Fields: map[string]*Field{
 			"target": {Type: "string", Required: true, Desc: "The target to run.", Examples: []any{"target-grist"}},
 			"config": {Type: "object", Desc: "Target config."},
@@ -111,16 +130,16 @@ var stepTypes = []*StepType{
 }
 
 var triggerTypes = []*TriggerType{
-	{Name: "http_webhook", Desc: "Generic inbound HTTP receiver with configurable HMAC verification.", Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/things"}}}},
-	{Name: "standard_webhook", Desc: "Standard Webhooks-compliant receiver.", Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/std"}}}},
-	{Name: "grist_webhook", Desc: "Grist-specific receiver.", Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/grist"}}}},
-	{Name: "github_webhook", Desc: "GitHub-specific receiver.", Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/github"}}}},
-	{Name: "slack_event", Desc: "Slack events (messages, mentions).", Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/slack"}}}},
-	{Name: "atomic_event", Desc: "Atomic knowledge-base changes.", Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/atomic"}}}},
-	{Name: "email_received", Desc: "Inbound email parsed into a structured payload.", Fields: map[string]*Field{}},
-	{Name: "cron", Desc: "Run on the Honker scheduler.", Fields: map[string]*Field{"schedule": {Type: "string", Required: true, Desc: "Cron expression.", Examples: []any{"0 * * * *"}}}},
-	{Name: "manual", Desc: "Invoked via the CLI.", Fields: map[string]*Field{}},
-	{Name: "internal", Desc: "Fired by another workflow's completion.", Fields: map[string]*Field{"workflow": {Type: "string", Required: true, Desc: "The workflow that fires this.", Examples: []any{"upstream-workflow"}}}},
+	{Name: "http_webhook", Desc: "Generic inbound HTTP receiver with configurable HMAC verification.", Group: Core, Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/things"}}}},
+	{Name: "standard_webhook", Desc: "Standard Webhooks-compliant receiver.", Group: Core, Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/std"}}}},
+	{Name: "grist_webhook", Desc: "Grist-specific receiver.", Group: "grist", Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/grist"}}}},
+	{Name: "github_webhook", Desc: "GitHub-specific receiver.", Group: "github", Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/github"}}}},
+	{Name: "slack_event", Desc: "Slack events (messages, mentions).", Group: "slack", Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/slack"}}}},
+	{Name: "atomic_event", Desc: "Atomic knowledge-base changes.", Group: "atomic", Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/atomic"}}}},
+	{Name: "email_received", Desc: "Inbound email parsed into a structured payload.", Group: Core, Fields: map[string]*Field{}},
+	{Name: "cron", Desc: "Run on the Honker scheduler.", Group: Core, Fields: map[string]*Field{"schedule": {Type: "string", Required: true, Desc: "Cron expression.", Examples: []any{"0 * * * *"}}}},
+	{Name: "manual", Desc: "Invoked via the CLI.", Group: Core, Fields: map[string]*Field{}},
+	{Name: "internal", Desc: "Fired by another workflow's completion.", Group: Core, Fields: map[string]*Field{"workflow": {Type: "string", Required: true, Desc: "The workflow that fires this.", Examples: []any{"upstream-workflow"}}}},
 }
 
 // StepTypes returns the registered step types, sorted by name.

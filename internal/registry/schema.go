@@ -31,7 +31,10 @@ func typeSchema(name, desc string, fields map[string]*Field) map[string]any {
 	required := []any{}
 	for _, name := range sortedFieldNames(fields) {
 		f := fields[name]
-		p := map[string]any{"type": jsonType(f.Type)}
+		p := map[string]any{}
+		if t := jsonType(f.Type); t != "" {
+			p["type"] = t
+		}
 		if f.Desc != "" {
 			p["description"] = f.Desc
 		}

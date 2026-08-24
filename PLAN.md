@@ -2,7 +2,7 @@
 
 Build order with dependencies and a clear "done" for each phase. The design lives in [SPEC.md](SPEC.md); the decisions live in [docs/adr/](docs/adr/); this is just the sequencing.
 
-Current state: the Go project is scaffolded, the enforcement gates are wired (`make check`, adrlint, pre-commit, CI), and Phase 1 (daemon + loopback control protocol, `run`/`stop`) is built. Phase 2 (Wafer model and structured validation) is built: `servitor dry-run <wafer>` validates and reports the structured error shape. The runner has no workflow state yet.
+Current state: the Go project is scaffolded, the enforcement gates are wired (`make check`, adrlint, pre-commit, CI), and Phase 1 (daemon + loopback control protocol, `run`/`stop`) is built. Phase 2 (Wafer model and structured validation, `dry-run`) is built. Phase 3 (capability discovery, `capabilities` writing schemas and derived examples grouped by integration) is built; reporting varlock secrets and Singer taps is deferred to those integrations. The runner has no workflow state yet.
 
 ## Phase 1: Daemon and control protocol (foundation)
 
@@ -27,12 +27,12 @@ The artifact. Everything else reads, validates, and executes Wafers.
 
 ## Phase 3: Capability discovery
 
-How an agent learns what the server supports and how to use it (SPEC: How an agent discovers integrations).
+How an agent learns what the server supports and how to use it (SPEC: How an agent discovers integrations). Capabilities are per-server: the set is what the runner has compiled in. The schema and example generator and the file writer are built here; reporting declared secrets (varlock) and available Singer taps belongs to the phases that build those integrations.
 
-- [ ] A step-type and trigger-type registry, each entry with its JSON Schema.
-- [ ] The schema-to-example generator: render a Wafer fragment from a schema (skeleton from the schema, sample values from each property's `examples`).
-- [ ] `servitor capabilities` writes, per step and trigger, the schema and its derived example to files, plus declared secrets (names and presence, not values) and available Singer taps.
-- [ ] The set is per-server: what the runner has compiled in and what varlock declares.
+- [x] A step-type and trigger-type registry, each entry with its JSON Schema, grouped by integration with a `core` group for Servitor's own types.
+- [x] The schema-to-example generator: render a Wafer fragment from a schema (skeleton from the schema, sample values from each property's `examples`).
+- [x] `servitor capabilities [dir]` writes, per step and trigger, the schema and its derived example to files, grouped by integration, plus an index. A pipeline can commit the output so remote agents read it from the repo.
+- [ ] Report declared secrets (names and presence, not values) and available Singer taps, when varlock and Singer integrations are built.
 
 **Done when:** an agent runs `servitor capabilities`, reads a step's schema and a valid example Wafer fragment, and can author a Wafer without guessing.
 

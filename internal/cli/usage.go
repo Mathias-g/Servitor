@@ -37,7 +37,7 @@ Flags:
   --addr ADDR  loopback address of the daemon (default 127.0.0.1:7365)
 
 The daemon binds 127.0.0.1 only and the control plane is loopback-gated
-(ADR-0009). 'run', 'stop', and 'dry-run' are implemented in this phase; the
-rest are not built yet.
+(ADR-0009). 'run', 'stop', 'dry-run', and 'capabilities' are implemented in
+this phase; the rest are not built yet.
 `)
 }

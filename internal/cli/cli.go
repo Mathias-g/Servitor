@@ -10,6 +10,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/Mathias-g/Servitor/internal/capabilities"
 	"github.com/Mathias-g/Servitor/internal/daemon"
 	"github.com/Mathias-g/Servitor/internal/protocol"
 	"github.com/Mathias-g/Servitor/internal/wafer"
@@ -45,10 +46,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return cmdStop(args[1:], stdout, stderr)
 	case "dry-run":
 		return cmdDryRun(args[1:], stdout, stderr)
+	case "capabilities":
+		return cmdCapabilities(args[1:], stdout, stderr)
 	}
 
 	// The remaining commands are daemon operations scheduled for later phases.
-	_, _ = fmt.Fprintf(stderr, "servitor: command %q is not implemented yet (this phase builds run, stop, and dry-run)\n", args[0])
+	_, _ = fmt.Fprintf(stderr, "servitor: command %q is not implemented yet (this phase builds run, stop, dry-run, and capabilities)\n", args[0])
 	return exitFailure
 }
 
@@ -146,5 +149,29 @@ func cmdDryRun(args []string, stdout, stderr io.Writer) int {
 		return exitFailure
 	}
 	_, _ = fmt.Fprintf(stderr, "servitor: dry-run: valid\n")
+	return exitOK
+}
+
+// cmdCapabilities writes the per-server capability set to a directory the agent
+// reads on demand (SPEC: How an agent discovers integrations). A pipeline can
+// commit the directory so remote agents read it from the repo (ADR-0009).
+func cmdCapabilities(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 1 {
+		_, _ = fmt.Fprintf(stderr, "servitor: usage: servitor capabilities [dir]\n")
+		return exitUsage
+	}
+	dir := ""
+	if len(args) == 1 {
+		dir = args[0]
+	}
+
+	if err := capabilities.Write(dir); err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: %v\n", err)
+		return exitFailure
+	}
+	if dir == "" {
+		dir = capabilities.DefaultDir
+	}
+	_, _ = fmt.Fprintf(stdout, "servitor: wrote capabilities to %s\n", dir)
 	return exitOK
 }

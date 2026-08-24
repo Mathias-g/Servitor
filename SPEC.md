@@ -248,6 +248,10 @@ The example is **derived from the schema, not written by hand**: the structural 
 
 This is how "what integrations exist and how do I use them" is answered: the agent runs `capabilities`, reads the schemas and their derived examples, and generates a valid Wafer. The pipeline then re-validates the Wafer against the live server's capabilities on deploy (ADR-0009).
 
+`servitor capabilities [dir]` writes files rather than printing, so the schemas never sit in the agent's context: one file per step and trigger type (its JSON Schema plus derived example), grouped by integration into directories, with a `core` group for Servitor's own step and trigger types (the universal primitives and generic webhooks), plus an `index.yaml` listing the integrations. An integration is a service the runner can reach by any mechanism; a service with both a helper and a trigger (for example Slack's `slack` helper and `slack_event` trigger) is one integration, one directory (SPEC: What counts as an integration).
+
+For a **remote agent**, capabilities reach it the same way Wafers do: the pipeline (which already runs the CLI on the box) runs `servitor capabilities` and commits the generated directory into the git repo, and the agent reads the files from the repo on demand. Capabilities are still per-server because the directory is generated from that box's compiled-in set; committing it is a materialized snapshot, not a hand-written doc, so it cannot drift. A local agent (on the box, or the pipeline's own runner) can also run `capabilities` directly into a scratch directory.
+
 ### Triggers
 
 - `http_webhook`. Generic inbound HTTP receiver with configurable HMAC verification.
