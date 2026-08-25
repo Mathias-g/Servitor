@@ -32,11 +32,18 @@ Commands:
   run <id>         inspect one run
   cancel <id>      stop an in-flight run
   stop             drain and shut the daemon down
+  mcp add/list/remove  manage declared MCP servers (ADR-0018)
+  tap add/list/remove  manage declared Singer taps (ADR-0018)
+  target add/list/remove  manage declared Singer targets (ADR-0018)
 
 Flags:
   --addr ADDR  loopback address of the daemon (default 127.0.0.1:7365)
   --db PATH    SQLite file the daemon owns (via Honker)
   HONKER_EXTENSION_PATH  path to the Honker extension .so (ADR-0011)
+
+The declared integration commands (mcp/tap/target) edit a local
+servitor.integrations.yaml and need no daemon; the actual software install is
+delegated to the ecosystem's package managers (npx, pipx, uv, Meltano).
 
 The daemon binds 127.0.0.1 only and the control plane is loopback-gated
 (ADR-0009). All commands in the set above are implemented.

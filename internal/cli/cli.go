@@ -64,6 +64,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return cmdRuns(args[1:], stdout, stderr)
 	case "cancel":
 		return cmdCancel(args[1:], stdout, stderr)
+	case "mcp":
+		return cmdMCP(args[1:], stdout, stderr)
+	case "tap":
+		return cmdTap(args[1:], stdout, stderr)
+	case "target":
+		return cmdTarget(args[1:], stdout, stderr)
 	}
 
 	// The remaining commands are daemon operations scheduled for later phases.
