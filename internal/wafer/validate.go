@@ -42,6 +42,7 @@ const (
 	codeMissingName     = "missing_name"
 	codeMissingSteps    = "missing_steps"
 	codeMissingDedupe   = "missing_dedupe_key"
+	codeMissingSecret   = "missing_secret"
 )
 
 // Validate decodes and validates YAML bytes, returning the structured result.

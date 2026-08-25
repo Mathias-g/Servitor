@@ -1,6 +1,7 @@
 package wafer
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -121,5 +122,48 @@ func TestDryRunNoDAGOnError(t *testing.T) {
 	}
 	if out.Result.Valid() {
 		t.Fatal("expected invalid result")
+	}
+}
+
+func TestDryRunReportsRedactedSecretsAndMissingWarnings(t *testing.T) {
+	t.Setenv("PRESENT_SECRET", "value")
+	t.Setenv("MISSING_SECRET", "")
+	doc := []byte(`
+name: w
+steps:
+  - type: shell
+    name: a
+    secrets: [PRESENT_SECRET, MISSING_SECRET]
+    command: "echo hi"
+`)
+	out := DryRun(doc)
+	if !out.Result.Valid() {
+		t.Fatalf("expected valid, got %+v", out.Result.Errors)
+	}
+	if len(out.Secrets) != 2 || out.Secrets[0] != "PRESENT_SECRET" || out.Secrets[1] != "MISSING_SECRET" {
+		t.Fatalf("secrets = %v, want [PRESENT_SECRET MISSING_SECRET]", out.Secrets)
+	}
+	// Only the missing one warns (there may also be a missing_dedupe_key
+	// warning from the shell step).
+	var missing []Issue
+	for _, warn := range out.Result.Warnings {
+		if warn.Code == "missing_secret" {
+			missing = append(missing, warn)
+		}
+	}
+	if len(missing) != 1 || !strings.Contains(missing[0].Message, "MISSING_SECRET") {
+		t.Fatalf("missing_secret warnings = %+v, want one for MISSING_SECRET", missing)
+	}
+}
+
+func TestDryRunNoSecretsNoWarnings(t *testing.T) {
+	out := DryRun([]byte("name: w\nsteps:\n  - type: shell\n    name: a\n    command: echo hi\n"))
+	if len(out.Secrets) != 0 {
+		t.Fatalf("secrets = %v, want none", out.Secrets)
+	}
+	for _, warn := range out.Result.Warnings {
+		if warn.Code == "missing_secret" {
+			t.Fatalf("unexpected missing_secret warning: %+v", warn)
+		}
 	}
 }

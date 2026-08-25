@@ -8,8 +8,10 @@
 package capabilities
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 
@@ -61,7 +63,81 @@ func Write(dir string) error {
 	if err := writeIndex(dir); err != nil {
 		return err
 	}
+	if err := writeSecrets(dir); err != nil {
+		return err
+	}
 	return nil
+}
+
+// secretEntry is one declared secret and whether it is present. Values are
+// never written; only the name and presence, so the report is safe to commit
+// (SPEC: How an agent discovers integrations).
+type secretEntry struct {
+	Name    string `yaml:"name"`
+	Present bool   `yaml:"present"`
+}
+
+// secretsReport is the on-disk shape of the secrets report.
+type secretsReport struct {
+	Generated bool          `yaml:"generated"`
+	Note      string        `yaml:"note,omitempty"`
+	Secrets   []secretEntry `yaml:"secrets"`
+}
+
+// writeSecrets writes a secrets.yaml reporting the secrets declared in the
+// varlock schema in the working directory (names and presence only, never
+// values). If varlock is unavailable or load fails, it writes a note instead
+// of failing, so `capabilities` still works without varlock.
+func writeSecrets(dir string) error {
+	report := secretsReport{Generated: true}
+	entries, note, err := declaredSecrets()
+	if err != nil {
+		report.Note = note
+	} else {
+		report.Secrets = entries
+	}
+	data, err := yaml.Marshal(report)
+	if err != nil {
+		return fmt.Errorf("capabilities: marshal secrets: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "secrets.yaml"), data, 0o644); err != nil {
+		return fmt.Errorf("capabilities: write secrets.yaml: %w", err)
+	}
+	return nil
+}
+
+// declaredSecrets queries varlock for the declared secrets in the working
+// directory and returns each name and whether a value is present. It returns a
+// note explaining the absence when varlock is not available or cannot resolve.
+func declaredSecrets() (entries []secretEntry, note string, err error) {
+	if _, lerr := exec.LookPath("varlock"); lerr != nil {
+		return nil, "varlock not available; declared secrets could not be enumerated", lerr
+	}
+	out, cerr := exec.Command("varlock", "load", "--format", "json-full").Output()
+	if cerr != nil {
+		return nil, "varlock load failed; declared secrets could not be enumerated", cerr
+	}
+	var full struct {
+		Config map[string]struct {
+			Value       string `json:"value"`
+			IsSensitive bool   `json:"isSensitive"`
+		} `json:"config"`
+	}
+	if uerr := json.Unmarshal(out, &full); uerr != nil {
+		return nil, "could not parse varlock output", uerr
+	}
+	names := make([]string, 0, len(full.Config))
+	for name, c := range full.Config {
+		if c.IsSensitive {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		c := full.Config[name]
+		entries = append(entries, secretEntry{Name: name, Present: c.Value != ""})
+	}
+	return entries, "", nil
 }
 
 func writeTypes(dir string) error {

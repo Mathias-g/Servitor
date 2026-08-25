@@ -387,7 +387,7 @@ Because agents are first-class authors, the shape of validation errors is part o
 }
 ```
 
-Codes are stable identifiers (`unknown_step_type`, `missing_required_field`, `type_mismatch`, `unknown_secret_reference`, `circular_dependency`, `missing_dedupe_key`, etc.). Paths are JSON Pointers into the submitted YAML. Multiple errors are returned at once, not one-at-a-time, so an agent fixing a malformed workflow makes one round trip per fix-batch rather than one per fix.
+Codes are stable identifiers (`unknown_step_type`, `missing_required_field`, `type_mismatch`, `missing_secret`, `circular_dependency`, `missing_dedupe_key`, etc.). Paths are JSON Pointers into the submitted YAML. Multiple errors are returned at once, not one-at-a-time, so an agent fixing a malformed workflow makes one round trip per fix-batch rather than one per fix. A `missing_secret` warning is emitted by `dry-run` when a step declares a secret that is not present in the environment; the workflow's declared secret names are shown redacted (`<redacted:secret_name>`), never their values.
 
 The full workflow JSON Schema and every step type's config schema are also retrievable through `servitor capabilities`, so agents can validate locally before submitting.
 

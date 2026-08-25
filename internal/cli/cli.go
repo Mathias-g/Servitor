@@ -472,6 +472,13 @@ func renderDryRunPlan(w io.Writer, res wafer.DryRunResult) {
 	if res.DAG == nil {
 		return
 	}
+	if len(res.Secrets) > 0 {
+		redacted := make([]string, len(res.Secrets))
+		for i, s := range res.Secrets {
+			redacted[i] = "<redacted:" + s + ">"
+		}
+		_, _ = fmt.Fprintf(w, "secrets: %s\n", strings.Join(redacted, ", "))
+	}
 	_, _ = fmt.Fprintf(w, "\nplan (%d step(s), in run order):\n", len(res.DAG.Steps))
 	for i, s := range res.DAG.Steps {
 		deps := "start"

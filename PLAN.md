@@ -32,7 +32,7 @@ How an agent learns what the server supports and how to use it (SPEC: How an age
 - [x] A step-type and trigger-type registry, each entry with its JSON Schema, grouped by integration with a `core` group for Servitor's own types.
 - [x] The schema-to-example generator: render a Wafer fragment from a schema (skeleton from the schema, sample values from each property's `examples`).
 - [x] `servitor capabilities [dir]` writes, per step and trigger, the schema and its derived example to files, grouped by integration, plus an index. A pipeline can commit the output so remote agents read it from the repo.
-- [ ] Report declared secrets (names and presence, not values) and available Singer taps, when varlock and Singer integrations are built.
+- [x] Report declared secrets (names and presence, not values) in `capabilities` (a `secrets.yaml` from the varlock schema). Available Singer taps remain unreported until the Singer integration is built.
 
 **Done when:** an agent runs `servitor capabilities`, reads a step's schema and a valid example Wafer fragment, and can author a Wafer without guessing.
 
@@ -41,7 +41,7 @@ How an agent learns what the server supports and how to use it (SPEC: How an age
 The pre-deploy gate. It belongs in the pipeline (ADR-0009).
 
 - [x] `servitor dry-run <wafer>` validates and resolves the workflow's dependency DAG (run order, dependencies, cycle and unknown-reference detection) and returns it as structured output, without running anything, contacting anything, or persisting anything.
-- [ ] Secret references resolved and shown as `<redacted:secret_name>`, when varlock secret resolution is built (Phase 8).
+- [x] Declared secrets resolved and shown as `<redacted:secret_name>` in dry-run (names only, never values), with a `missing_secret` warning when one is absent from the environment.
 
 **Done when:** an agent can verify structure and step config before a PR. (Secret availability checking is deferred to the varlock phase.)
 

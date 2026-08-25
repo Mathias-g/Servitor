@@ -2,7 +2,9 @@ package capabilities
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -97,5 +99,63 @@ func TestEntryContainsSchemaAndExample(t *testing.T) {
 	}
 	if e.Example["url"] != "https://api.example.com/things" {
 		t.Fatalf("example url = %v, want schema example", e.Example["url"])
+	}
+}
+
+func TestWriteSecretsWithoutVarlockWritesNote(t *testing.T) {
+	// Ensure varlock is not on PATH so this is deterministic.
+	t.Setenv("PATH", t.TempDir())
+	dir := t.TempDir()
+	if err := Write(dir); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "secrets.yaml"))
+	if err != nil {
+		t.Fatalf("read secrets.yaml: %v", err)
+	}
+	if !strings.Contains(string(data), "varlock not available") {
+		t.Fatalf("secrets.yaml = %q, want a varlock-unavailable note", data)
+	}
+}
+
+func TestWriteSecretsWithVarlockReportsNamesAndPresence(t *testing.T) {
+	if _, err := exec.LookPath("varlock"); err != nil {
+		t.Skip("varlock not installed; skipping varlock-backed secrets test")
+	}
+	// Write a schema + env in the working dir so varlock resolves. MAYBE is
+	// optional and empty, so it is declared but not present; TOKEN is present.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".env"),
+		[]byte("# @type=string @optional\nMAYBE=\n# @type=string\nTOKEN=abc\n"), 0o644); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".env.schema"),
+		[]byte("MAYBE=\nTOKEN=abc\n"), 0o644); err != nil {
+		t.Fatalf("write .env.schema: %v", err)
+	}
+	oldwd, _ := os.Getwd()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(oldwd) }()
+
+	entries, note, err := declaredSecrets()
+	if err != nil {
+		t.Fatalf("declaredSecrets: %v (%s)", err, note)
+	}
+	var token, maybe *secretEntry
+	for i := range entries {
+		if entries[i].Name == "TOKEN" {
+			token = &entries[i]
+		}
+		if entries[i].Name == "MAYBE" {
+			maybe = &entries[i]
+		}
+	}
+	if token == nil || !token.Present {
+		t.Fatalf("expected TOKEN present, got %+v", entries)
+	}
+	if maybe == nil || maybe.Present {
+		t.Fatalf("expected MAYBE not present, got %+v", entries)
 	}
 }

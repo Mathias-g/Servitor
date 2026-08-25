@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-08-25
 decision-makers: [Mathias]
 consulted: []

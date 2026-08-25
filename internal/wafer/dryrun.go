@@ -1,5 +1,9 @@
 package wafer
 
+import (
+	"os"
+)
+
 // DryRunResult is the outcome of a dry-run: the structured validation result
 // plus, when the Wafer is structurally valid, the resolved DAG the runner
 // would execute. Nothing is run, contacted, or persisted (SPEC: Phase 4 /
@@ -13,10 +17,17 @@ type DryRunResult struct {
 	// DAG is the resolved run order, or null when validation found blocking
 	// errors.
 	DAG *DAG `json:"dag"`
+	// Secrets lists the distinct secret names the workflow's steps declare,
+	// redacted (names only, never values). A declared secret missing from the
+	// environment is reported as a warning in Result (SPEC: dry-run confirms
+	// secrets resolve).
+	Secrets []string `json:"secrets,omitempty"`
 }
 
 // DryRun validates YAML bytes and resolves the workflow's dependency DAG
-// without executing, contacting, or persisting anything.
+// without executing, contacting, or persisting anything. When valid it also
+// collects the workflow's declared secret names and warns on any that are not
+// present in the current environment.
 func DryRun(data []byte) DryRunResult {
 	res := Validate(data)
 	out := DryRunResult{Result: res}
@@ -37,5 +48,33 @@ func DryRun(data []byte) DryRunResult {
 		return out
 	}
 	out.DAG = &dag
+
+	out.Secrets = declaredSecretNames(w)
+	for _, s := range out.Secrets {
+		if os.Getenv(s) == "" {
+			res.Warnings = append(res.Warnings, Issue{
+				Path:    "/steps",
+				Code:    codeMissingSecret,
+				Message: "declared secret \"" + s + "\" is not present in the environment",
+			})
+		}
+	}
+	out.Result = res
+	return out
+}
+
+// declaredSecretNames returns the distinct secret names declared across a
+// workflow's steps, in first-use order.
+func declaredSecretNames(w *Wafer) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range w.Steps {
+		for _, name := range s.Secrets {
+			if !seen[name] {
+				seen[name] = true
+				out = append(out, name)
+			}
+		}
+	}
 	return out
 }
