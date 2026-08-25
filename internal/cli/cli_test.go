@@ -258,3 +258,26 @@ func TestSwitchStepDefault(t *testing.T) {
 		t.Fatalf("switch default output = %q, want log_unknown", out.String())
 	}
 }
+
+func TestSwitchStepNoMatchNoDefaultFails(t *testing.T) {
+	payload := `{"input":{"event":{"id":"e1"},"steps":{"check":"medium"}},"cases":{"high":"notify_finance","low":"log_and_done"}}`
+
+	oldStdin := os.Stdin
+	t.Cleanup(func() { os.Stdin = oldStdin })
+	f, err := os.CreateTemp(t.TempDir(), "stdin-*.json")
+	if err != nil {
+		t.Fatalf("create stdin file: %v", err)
+	}
+	if _, err := f.WriteString(payload); err != nil {
+		t.Fatalf("write stdin: %v", err)
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		t.Fatalf("seek: %v", err)
+	}
+	os.Stdin = f
+
+	var out, errOut bytes.Buffer
+	if code := Run([]string{"__switch", `steps.check`}, &out, &errOut); code != exitFailure {
+		t.Fatalf("__switch no-match-no-default exit %d, want %d", code, exitFailure)
+	}
+}

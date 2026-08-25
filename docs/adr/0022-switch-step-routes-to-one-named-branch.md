@@ -89,9 +89,9 @@ as a two-case switch (for example `{true: ..., false: ...}`), so no separate
 
 `go test ./...` passes. Tests pin: a `switch` evaluates its expression against
 the `{event, steps}` input and enqueues exactly the named target step; an
-unmatched value falls back to `default` (or runs nothing if absent); and the
-chosen branch's job carries the threaded `{event, steps}` input. The `branch`
-step type is replaced by `switch`.
+unmatched value falls back to `default` (or the step fails if there is no
+`default`); and the chosen branch's job carries the threaded `{event, steps}`
+input. The `branch` step type is replaced by `switch`.
 
 ## Interface notes
 
