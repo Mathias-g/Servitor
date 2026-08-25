@@ -1,10 +1,11 @@
 // Package capabilities materializes the per-server capability set (SPEC: How
 // an agent discovers integrations) as files an agent can read on demand. For
 // each step and trigger type it writes the JSON Schema and a derived example
-// fragment, grouped by integration (with a `core` group for Servitor's own
-// types). A pipeline can commit the output directory so a remote agent reads
-// capabilities from the repo rather than reaching the loopback-only daemon
-// (ADR-0009).
+// fragment, grouped by mechanism (core, webhook, singer, mcp, helper,
+// websocket; ADR-0017). Discovered executables sit with their mechanism
+// (singer/taps.yaml, mcp/servers.yaml). A pipeline can commit the output
+// directory so a remote agent reads capabilities from the repo rather than
+// reaching the loopback-only daemon (ADR-0009).
 package capabilities
 
 import (
@@ -36,21 +37,21 @@ type entry struct {
 	Example     map[string]any `yaml:"example"`
 }
 
-// integration is one group in the index: its steps and triggers.
-type integration struct {
+// mechanism is one group in the index: its steps and triggers.
+type mechanism struct {
 	Name     string   `yaml:"name"`
 	Steps    []string `yaml:"steps"`
 	Triggers []string `yaml:"triggers"`
 }
 
-// index lists the integrations and the types each contains.
+// index lists the mechanisms and the types each contains.
 type index struct {
-	Generated    bool          `yaml:"generated"`
-	Integrations []integration `yaml:"integrations"`
+	Generated  bool        `yaml:"generated"`
+	Mechanisms []mechanism `yaml:"mechanisms"`
 }
 
 // Write materializes the capability set into dir. It creates the directory and
-// one subdirectory per integration, with one file per type, plus index.yaml.
+// one subdirectory per mechanism, with one file per type, plus index.yaml.
 func Write(dir string) error {
 	if dir == "" {
 		dir = DefaultDir
@@ -257,11 +258,11 @@ func writeEntry(dir string, e entry) error {
 }
 
 func writeIndex(dir string) error {
-	groups := map[string]*integration{}
+	groups := map[string]*mechanism{}
 	var groupNames []string
 	add := func(group string) {
 		if _, ok := groups[group]; !ok {
-			groups[group] = &integration{Name: group}
+			groups[group] = &mechanism{Name: group}
 			groupNames = append(groupNames, group)
 		}
 	}
@@ -276,10 +277,10 @@ func writeIndex(dir string) error {
 	sort.Strings(groupNames)
 	idx := index{Generated: true}
 	for _, name := range groupNames {
-		integ := groups[name]
-		sort.Strings(integ.Steps)
-		sort.Strings(integ.Triggers)
-		idx.Integrations = append(idx.Integrations, *integ)
+		mech := groups[name]
+		sort.Strings(mech.Steps)
+		sort.Strings(mech.Triggers)
+		idx.Mechanisms = append(idx.Mechanisms, *mech)
 	}
 	data, err := yaml.Marshal(idx)
 	if err != nil {

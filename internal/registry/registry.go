@@ -51,8 +51,8 @@ type StepType struct {
 	// SideEffect is true when the step performs externally-visible actions,
 	// which is what the missing_dedupe_key warning keys off (SPEC: Idempotency).
 	SideEffect bool
-	// Group is the integration this step belongs to, or Core for Servitor's
-	// own primitives (SPEC: What counts as an integration).
+	// Group is the mechanism this step belongs to, or Core for Servitor's own
+	// primitives (SPEC: What counts as an integration).
 	Group string
 	// Fields is the step's config schema, keyed by field name.
 	Fields map[string]*Field
@@ -62,7 +62,7 @@ type StepType struct {
 type TriggerType struct {
 	Name string
 	Desc string
-	// Group is the integration this trigger belongs to, or Core for Servitor's
+	// Group is the mechanism this trigger belongs to, or Core for Servitor's
 	// own triggers (SPEC: What counts as an integration).
 	Group  string
 	Fields map[string]*Field

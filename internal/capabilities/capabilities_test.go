@@ -30,7 +30,7 @@ func TestWriteProducesGroupedFiles(t *testing.T) {
 	}
 }
 
-func TestIndexListsIntegrations(t *testing.T) {
+func TestIndexListsMechanisms(t *testing.T) {
 	dir := t.TempDir()
 	if err := Write(dir); err != nil {
 		t.Fatalf("Write: %v", err)
@@ -46,13 +46,13 @@ func TestIndexListsIntegrations(t *testing.T) {
 	if !idx.Generated {
 		t.Fatal("index should be marked generated")
 	}
-	byName := map[string]*integration{}
-	for i := range idx.Integrations {
-		byName[idx.Integrations[i].Name] = &idx.Integrations[i]
+	byName := map[string]*mechanism{}
+	for i := range idx.Mechanisms {
+		byName[idx.Mechanisms[i].Name] = &idx.Mechanisms[i]
 	}
 	core, ok := byName["core"]
 	if !ok {
-		t.Fatal("index missing core integration")
+		t.Fatal("index missing core mechanism")
 	}
 	found := false
 	for _, s := range core.Steps {
@@ -61,7 +61,7 @@ func TestIndexListsIntegrations(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("core integration should list http step, got %v", core.Steps)
+		t.Fatalf("core mechanism should list http step, got %v", core.Steps)
 	}
 	webhook, ok := byName["webhook"]
 	if !ok {

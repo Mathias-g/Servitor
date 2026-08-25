@@ -74,12 +74,14 @@ and read the schemas:
 servitor capabilities ./capabilities
 ```
 
-This writes, per integration, one file per step and trigger type containing its
+This writes, per mechanism, one file per step and trigger type containing its
 JSON Schema and a derived example fragment, plus an `index.yaml` listing the
-integrations. Read `./capabilities/index.yaml` to see what exists, then read the
+mechanisms. Read `./capabilities/index.yaml` to see what exists, then read the
 schema for the specific type you need (for example
 `./capabilities/core/shell.yaml`) to learn its required fields and a valid
-example. The example is generated from the schema, so it cannot drift from it.
+example. Discovered executables sit with their mechanism (`singer/taps.yaml`,
+`mcp/servers.yaml`), so you can see what is installed to run against a step
+type. The example is generated from the schema, so it cannot drift from it.
 
 > A committed `capabilities/` directory is a materialized snapshot you can read
 > from the repo without a running daemon (ADR-0009). If a runner is reachable,

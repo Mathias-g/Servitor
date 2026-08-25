@@ -116,9 +116,11 @@ groups output by mechanism (`core/`, `webhook/`, `singer/`, `mcp/`,
 Additive to `servitor capabilities`: an `mcp` group whose servers are
 discovered from `mcp-*` on PATH, alongside the existing `tap-*`/`target-*`
 Singer discovery. Group names in the capabilities output change from
-service-based to mechanism-based (`grist/` → `webhook/`); consumers that read
-capabilities by directory should key on mechanism. The `mcp-call` step type
-(ADR-0015) and the Singer contract (ADR-0016) are unchanged.
+service-based to mechanism-based (`grist/` → `webhook/`), the `index.yaml` key
+becomes `mechanisms:` (was `integrations:`), and the discovered reports nest
+with their mechanism (`singer/taps.yaml`, `mcp/servers.yaml`); consumers that
+read capabilities by directory or index should key on mechanism. The `mcp-call`
+step type (ADR-0015) and the Singer contract (ADR-0016) are unchanged.
 
 ## More information
 

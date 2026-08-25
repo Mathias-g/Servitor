@@ -29,7 +29,7 @@ The artifact. Everything else reads, validates, and executes Wafers.
 
 How an agent learns what the server supports and how to use it (SPEC: How an agent discovers integrations). Capabilities are per-server: the set is what the runner has compiled in. The schema and example generator and the file writer are built here; reporting declared secrets (varlock) and available Singer taps belongs to the phases that build those integrations.
 
-- [x] A step-type and trigger-type registry, each entry with its JSON Schema, grouped by integration with a `core` group for Servitor's own types.
+- [x] A step-type and trigger-type registry, each entry with its JSON Schema, grouped by mechanism with a `core` group for Servitor's own types.
 - [x] The schema-to-example generator: render a Wafer fragment from a schema (skeleton from the schema, sample values from each property's `examples`).
 - [x] `servitor capabilities [dir]` writes, per step and trigger, the schema and its derived example to files, grouped by mechanism (`core`, `webhook`, `singer`, `mcp`, `helper`, `websocket`; ADR-0017), plus an index. A pipeline can commit the output so remote agents read it from the repo.
 - [x] Report declared secrets (names and presence, not values) in `capabilities` (a `secrets.yaml` from the varlock schema).
@@ -122,10 +122,10 @@ A standards-based integration path alongside the curated helpers (ADR-0015). The
 - [x] `mcp-call` step type: spawn the named MCP server as a subprocess with a filtered secret env, send one `tools/call` over stdio, read the structured JSON response, and exit (client-mode executor, distinct from the singer run-and-read executor built in Phase 11). The `mode` the server speaks (`classic`/`stateless`) is authored into the Wafer so a step never re-probes.
 - [x] Support both MCP protocol versions: probe once at discovery, cache the detected mode, speak the old `initialize` handshake or the new stateless `_meta`-carrying protocol accordingly.
 - [x] Map MCP tool results (the `isError` flag and content blocks) onto Servitor's structured validation error format (`path`, `code`, `message`, `suggestion`).
-- [ ] Capability discovery: discover installed `mcp-*` servers on PATH (ADR-0017), probe each once during a capabilities refresh, and report its tools and protocol mode. Not built yet; depends on the `mcp-*` enumeration being wired into capabilities.
+- [x] Capability discovery: discover installed `mcp-*` servers on PATH (ADR-0017), probe each once during a capabilities refresh, and report its tools and protocol mode in `mcp/servers.yaml`.
 - [ ] Pin server package versions the same way Singer taps are pinned.
 
-**Done when:** an agent can discover an MCP server's tools via `servitor capabilities`, author an `mcp-call` step, and run it as a subprocess with filtered secrets and correct error mapping, against both old- and new-spec servers. (Executor and protocol support are built and tested against fake servers; the `mcp-*` capabilities report is the remaining piece.)
+**Done when:** an agent can discover an MCP server's tools via `servitor capabilities`, author an `mcp-call` step, and run it as a subprocess with filtered secrets and correct error mapping, against both old- and new-spec servers.
 
 **v1 consumers:** Atomic via `mcp-call`; Grist, Slack, GitHub, email on curated helpers.
 
