@@ -101,5 +101,34 @@ The other Standard Webhooks tools (Verify Webhook, Simulate Request, the
 receiving-webhooks AI skill) are interactive debugging aids or agent-guidance,
 not libraries to integrate; the Go library is the only real candidate.
 
+## Native app for browsing runs and the like
+
+A dedicated native app, called "Servitor Desktop", that a human can connect to a
+Servitor runner "somehow" to browse runs and things like that: run history,
+step outcomes, events, and the state of registered workflows. The connection
+mechanism is deliberately left undefined for now (it could be a loopback or
+remote adapter over the daemon control protocol, or some future transport).
+
+Why this is attractive:
+
+- Run inspection today is CLI-only (`servitor runs`, `servitor run <id>`). A
+  GUI would make Servitor more approachable for operators who prefer a visual
+  view of what the runner did.
+- The daemon already exposes a control protocol, so a client is a natural
+  consumer of an existing surface rather than a whole new backend.
+
+Open questions to settle if this moves toward a decision:
+
+- How the app connects to the runner. The control plane is deliberately
+  loopback-only and operator-gated (ADR-0009), so the connection path is a real
+  design decision, not a given.
+- Whether the app is read-only (browse runs) or can also operate the runner
+  (submit, enable, disable, trigger, cancel).
+- The earlier "no MCP in v1" decision (ADR-0005) deferred a remote interface for
+  agents; a native app is a different consumer and would need its own decision.
+
+Not buildable until the connection mechanism is defined. Until then this is just
+a promising direction, kept here so it is not lost.
+
 ## (Add more ideas here as they come up; delete them when they become ADRs or
 ## are discarded.)
