@@ -42,12 +42,29 @@ steps:
 
 Submit it, enable it, and the next time a row is added to your Grist `Leads` table, a Slack message goes out.
 
+## System requirements
+
+Servitor is a single Go binary, but building and running it need a few things on
+the box:
+
+- **Linux or macOS** (cgo; see below). Windows is not currently supported.
+- **Go** (the version in `go.mod`), `make`, and a **C compiler** (gcc/clang). The
+  build uses cgo: the Honker SQLite extension requires the cgo `mattn/go-sqlite3`
+  driver, so the binary is not fully static (ADR-0004).
+- **Varlock** on `PATH`. The runner re-execs under `varlock run` to resolve
+  secrets into its environment. If it is missing, the runner boots anyway but
+  warns that secret resolution is off, and steps that declare secrets fail.
+- **The Honker SQLite extension** (`libhonker_ext.so`). It is not committed to
+  the repo; you download a pinned, checksummed build (ADR-0011). See step 3 of
+  Getting started.
+
 ## Getting started
 
-Servitor is a single Go binary. Build it, then run it; the runner re-execs
+Build it, download the Honker extension, then run it; the runner re-execs
 itself under varlock to resolve secrets and boots the daemon.
 
-1. **Build.** Requires Go (the version in `go.mod`) and `make`:
+1. **Build.** Requires Go (the version in `go.mod`), `make`, and a C compiler
+   (for cgo):
 
        make build        # produces bin/servitor
 
@@ -55,22 +72,33 @@ itself under varlock to resolve secrets and boots the daemon.
    `make release <new-version>` (for example `make release 0.2.0`), which bumps
    `VERSION`, rebuilds, and prints the git tag/push commands.
 
-2. **Declare and populate secrets.** Write a `.env.schema` declaring the secrets
-   your integrations need, and populate the values via
-   [varlock](https://varlock.dev) from whichever backing store you use.
+2. **Install varlock and declare secrets.** Varlock resolves secrets into the
+   runner's environment. Install it per [varlock.dev](https://varlock.dev), write
+   a `.env.schema` declaring the secrets your integrations need, and populate the
+   values via varlock from whichever backing store you use.
 
-3. **Run the runner.** `servitor` re-execs itself under varlock to resolve
+3. **Download the Honker extension.** It is a loadable SQLite extension, pinned
+   and checksummed (ADR-0011). The Linux x64 build for the version we pin:
+
+       mkdir -p /opt/servitor
+       curl -sL -o /tmp/honker-ext.tgz \
+         https://github.com/russellromney/honker/releases/download/ext-v0.5.0/honker-ext-linux-x64.tar.gz
+       (cd /opt/servitor && tar xzf /tmp/honker-ext.tgz)   # yields libhonker_ext.so
+
+   Point the runner at it with `HONKER_EXTENSION_PATH`. (Other platforms: build
+   or fetch the extension for your OS per the Honker docs.)
+
+4. **Run the runner.** `servitor` re-execs itself under varlock to resolve
    secrets into its environment, then boots the daemon and owns its SQLite file:
 
-       HONKER_EXTENSION_PATH=/path/to/libhonker_ext.so \
+       HONKER_EXTENSION_PATH=/opt/servitor/libhonker_ext.so \
          ./bin/servitor run --db ./servitor.db --webhook-addr :8080
 
-   `HONKER_EXTENSION_PATH` points at the Honker SQLite extension (a loadable
-   `.so`; see [ADR-0011](docs/adr/0011-honker-go-and-pinned-extension.md)).
-   `--webhook-addr` enables the inbound webhook receiver; omit it if you only
-   use `manual`/`cron` triggers.
+   `--db` is required: it enables the durable store, the worker/queue, and cron
+   triggers. `--webhook-addr` enables the inbound webhook receiver; omit it if
+   you only use `manual`/`cron` triggers.
 
-4. **Author and submit a Wafer.**
+5. **Author and submit a Wafer.**
 
        ./bin/servitor dry-run ./my-workflow.yml   # validate first
        ./bin/servitor submit ./my-workflow.yml    # register it
