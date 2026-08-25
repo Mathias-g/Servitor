@@ -45,13 +45,16 @@ func TestSelfHealResolvesSecrets(t *testing.T) {
 		t.Skip("varlock not installed; skipping varlock integration test")
 	}
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, ".env"),
-		[]byte("# @type=string\nDEMO_SECRET=s3cretvalue\n"), 0o644); err != nil {
-		t.Fatalf("write .env: %v", err)
-	}
+	// Canonical varlock layout (SPEC: Varlock): the schema declares the secret
+	// with @sensitive and an empty value; the actual value lives in the
+	// git-ignored, encrypted .env.local, not plaintext in the schema.
 	if err := os.WriteFile(filepath.Join(dir, ".env.schema"),
-		[]byte("DEMO_SECRET=s3cretvalue\n"), 0o644); err != nil {
+		[]byte("# @sensitive @type=string\nDEMO_SECRET=\n"), 0o644); err != nil {
 		t.Fatalf("write .env.schema: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".env.local"),
+		[]byte("DEMO_SECRET=s3cretvalue\n"), 0o600); err != nil {
+		t.Fatalf("write .env.local: %v", err)
 	}
 	exe, err := os.Executable()
 	if err != nil {

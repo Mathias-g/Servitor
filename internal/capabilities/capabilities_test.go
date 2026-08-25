@@ -139,15 +139,17 @@ func TestWriteSecretsWithVarlockReportsNamesAndPresence(t *testing.T) {
 	if _, err := exec.LookPath("varlock"); err != nil {
 		t.Skip("varlock not installed; skipping varlock-backed secrets test")
 	}
-	// Write a schema + env in the working dir so varlock resolves. MAYBE is
-	// optional and empty, so it is declared but not present; TOKEN is present.
+	// Canonical varlock layout (SPEC: Varlock): the schema declares each secret
+	// with its decorators and an empty value; the present value lives in the
+	// git-ignored .env.local. MAYBE is optional and empty, so it is declared
+	// but not present; TOKEN has a value, so it is present.
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, ".env"),
-		[]byte("# @type=string @optional\nMAYBE=\n# @type=string\nTOKEN=abc\n"), 0o644); err != nil {
-		t.Fatalf("write .env: %v", err)
-	}
 	if err := os.WriteFile(filepath.Join(dir, ".env.schema"),
-		[]byte("MAYBE=\nTOKEN=abc\n"), 0o644); err != nil {
+		[]byte("# @sensitive @type=string\nTOKEN=\n# @sensitive @optional @type=string\nMAYBE=\n"), 0o644); err != nil {
+		t.Fatalf("write .env.schema: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".env.local"),
+		[]byte("TOKEN=abc\n"), 0o600); err != nil {
 		t.Fatalf("write .env.schema: %v", err)
 	}
 	oldwd, _ := os.Getwd()
