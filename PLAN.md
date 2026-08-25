@@ -102,11 +102,23 @@ How an agent uses Servitor (SPEC: Consuming Servitor as a skill, ADR-0009).
 
 **Done when:** downloading and running the binary works with nothing else installed. (The runner is a single Go binary built with `make build`/`make release`; the only runtime dependency is the operator-supplied Honker extension, per ADR-0011, and varlock for secrets.)
 
-## Phase 11: MCP integration (mcp-call)
+## Phase 11: Singer integration
+
+The record-stream integration layer (SPEC: Singer, data movement integrations). The `singer-tap` / `singer-target` step types are registered but have no executor; this phase builds the subprocess execution pattern that `mcp-call` (Phase 12) is modeled on.
+
+- [ ] `singer-tap` step type executor: spawn the named tap as a subprocess with a filtered secret env, feed it config via stdin, capture the JSON records on stdout, and exit (run-and-read executor).
+- [ ] `singer-target` step type executor: spawn the named target as a subprocess and feed it the records.
+- [ ] State management: each tap's incremental sync state (the bookmark) stored in Honker and passed back into the next tap invocation (SPEC: State persistence).
+- [ ] Schema discovery: call the tap's `--about` and `--discover` once during a capabilities refresh and cache the config schema, available streams, and record schemas.
+- [ ] Report available Singer taps in `capabilities` (the half of the PLAN 35 item still blocked on this integration).
+
+**Done when:** a Wafer can run a real tap and target as subprocesses with filtered secrets and bookmark state, and an agent can discover a tap's schemas via `capabilities`.
+
+## Phase 12: MCP integration (mcp-call)
 
 A standards-based integration path alongside the curated helpers (ADR-0015). The curated helpers remain; `mcp-call` reaches the long tail of self-hostable MCP servers.
 
-- [ ] `mcp-call` step type: spawn the named MCP server as a subprocess with a filtered secret env, send one `tools/call` over stdio, read the structured JSON response, and exit (client-mode executor, distinct from the singer run-and-read executor).
+- [ ] `mcp-call` step type: spawn the named MCP server as a subprocess with a filtered secret env, send one `tools/call` over stdio, read the structured JSON response, and exit (client-mode executor, distinct from the singer run-and-read executor built in Phase 11).
 - [ ] Capability discovery: call the server's tool-listing method (`tools/list` / `server/discover`) once during a capabilities refresh and cache the per-tool schemas, not per step execution.
 - [ ] Support both MCP protocol versions: probe once at discovery, cache the detected mode, speak the old `initialize` handshake or the new stateless `_meta`-carrying protocol accordingly.
 - [ ] Map MCP tool results (the `isError` flag and content blocks) onto Servitor's structured validation error format (`path`, `code`, `message`, `suggestion`).
