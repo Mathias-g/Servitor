@@ -264,7 +264,7 @@ The integrations themselves are declared in a local `servitor.integrations.yaml`
 - `github_webhook`. GitHub-specific.
 - `slack_event`. Slack events (messages, mentions, and so on).
 - `atomic_event`. Atomic knowledge-base changes. Atomic is a separate, self-hostable project (atomicapp.ai) Servitor integrates with; it is not built as part of Servitor.
-- `email_received`. Inbound email parsed into a structured payload.
+- `email_received`. Inbound email parsed into a structured payload. Its `host`, `username`, and `secret` (a varlock secret name) name the mailbox, and its `poll` schedule (default every 5 minutes) polls it for new mail, firing one run per new email. Built for Google Workspace via IMAP (app password); other providers are future helpers.
 - *(more per-service trigger types as integrations are added)*
 - `cron`. Honker scheduler.
 - `manual`. Invoked via CLI.
@@ -298,10 +298,24 @@ Not all webhook types are served yet. `standard_webhook` and `http_webhook` are
 built and verify signatures, as are the `github_webhook` (HMAC-SHA256 in
 `X-Hub-Signature-256`) and `slack_event` (HMAC-SHA256 over `v0:<timestamp>:<body>`
 in `X-Slack-Signature`, with the `url_verification` handshake) receivers. The
-provider-specific types `grist_webhook` and `atomic_event`, and `email_received`,
-are registered and listed in capabilities but their receivers are not built, so a
+provider-specific webhook types `grist_webhook` and `atomic_event` are
+registered and listed in capabilities but their receivers are not built, so a
 workflow using one will not yet fire. Check the current build state (SPEC: Status)
 before relying on a provider-specific type.
+
+#### Using email triggers
+
+`email_received` polls a mailbox and fires one run per new email (ADR-0027). It
+is one kind of the general polling mechanism: a recurring poll runs a fetcher
+subprocess on a schedule and fans out one run per item, and `email_received`
+is the email instance. It takes `host` (the IMAP server, for example
+`imap.gmail.com`), `username`, and `secret` (the varlock secret name holding the
+app password, see SPEC: Varlock), plus an optional `poll` cron schedule (default
+every 5 minutes). Each new message is parsed into the run's event: `event.from`,
+`event.to`, `event.subject`, `event.body`, `event.date`, and `event.message_id`.
+Polling marks messages as read, so each email fires once. The first provider is
+Google Workspace over IMAP; a future provider is a different `host`/auth on the
+trigger, handled by its own helper (ADR-0027).
 
 ### Steps
 
@@ -500,7 +514,7 @@ Things deliberately out of scope for v1, kept here so the design doesn't quietly
 
 ## Status
 
-Early development. The daemon lifecycle, loopback control protocol, Wafer model and structured validation, capability discovery (including a `secrets.yaml` reporting declared secret names and presence, a `singer/taps.yaml` reporting declared Singer taps, and a `mcp/servers.yaml` reporting declared MCP servers; grouped by mechanism per ADR-0017, sourced from the declared integrations config per ADR-0018), dry-run DAG resolution (including redacted secret names and a `missing_secret` warning), the Honker durability store (with the transactional atom), step execution (the worker loop, subprocess isolation with env filtering, and the dedupe contract), the Singer integration (the `singer-tap` and `singer-target` executors, bookmark state committed with each tap step's result, and schema discovery; ADR-0016), the MCP integration (the `mcp-call` step type with a client-mode executor, both classic and stateless protocol support, and structured error mapping; ADR-0015), inbound triggers (a webhook receiver for Standard Webhooks, generic HMAC, and the GitHub and Slack provider-specific schemes, plus cron and manual), the varlock integration (self-healing launch and per-step secret filtering), the shipped `SKILL.md` agent reference, run inspection (`servitor runs`, `servitor run <id>`, `servitor cancel`), and the release flow (`make release`) are built (`servitor run`, `stop`, `dry-run`, `capabilities`, `submit`, `update`, `enable`, `disable`, `trigger`, `runs`, `run`, `cancel`), the `transform` step handler and `dedupe_key` evaluation (JSONata via gnata, ADR-0020; `{event, steps}` threaded input, ADR-0021), and the `switch` and `foreach` step handlers with dependency-counter fan-out (ADR-0022, ADR-0023, ADR-0024). Provider-specific webhook receivers for Grist and Atomic, the `email_received` trigger, and the curated helpers are not yet built. Open questions, to be resolved as implementation progresses and tracked in ADRs in the `docs/adr/` directory:
+Early development. The daemon lifecycle, loopback control protocol, Wafer model and structured validation, capability discovery (including a `secrets.yaml` reporting declared secret names and presence, a `singer/taps.yaml` reporting declared Singer taps, and a `mcp/servers.yaml` reporting declared MCP servers; grouped by mechanism per ADR-0017, sourced from the declared integrations config per ADR-0018), dry-run DAG resolution (including redacted secret names and a `missing_secret` warning), the Honker durability store (with the transactional atom), step execution (the worker loop, subprocess isolation with env filtering, and the dedupe contract), the Singer integration (the `singer-tap` and `singer-target` executors, bookmark state committed with each tap step's result, and schema discovery; ADR-0016), the MCP integration (the `mcp-call` step type with a client-mode executor, both classic and stateless protocol support, and structured error mapping; ADR-0015), inbound triggers (a webhook receiver for Standard Webhooks, generic HMAC, and the GitHub and Slack provider-specific schemes, plus cron and manual), the varlock integration (self-healing launch and per-step secret filtering), the shipped `SKILL.md` agent reference, run inspection (`servitor runs`, `servitor run <id>`, `servitor cancel`), and the release flow (`make release`) are built (`servitor run`, `stop`, `dry-run`, `capabilities`, `submit`, `update`, `enable`, `disable`, `trigger`, `runs`, `run`, `cancel`), the `transform` step handler and `dedupe_key` evaluation (JSONata via gnata, ADR-0020; `{event, steps}` threaded input, ADR-0021), and the `switch` and `foreach` step handlers with dependency-counter fan-out (ADR-0022, ADR-0023, ADR-0024). Provider-specific webhook receivers for Grist and Atomic, and the curated helpers (grist, slack, github, email send) are not yet built. Open questions, to be resolved as implementation progresses and tracked in ADRs in the `docs/adr/` directory:
 
 - Worker concurrency limits; runs execute as a dependency DAG with fan-out (ADR-0023), but branches run sequentially rather than in parallel.
 - The trigger receiver's framing of the remaining bespoke per-provider signing schemes (Grist and Atomic).

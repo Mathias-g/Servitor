@@ -151,6 +151,10 @@ type Config struct {
 	// the `internal` trigger (SPEC: `internal` trigger), without coupling the
 	// worker to the runner or trigger packages.
 	OnRunComplete func(workflowID, runID string)
+	// OnPoll, if set, is called when a `poll` step returns new items (ADR-0027).
+	// kind identifies the source (for example "email") so the caller can turn
+	// each item into a run's event without the worker knowing any provider.
+	OnPoll func(workflowID, kind string, items []any)
 }
 
 // Worker claims and executes jobs from a queue, committing each step's
@@ -164,6 +168,7 @@ type Worker struct {
 	singer   SingerRunner
 	mcp      MCPRunner
 	onDone   func(workflowID, runID string)
+	onPoll   func(workflowID, kind string, items []any)
 }
 
 // New builds a worker over the store's queue. workerID is used for Honker
@@ -190,6 +195,7 @@ func New(store *honker.Store, queue *honker.Queue, workerID string, cfg Config) 
 		singer:   cfg.Singer,
 		mcp:      cfg.MCP,
 		onDone:   cfg.OnRunComplete,
+		onPoll:   cfg.OnPoll,
 	}
 }
 
@@ -247,6 +253,12 @@ func (w *Worker) handle(ctx context.Context, claimed *honker.Job) error {
 	// element, collecting results at the rejoin (ADR-0024).
 	if sj.StepType == "foreach" {
 		return w.handleForeach(ctx, sj, claimed)
+	}
+
+	// A `poll` step runs a fetcher subprocess and hands the returned items to a
+	// callback so the caller can fan out one run per item (ADR-0027).
+	if sj.StepType == "poll" {
+		return w.handlePoll(ctx, sj, claimed)
 	}
 
 	return w.handleStep(ctx, sj, claimed)
@@ -487,6 +499,42 @@ func (w *Worker) handleForeach(ctx context.Context, sj StepJob, claimed *honker.
 		return fmt.Errorf("worker: commit foreach %s (job %d): %w", sj.StepID, claimed.ID, err)
 	}
 	return w.checkRunComplete(ctx, sj)
+}
+
+// handlePoll runs a `poll` step as a subprocess (ADR-0027) and hands the
+// returned items to the OnPoll callback so the caller can fan out one run per
+// item. The poll job carries its kind (for example "email") in Config, which
+// the callback uses to build each run's event without the worker knowing any
+// provider. The poll job is always acked: it runs on a schedule, so the next
+// fire retries on failure rather than spamming retries on the claim.
+func (w *Worker) handlePoll(ctx context.Context, sj StepJob, claimed *honker.Job) error {
+	if w.onPoll == nil {
+		_, _ = claimed.Ack()
+		return nil
+	}
+	if len(sj.Command) == 0 {
+		_, _ = claimed.Ack()
+		return fmt.Errorf("worker: poll %s (job %d): no command", sj.StepID, claimed.ID)
+	}
+	env, missing := exec.FilteredEnv(w.secrets, sj.Secrets)
+	if len(missing) > 0 {
+		_, _ = claimed.Ack()
+		return fmt.Errorf("worker: poll %s (job %d): missing secret(s): %s", sj.StepID, claimed.ID, strings.Join(missing, ", "))
+	}
+	res, rerr := w.runner.Run(ctx, exec.Request{Command: sj.Command, Env: env, Input: sj.Input})
+	if rerr != nil {
+		_, _ = claimed.Ack()
+		return fmt.Errorf("worker: poll %s (job %d): %w", sj.StepID, claimed.ID, rerr)
+	}
+	raw, ok := res.Output.([]any)
+	if !ok {
+		_, _ = claimed.Ack()
+		return fmt.Errorf("worker: poll %s (job %d): helper returned a non-list", sj.StepID, claimed.ID)
+	}
+	kind, _ := sj.Config["kind"].(string)
+	w.onPoll(sj.WorkflowID, kind, raw)
+	_, _ = claimed.Ack()
+	return nil
 }
 
 // runForeach runs the foreach step as a subprocess (ADR-0008) and returns the

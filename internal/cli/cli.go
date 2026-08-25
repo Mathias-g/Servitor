@@ -14,6 +14,7 @@ import (
 	"github.com/Mathias-g/Servitor/internal/capabilities"
 	"github.com/Mathias-g/Servitor/internal/daemon"
 	"github.com/Mathias-g/Servitor/internal/expression"
+	"github.com/Mathias-g/Servitor/internal/gmail"
 	"github.com/Mathias-g/Servitor/internal/protocol"
 	"github.com/Mathias-g/Servitor/internal/varlock"
 	"github.com/Mathias-g/Servitor/internal/wafer"
@@ -87,6 +88,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		// the list to iterate, so the worker can fan out the body once per
 		// element (ADR-0024).
 		return cmdForeachStep(args[1:], stdout, stderr)
+	case "__email_poll":
+		// Hidden subprocess entrypoint: the worker runs an `email_received`
+		// trigger's poll as a subprocess (ADR-0008). It reads the mailbox config
+		// on stdin, connects via IMAP (through the gmail helper), and returns
+		// the list of new emails, so the worker can fan out one run per email
+		// (ADR-0027).
+		return cmdEmailPoll(args[1:], stdout, stderr)
 	}
 
 	// The remaining commands are daemon operations scheduled for later phases.
@@ -618,6 +626,66 @@ func cmdForeachStep(args []string, stdout, stderr io.Writer) int {
 	enc := json.NewEncoder(stdout)
 	if err := enc.Encode(list); err != nil {
 		_, _ = fmt.Fprintf(stderr, "servitor: __foreach: encode result: %v\n", err)
+		return exitFailure
+	}
+	return exitOK
+}
+
+// cmdEmailPoll is the hidden subprocess entrypoint for an `email_received`
+// trigger's poll (ADR-0027). It reads the mailbox config on stdin as
+// `{host, username, secret}`, where `secret` is the name of an env var holding
+// the password (filtered into the subprocess env, SPEC: Varlock). It connects
+// via IMAP through the gmail helper, fetches the new (unseen) messages, and
+// writes them as a JSON array to stdout. The worker runs this as a subprocess
+// (ADR-0008) and fans out one run per returned email.
+func cmdEmailPoll(args []string, stdout, stderr io.Writer) int {
+	if len(args) != 0 {
+		_, _ = fmt.Fprintf(stderr, "servitor: __email_poll: unexpected arguments\n")
+		return exitUsage
+	}
+	data, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: __email_poll: read input: %v\n", err)
+		return exitFailure
+	}
+	var cfg struct {
+		Host     string `json:"host"`
+		Username string `json:"username"`
+		Secret   string `json:"secret"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: __email_poll: invalid config: %v\n", err)
+		return exitFailure
+	}
+	if cfg.Host == "" || cfg.Username == "" || cfg.Secret == "" {
+		_, _ = fmt.Fprintf(stderr, "servitor: __email_poll: host, username, and secret are required\n")
+		return exitFailure
+	}
+	password := os.Getenv(cfg.Secret)
+	if password == "" {
+		_, _ = fmt.Fprintf(stderr, "servitor: __email_poll: secret %q not resolved in environment\n", cfg.Secret)
+		return exitFailure
+	}
+
+	f, err := gmail.Dial(context.Background(), gmail.Config{
+		Host:     cfg.Host,
+		Username: cfg.Username,
+		Password: password,
+	})
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: __email_poll: %v\n", err)
+		return exitFailure
+	}
+	defer func() { _ = f.Close() }()
+
+	emails, err := f.FetchNew()
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: __email_poll: %v\n", err)
+		return exitFailure
+	}
+	enc := json.NewEncoder(stdout)
+	if err := enc.Encode(emails); err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: __email_poll: encode result: %v\n", err)
 		return exitFailure
 	}
 	return exitOK

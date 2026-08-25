@@ -309,3 +309,58 @@ func RegisterCron(store *honker.Store, queue *honker.Queue, w *wafer.Wafer, task
 	}
 	return nil
 }
+
+// PollTask is a registered recurring poll. When the schedule fires, Honker
+// enqueues a poll job that runs a helper subprocess (ADR-0027) and returns a
+// list of new items; the worker hands them to a callback so the caller can fan
+// out one run per item. `email_received` is the first poll kind; a future
+// polled source is a new kind and command.
+type PollTask struct {
+	// Name uniquely identifies the scheduled poll (for example
+	// "<workflow>:email-0").
+	Name string
+	// Schedule is the cron expression from the trigger's `poll` config field.
+	Schedule string
+	// WorkflowID is the workflow the poll belongs to; new items fan out into
+	// runs of it.
+	WorkflowID string
+	// Kind identifies the poll source (for example "email"). The callback uses
+	// it to turn each item into a run's event.
+	Kind string
+	// Command is the helper subprocess to run (for example the servitor binary
+	// with `__email_poll`).
+	Command []string
+	// Secrets are the secret names filtered into the subprocess env.
+	Secrets []string
+	// Config is the trigger's config, passed to the helper on stdin.
+	Config map[string]any
+}
+
+// RegisterPoll registers a recurring poll. schedule comes from the trigger's
+// `poll` config field. The poll runs as a subprocess (ADR-0008), so it never
+// runs inside the runner's process.
+func RegisterPoll(store *honker.Store, queue *honker.Queue, task PollTask) error {
+	if len(task.Command) == 0 {
+		return fmt.Errorf("poll: %s has no command", task.Name)
+	}
+	pollJob := &worker.StepJob{
+		WorkflowID: task.WorkflowID,
+		StepID:     "poll",
+		StepName:   "poll",
+		StepType:   "poll",
+		Config:     map[string]any{"kind": task.Kind},
+		Command:    task.Command,
+		Secrets:    task.Secrets,
+		Input:      task.Config,
+	}
+	err := store.RegisterScheduledTask(honker.ScheduledTask{
+		Name:     task.Name,
+		Queue:    queue.Name(),
+		Schedule: task.Schedule,
+		Payload:  pollJob,
+	})
+	if err != nil {
+		return fmt.Errorf("poll: register %s: %w", task.Name, err)
+	}
+	return nil
+}

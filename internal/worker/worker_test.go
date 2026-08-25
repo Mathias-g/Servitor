@@ -355,6 +355,43 @@ func TestRunMarkedCompletedAfterLastStep(t *testing.T) {
 	}
 }
 
+func TestEmailPollHandsEmailsToCallback(t *testing.T) {
+	w, _, q := newWorker(t, 30, 3, map[string]string{"PASS": "pw"})
+	var gotKind string
+	var got []any
+	w.onPoll = func(wf, kind string, items []any) { gotKind = kind; got = items }
+	w.runner = stubRunner{out: []any{
+		map[string]any{"from": "a@b.com", "to": []any{"x@y.com"}, "subject": "Hi", "body": "yo"},
+	}}
+
+	if _, err := q.Enqueue(StepJob{
+		RunID: "poll", WorkflowID: "wf", StepID: "poll", StepName: "poll",
+		StepType: "poll", Command: []string{"ignored"},
+		Secrets: []string{"PASS"},
+		Config:  map[string]any{"kind": "email"},
+		Input:   map[string]any{"host": "imap.example.com", "username": "u", "secret": "PASS"},
+	}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	job, err := q.ClaimOne("worker-1")
+	if err != nil || job == nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := w.handle(context.Background(), job); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if gotKind != "email" {
+		t.Fatalf("kind = %q, want email", gotKind)
+	}
+	if len(got) != 1 {
+		t.Fatalf("callback got %d items, want 1", len(got))
+	}
+	item, _ := got[0].(map[string]any)
+	if item["subject"] != "Hi" {
+		t.Fatalf("item = %v, want subject Hi", got[0])
+	}
+}
+
 func TestOnRunCompleteFiresWhenRunFinishes(t *testing.T) {
 	var gotWorkflow, gotRun string
 	ext := extPath(t)

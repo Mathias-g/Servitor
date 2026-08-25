@@ -203,6 +203,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request, requireE
 				http.Error(w, "unregister old cron: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
+			if err := s.unregisterEmail(old); err != nil {
+				http.Error(w, "unregister old email: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 	}
 	if err := s.store.RegisterWorkflow(wf.Name, string(body)); err != nil {
@@ -211,6 +215,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request, requireE
 	}
 	if err := s.registerCron(wf); err != nil {
 		http.Error(w, "register cron: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := s.registerEmail(wf); err != nil {
+		http.Error(w, "register email: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	_, _ = io.WriteString(w, "ok\n")
@@ -295,9 +303,15 @@ func (s *Server) syncCron(name string, enabled bool) error {
 		return perr
 	}
 	if enabled {
-		return s.registerCron(w)
+		if err := s.registerCron(w); err != nil {
+			return err
+		}
+		return s.registerEmail(w)
 	}
-	return s.unregisterCron(w)
+	if err := s.unregisterCron(w); err != nil {
+		return err
+	}
+	return s.unregisterEmail(w)
 }
 
 // unregisterCron removes the scheduled task for every `cron` trigger in the
@@ -309,6 +323,63 @@ func (s *Server) unregisterCron(w *wafer.Wafer) error {
 		}
 		if _, err := s.store.UnregisterScheduledTask(fmt.Sprintf("%s:cron-%d", w.Name, i)); err != nil {
 			return fmt.Errorf("cron: unregister %s:cron-%d: %w", w.Name, i, err)
+		}
+	}
+	return nil
+}
+
+// registerEmail registers a recurring poll for every `email_received` trigger
+// in the Wafer (SPEC: Triggers, `email_received`). The poll runs on the
+// trigger's `poll` cron schedule (default every 5 minutes), and each poll fans
+// out one run per new email. A workflow with no `email_received` trigger
+// registers nothing.
+func (s *Server) registerEmail(w *wafer.Wafer) error {
+	if s.store == nil || s.queue == nil {
+		return nil
+	}
+	for i, tr := range w.On {
+		if tr.Type != "email_received" {
+			continue
+		}
+		schedule, _ := tr.Config["poll"].(string)
+		if schedule == "" {
+			schedule = "*/5 * * * *"
+		}
+		host, _ := tr.Config["host"].(string)
+		username, _ := tr.Config["username"].(string)
+		secret, _ := tr.Config["secret"].(string)
+		if host == "" || username == "" || secret == "" {
+			return fmt.Errorf("email_received trigger %d requires host, username, and secret", i)
+		}
+		exe, err := os.Executable()
+		if err != nil {
+			return fmt.Errorf("email_received: locate servitor binary: %w", err)
+		}
+		err = runner.RegisterPoll(s.store, s.queue, runner.PollTask{
+			Name:       fmt.Sprintf("%s:email-%d", w.Name, i),
+			Schedule:   schedule,
+			WorkflowID: w.Name,
+			Kind:       "email",
+			Command:    []string{exe, "__email_poll"},
+			Secrets:    []string{secret},
+			Config:     tr.Config,
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// unregisterEmail removes the scheduled poll for every `email_received` trigger
+// in the Wafer (the inverse of registerEmail).
+func (s *Server) unregisterEmail(w *wafer.Wafer) error {
+	for i, tr := range w.On {
+		if tr.Type != "email_received" {
+			continue
+		}
+		if _, err := s.store.UnregisterScheduledTask(fmt.Sprintf("%s:email-%d", w.Name, i)); err != nil {
+			return fmt.Errorf("email: unregister %s:email-%d: %w", w.Name, i, err)
 		}
 	}
 	return nil
@@ -491,6 +562,13 @@ func Run(ctx context.Context, cfg Config) error {
 				OnRunComplete: func(workflowID, runID string) {
 					if srv.receiver != nil {
 						_ = srv.receiver.Internal(workflowID, runID)
+					}
+				},
+				// When a `poll` returns new items, start a run per item
+				// (ADR-0027). The receiver dispatches on the poll kind.
+				OnPoll: func(workflowID, kind string, items []any) {
+					if srv.receiver != nil {
+						_ = srv.receiver.Polled(workflowID, kind, items)
 					}
 				},
 			})

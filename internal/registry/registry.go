@@ -164,7 +164,12 @@ var triggerTypes = []*TriggerType{
 	{Name: "github_webhook", Desc: "GitHub-specific receiver.", Group: Webhook, Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/github"}}, "secret": {Type: "string", Desc: "Secret name to verify the X-Hub-Signature-256 header with.", Examples: []any{"GITHUB_WEBHOOK_SECRET"}}}},
 	{Name: "slack_event", Desc: "Slack events (messages, mentions).", Group: Webhook, Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/slack"}}, "secret": {Type: "string", Desc: "Secret name to verify the X-Slack-Signature header with.", Examples: []any{"SLACK_SIGNING_SECRET"}}}},
 	{Name: "atomic_event", Desc: "Atomic knowledge-base changes.", Group: Webhook, Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/atomic"}}}},
-	{Name: "email_received", Desc: "Inbound email parsed into a structured payload.", Group: Helper, Fields: map[string]*Field{}},
+	{Name: "email_received", Desc: "Inbound email parsed into a structured payload.", Group: Helper, Fields: map[string]*Field{
+		"host":     {Type: "string", Required: true, Desc: "IMAP host of the mailbox, for example imap.gmail.com.", Examples: []any{"imap.gmail.com"}},
+		"username": {Type: "string", Required: true, Desc: "Mailbox account, for example me@company.com.", Examples: []any{"me@company.com"}},
+		"secret":   {Type: "string", Required: true, Desc: "Varlock secret name holding the app password.", Examples: []any{"GMAIL_APP_PASSWORD"}},
+		"poll":     {Type: "string", Desc: "Cron schedule to poll for new mail; default every 5 minutes.", Examples: []any{"*/5 * * * *"}},
+	}},
 	{Name: "cron", Desc: "Run on the Honker scheduler.", Group: Core, Fields: map[string]*Field{"schedule": {Type: "string", Required: true, Desc: "Cron expression.", Examples: []any{"0 * * * *"}}}},
 	{Name: "manual", Desc: "Invoked via the CLI.", Group: Core, Fields: map[string]*Field{}},
 	{Name: "internal", Desc: "Fired by another workflow's completion.", Group: Core, Fields: map[string]*Field{"workflow": {Type: "string", Required: true, Desc: "The workflow that fires this.", Examples: []any{"upstream-workflow"}}}},

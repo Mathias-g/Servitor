@@ -494,3 +494,110 @@ steps:
 		t.Fatal("run enqueued for a disabled workflow")
 	}
 }
+
+func TestEmailReceivedFiresRunPerEmail(t *testing.T) {
+	r, store, q := newReceiver(t, map[string]string{})
+	register(t, store, `
+name: mail
+on:
+  - type: email_received
+    host: imap.gmail.com
+    username: me@company.com
+    secret: GMAIL_APP_PASSWORD
+steps:
+  - type: shell
+    name: a
+    command: "true"
+`)
+	items := []any{
+		map[string]any{"from": "a@b.com", "to": []string{"me@company.com"}, "subject": "One", "body": "first"},
+		map[string]any{"from": "c@d.com", "to": []string{"me@company.com"}, "subject": "Two", "body": "second"},
+	}
+	if err := r.Polled("mail", "email", items); err != nil {
+		t.Fatalf("Polled: %v", err)
+	}
+	// Two emails => two enqueued runs.
+	seen := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		job, err := q.ClaimOne("worker-1")
+		if err != nil || job == nil {
+			t.Fatalf("run %d not enqueued: %v", i, err)
+		}
+		var sj worker.StepJob
+		if err := job.UnmarshalPayload(&sj); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if sj.WorkflowID != "mail" {
+			t.Fatalf("workflow = %q, want mail", sj.WorkflowID)
+		}
+		ev := sj.Input["event"].(map[string]any)
+		if ev["trigger"] != "email_received" {
+			t.Fatalf("event trigger = %v, want email_received", ev["trigger"])
+		}
+		seen[ev["subject"].(string)] = true
+	}
+	if !seen["One"] || !seen["Two"] {
+		t.Fatalf("subjects = %v, want One and Two", seen)
+	}
+	if job, _ := q.ClaimOne("worker-1"); job != nil {
+		t.Fatal("more runs enqueued than emails")
+	}
+}
+
+func TestEmailReceivedSkipsDisabledWorkflow(t *testing.T) {
+	r, store, q := newReceiver(t, map[string]string{})
+	register(t, store, `
+name: mail
+on:
+  - type: email_received
+    host: imap.gmail.com
+    username: me@company.com
+    secret: GMAIL_APP_PASSWORD
+steps:
+  - type: shell
+    name: a
+    command: "true"
+`)
+	if err := store.SetWorkflowEnabled("mail", false); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if err := r.Polled("mail", "email", []any{map[string]any{"subject": "Hi"}}); err != nil {
+		t.Fatalf("Polled: %v", err)
+	}
+	if job, _ := q.ClaimOne("worker-1"); job != nil {
+		t.Fatal("run enqueued for a disabled workflow")
+	}
+}
+
+func TestPolledUnknownKindPassesItemThrough(t *testing.T) {
+	r, store, q := newReceiver(t, map[string]string{})
+	register(t, store, `
+name: feed
+on:
+  - type: poll
+    kind: rss
+    schedule: "*/5 * * * *"
+steps:
+  - type: shell
+    name: a
+    command: "true"
+`)
+	if err := r.Polled("feed", "rss", []any{map[string]any{"title": "post"}}); err != nil {
+		t.Fatalf("Polled: %v", err)
+	}
+	job, err := q.ClaimOne("worker-1")
+	if err != nil || job == nil {
+		t.Fatalf("run not enqueued: %v", err)
+	}
+	var sj worker.StepJob
+	if err := job.UnmarshalPayload(&sj); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	ev := sj.Input["event"].(map[string]any)
+	if ev["trigger"] != "rss" {
+		t.Fatalf("event trigger = %v, want rss", ev["trigger"])
+	}
+	if _, ok := ev["item"].(map[string]any); !ok {
+		t.Fatalf("event item missing: %v", ev)
+	}
+}

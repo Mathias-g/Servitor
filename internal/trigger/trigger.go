@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Mathias-g/Servitor/internal/email"
 	"github.com/Mathias-g/Servitor/internal/honker"
 	"github.com/Mathias-g/Servitor/internal/runner"
 	"github.com/Mathias-g/Servitor/internal/wafer"
@@ -211,6 +212,61 @@ func (r *Receiver) Internal(completedWorkflow, completedRun string) error {
 		}
 	}
 	return nil
+}
+
+// Polled fires a run of the given workflow for each item a `poll` returned
+// (ADR-0027), dispatching on the poll kind to build each run's event. For
+// "email", each item is an email and becomes `event.subject`, `event.from`, and
+// so on. It does nothing when the workflow is not registered or is disabled.
+func (r *Receiver) Polled(workflowID, kind string, items []any) error {
+	wf, err := r.store.GetWorkflow(workflowID)
+	if err != nil {
+		return fmt.Errorf("trigger: poll get workflow %q: %w", workflowID, err)
+	}
+	if wf == nil || !wf.Enabled {
+		return nil
+	}
+	w, perr := wafer.Parse([]byte(wf.Wafer))
+	if perr != nil {
+		return fmt.Errorf("trigger: poll workflow %q: %w", workflowID, perr)
+	}
+	for _, item := range items {
+		event, err := pollEvent(kind, item)
+		if err != nil {
+			return err
+		}
+		runID := fmt.Sprintf("%s-poll-%d", w.Name, r.now().UnixNano())
+		if _, err := runner.StartRun(r.store, r.queue, w, event, runID); err != nil {
+			return fmt.Errorf("trigger: poll %q: %w", w.Name, err)
+		}
+	}
+	return nil
+}
+
+// pollEvent builds a run's event payload from a poll item of the given kind.
+func pollEvent(kind string, item any) (map[string]any, error) {
+	switch kind {
+	case "email":
+		e := email.Email{}
+		raw, err := json.Marshal(item)
+		if err != nil {
+			return nil, fmt.Errorf("trigger: poll email encode: %w", err)
+		}
+		if err := json.Unmarshal(raw, &e); err != nil {
+			return nil, fmt.Errorf("trigger: poll email decode: %w", err)
+		}
+		return map[string]any{
+			"trigger":    "email_received",
+			"from":       e.From,
+			"to":         e.To,
+			"subject":    e.Subject,
+			"body":       e.Body,
+			"date":       e.Date,
+			"message_id": e.MessageID,
+		}, nil
+	default:
+		return map[string]any{"trigger": kind, "item": item}, nil
+	}
 }
 
 // isWebhookType reports whether the trigger type is served by the webhook
