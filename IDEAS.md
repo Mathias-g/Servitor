@@ -127,8 +127,57 @@ Open questions to settle if this moves toward a decision:
 - The earlier "no MCP in v1" decision (ADR-0005) deferred a remote interface for
   agents; a native app is a different consumer and would need its own decision.
 
-Not buildable until the connection mechanism is defined. Until then this is just
-a promising direction, kept here so it is not lost.
+### Wafers as a diagram
+
+A first-class feature of Servitor Desktop should be rendering Wafers as a visual
+diagram, the way people are used to seeing workflows on Zapier or similar, built
+on an existing open-source graph/diagram library rather than from scratch. A Wafer
+is already a dependency DAG (ADR-0023), so it maps naturally onto a node graph:
+triggers (the `on:` entries) at the top, steps as nodes, edges for `depends_on`,
+and the branch/loop structure for `switch` and `foreach`.
+
+Two tiers, in order of priority:
+
+1. **Inspect (primary).** Read a Wafer (from the connected runner's registered
+   workflows, or a local file) and render it as an editable-layout diagram:
+   nodes per step, edges for dependencies, and clear visuals for switch branches
+   and foreach fan-out. This is read-only and the natural first cut, consistent
+   with Servitor being agent-first (the artifact, not a builder, is the source
+   of truth).
+2. **Create (secondary).** Let a user assemble a Wafer in the diagram and save
+   it back as YAML. Secondary because Servitor is agent-first: agents author
+   Wafers via the CLI/skill, so the visual builder is a convenience for humans,
+   not the primary authoring path. If built, it must round-trip losslessly to
+   the Wafer YAML (the artifact stays authoritative; the diagram generates and
+   edits that YAML, never a divergent database row).
+
+The diagram-first direction leans on the same "the Wafer is the artifact" rule
+as the rest of Servitor (SPEC: The Wafer): the app renders and edits the YAML,
+it never becomes a second source of truth.
+
+### Library: React Flow
+
+Leaning toward **React Flow** (`@xyflow/react`, MIT) for the diagram, the same
+library n8n uses, over the other candidates researched (Cytoscape.js, AntV G6,
+vis-network, JointJS). Cytoscape.js + cytoscape-dagre was considered first as
+the lighter, zero-dependency, vanilla-JS fit for a Wails webview, but its demo
+is too bare bones for the richer node-editor experience wanted, and editing is a
+real (if secondary) goal. React Flow is the strongest node-based editor and
+handles both inspect and create well.
+
+The cost: React Flow needs **React + a bundler** (for example Vite), so the
+frontend stops being a vanilla embedded page like Playwrap's launcher and
+becomes a small React app bundled into the Wails window. It has **no built-in
+auto-layout**; pair it with **dagre** (MIT) or elkjs for the automatic DAG
+layout (which is what read-only inspection relies on).
+
+Revisit the choice when actually building: if it turns out read-only inspection
+is the whole need and editing is never wanted, Cytoscape.js's simplicity becomes
+attractive again. For now, with editing in mind, React Flow is the leaning.
+
+Not buildable until the connection mechanism (or a local-file path for
+inspection) is defined. Until then this is just a promising direction, kept here
+so it is not lost.
 
 ## (Add more ideas here as they come up; delete them when they become ADRs or
 ## are discarded.)
