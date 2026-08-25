@@ -76,6 +76,11 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		// a subprocess of the servitor binary itself (ADR-0008), so every step,
 		// including pure-computation steps, runs outside the runner's process.
 		return cmdTransformStep(args[1:], stdout, stderr)
+	case "__switch":
+		// Hidden subprocess entrypoint: the worker runs a `switch` step as a
+		// subprocess (ADR-0008) that evaluates the routing expression and
+		// returns the chosen branch's target step name (ADR-0022).
+		return cmdSwitchStep(args[1:], stdout, stderr)
 	}
 
 	// The remaining commands are daemon operations scheduled for later phases.
@@ -501,6 +506,71 @@ func cmdTransformStep(args []string, stdout, stderr io.Writer) int {
 		return exitFailure
 	}
 	return exitOK
+}
+
+// cmdSwitchStep is the hidden subprocess entrypoint for a `switch` step
+// (ADR-0020, ADR-0022). It reads a JSON object on stdin: `input` (the step's
+// `{event, steps}` input), `cases` (map of value to target step name), and
+// `default` (optional fallback step name). It evaluates the JSONata expression
+// given as its single argument, matches the value against `cases`, and writes
+// the chosen target step name as JSON to stdout. The worker runs this as a
+// subprocess (ADR-0008) and uses the returned target to do the fan-out.
+func cmdSwitchStep(args []string, stdout, stderr io.Writer) int {
+	if len(args) != 1 {
+		_, _ = fmt.Fprintf(stderr, "servitor: __switch: usage: __switch <expression>\n")
+		return exitUsage
+	}
+	expr := args[0]
+
+	data, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: __switch: read input: %v\n", err)
+		return exitFailure
+	}
+	var payload struct {
+		Input   any            `json:"input"`
+		Cases   map[string]any `json:"cases"`
+		Default string         `json:"default"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: __switch: input is not valid JSON: %v\n", err)
+		return exitFailure
+	}
+
+	value, err := expression.Eval(expr, payload.Input)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: __switch: %v\n", err)
+		return exitFailure
+	}
+	key := stringify(value)
+	target, ok := payload.Cases[key]
+	if !ok {
+		target = payload.Default
+	}
+	if target == "" {
+		_, _ = fmt.Fprintf(stderr, "servitor: __switch: no case matches %q and no default\n", key)
+		return exitFailure
+	}
+	enc := json.NewEncoder(stdout)
+	if err := enc.Encode(target); err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: __switch: encode result: %v\n", err)
+		return exitFailure
+	}
+	return exitOK
+}
+
+// stringify renders a JSONata result as the case-key string to match against
+// the `cases` map. A string result is used as-is; anything else is its JSON
+// representation, so numeric or boolean keys match consistently.
+func stringify(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("%v", v)
+	}
+	return string(raw)
 }
 
 // renderDryRunPlan prints a readable plan: the workflow name and triggers, then

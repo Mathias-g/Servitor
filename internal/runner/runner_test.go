@@ -241,3 +241,90 @@ steps:
 		t.Fatalf("head dedupe_key = %q, want event.id", head.DedupeKey)
 	}
 }
+
+func TestFromWaferBuildsSwitchDAG(t *testing.T) {
+	w, err := wafer.Parse([]byte(`
+name: demo
+on: []
+steps:
+  - type: transform
+    name: check
+    expression: "if (event.amount > 1000) then 'high' else 'low'"
+  - type: switch
+    name: route
+    depends_on: [check]
+    expression: "steps.check"
+    cases:
+      high: notify_finance
+      low: log_and_done
+  - type: shell
+    name: notify_finance
+    depends_on: [route]
+    command: "printf '{}'"
+  - type: shell
+    name: log_and_done
+    depends_on: [route]
+    command: "printf '{}'"
+  - type: shell
+    name: record
+    depends_on: [notify_finance, log_and_done]
+    command: "printf '{}'"
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	head, err := FromWafer(w, map[string]any{"amount": 2400})
+	if err != nil {
+		t.Fatalf("FromWafer: %v", err)
+	}
+	if head.StepID != "check" {
+		t.Fatalf("head = %q, want check", head.StepID)
+	}
+	// Find the switch step's job and check it carries both branch heads.
+	route := findStep(t, head, "route")
+	if route == nil {
+		t.Fatal("no route step in DAG")
+	}
+	if len(route.Dependents) != 2 {
+		t.Fatalf("route dependents = %v, want [notify_finance log_and_done]", route.Dependents)
+	}
+	if !stepDependsOn(t, route, "notify_finance", "log_and_done") {
+		t.Fatal("route should feed both branch heads")
+	}
+}
+
+func findStep(t *testing.T, head *worker.StepJob, id string) *worker.StepJob {
+	t.Helper()
+	seen := map[*worker.StepJob]bool{}
+	var walk func(j *worker.StepJob) *worker.StepJob
+	walk = func(j *worker.StepJob) *worker.StepJob {
+		if j == nil || seen[j] {
+			return nil
+		}
+		seen[j] = true
+		if j.StepID == id {
+			return j
+		}
+		for i := range j.Downstream {
+			if found := walk(&j.Downstream[i]); found != nil {
+				return found
+			}
+		}
+		return nil
+	}
+	return walk(head)
+}
+
+func stepDependsOn(t *testing.T, route *worker.StepJob, deps ...string) bool {
+	t.Helper()
+	set := map[string]bool{}
+	for _, d := range route.Dependents {
+		set[d] = true
+	}
+	for _, dep := range deps {
+		if !set[dep] {
+			return false
+		}
+	}
+	return true
+}

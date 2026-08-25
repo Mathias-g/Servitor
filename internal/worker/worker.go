@@ -54,6 +54,10 @@ type StepJob struct {
 	// Secrets are the names of the secrets this step declares. The subprocess
 	// environment is filtered to exactly these.
 	Secrets []string
+	// Skip marks a job that is part of a non-chosen switch branch. It records
+	// the step as skipped (ADR-0023) and cascades to its dependents without
+	// executing anything.
+	Skip bool
 	// Dependents are the ids of the steps that depend on this one. When this
 	// step completes, the worker decrements each dependent's count and enqueues
 	// it (from Downstream, aligned by index) only when its count reaches zero
@@ -202,6 +206,23 @@ func (w *Worker) handle(ctx context.Context, claimed *honker.Job) error {
 		return nil
 	}
 
+	// A skip-job (a non-chosen switch branch) records skipped and cascades
+	// without executing anything (ADR-0023).
+	if sj.Skip {
+		return w.handleSkip(ctx, sj, claimed)
+	}
+
+	// A switch step resolves its branch and routes: chosen branch enqueued
+	// normally, skipped branches enqueued as skip-jobs (ADR-0022).
+	if sj.StepType == "switch" {
+		return w.handleSwitch(ctx, sj, claimed)
+	}
+
+	return w.handleStep(ctx, sj, claimed)
+}
+
+// handleStep runs a normal step, commits its atom, and cascades to dependents.
+func (w *Worker) handleStep(ctx context.Context, sj StepJob, claimed *honker.Job) error {
 	// Resolve the step's dedupe_key JSONata expression against its {event, steps}
 	// input at execution time (ADR-0020, ADR-0021). The resolved key is used for
 	// the dedupe lookup and, on completion, for the dedupe record.
@@ -218,10 +239,11 @@ func (w *Worker) handle(ctx context.Context, claimed *honker.Job) error {
 	}
 
 	atom := honker.StepAtom{
-		RunID:  sj.RunID,
-		StepID: sj.StepID,
-		Result: result,
-		Job:    claimed,
+		RunID:      sj.RunID,
+		StepID:     sj.StepID,
+		Result:     result,
+		Job:        claimed,
+		Dependents: sj.Dependents,
 	}
 	if state != nil {
 		atom.SingerState = state
@@ -245,10 +267,110 @@ func (w *Worker) handle(ctx context.Context, claimed *honker.Job) error {
 	if err := w.store.CommitStepAtom(atom); err != nil {
 		return fmt.Errorf("worker: commit step %s (job %d): %w", sj.StepID, claimed.ID, err)
 	}
+	return w.checkRunComplete(ctx, sj)
+}
 
-	// The last step in a run's chain (no downstream) marks the run done.
-	if len(sj.Downstream) == 0 {
-		_ = w.store.SetRunStatus(sj.RunID, honker.RunCompleted)
+// handleSkip records a non-chosen switch branch step as skipped and cascades:
+// it decrements its dependents' counts and enqueues its own downstream as
+// skip-jobs, so a skipped branch propagates to a rejoin without executing
+// anything (ADR-0023).
+func (w *Worker) handleSkip(ctx context.Context, sj StepJob, claimed *honker.Job) error {
+	atom := honker.StepAtom{
+		RunID:      sj.RunID,
+		StepID:     sj.StepID,
+		Result:     map[string]any{"skipped": true},
+		Job:        claimed,
+		Dependents: sj.Dependents,
+	}
+	for i := range sj.Downstream {
+		d := sj.Downstream[i]
+		d.Skip = true
+		d.Input = threadInput(sj.Input, sj.StepName, map[string]any{"skipped": true})
+		atom.Downstream = append(atom.Downstream, honker.Downstream{Queue: w.queue, Payload: d})
+	}
+	if err := w.store.CommitStepAtom(atom); err != nil {
+		return fmt.Errorf("worker: commit skip %s (job %d): %w", sj.StepID, claimed.ID, err)
+	}
+	return w.checkRunComplete(ctx, sj)
+}
+
+// handleSwitch runs a switch step, resolves its chosen branch, and routes: the
+// chosen branch's dependent is enqueued normally (if ready); each skipped
+// branch's dependent is enqueued as a skip-job (ADR-0022, ADR-0023).
+func (w *Worker) handleSwitch(ctx context.Context, sj StepJob, claimed *honker.Job) error {
+	chosen, err := w.runSwitch(ctx, sj)
+	if err != nil {
+		w.recordFailure(sj, claimed, err)
+		return fmt.Errorf("worker: switch %s (job %d): %w", sj.StepID, claimed.ID, err)
+	}
+
+	atom := honker.StepAtom{
+		RunID:      sj.RunID,
+		StepID:     sj.StepID,
+		Result:     map[string]any{"branch": chosen},
+		Job:        claimed,
+		Dependents: sj.Dependents,
+	}
+	for i := range sj.Downstream {
+		d := sj.Downstream[i]
+		d.Input = threadInput(sj.Input, sj.StepName, map[string]any{"branch": chosen})
+		if d.StepID == chosen {
+			// Chosen branch: enqueue normally (the atom's readiness check gates
+			// on the dependent's count).
+			atom.Downstream = append(atom.Downstream, honker.Downstream{Queue: w.queue, Payload: d})
+		} else {
+			// Skipped branch: enqueue a skip-job that cascades without running.
+			d.Skip = true
+			atom.Downstream = append(atom.Downstream, honker.Downstream{Queue: w.queue, Payload: d})
+		}
+	}
+	if err := w.store.CommitStepAtom(atom); err != nil {
+		return fmt.Errorf("worker: commit switch %s (job %d): %w", sj.StepID, claimed.ID, err)
+	}
+	return w.checkRunComplete(ctx, sj)
+}
+
+// runSwitch runs the switch step as a subprocess (ADR-0008) and returns the
+// chosen branch's target step name. It passes the step's input and cases/default
+// config on stdin.
+func (w *Worker) runSwitch(ctx context.Context, sj StepJob) (string, error) {
+	if len(sj.Command) == 0 {
+		return "", fmt.Errorf("step type switch has no command to run")
+	}
+	env, missing := exec.FilteredEnv(w.secrets, sj.Secrets)
+	if len(missing) > 0 {
+		return "", fmt.Errorf("switch declares secrets the runner does not have: %s", strings.Join(missing, ", "))
+	}
+	cases, _ := sj.Config["cases"].(map[string]any)
+	defaultTarget, _ := sj.Config["default"].(string)
+	res, rerr := w.runner.Run(ctx, exec.Request{
+		Command: sj.Command,
+		Env:     env,
+		Input: map[string]any{
+			"input":   sj.Input,
+			"cases":   cases,
+			"default": defaultTarget,
+		},
+	})
+	if rerr != nil {
+		return "", rerr
+	}
+	chosen, ok := res.Output.(string)
+	if !ok || chosen == "" {
+		return "", fmt.Errorf("switch %s returned no branch target", sj.StepID)
+	}
+	return chosen, nil
+}
+
+// checkRunComplete marks a run completed once every step's dependencies are
+// satisfied (ADR-0023). It is called after a step (or skip) commits its atom.
+func (w *Worker) checkRunComplete(ctx context.Context, sj StepJob) error {
+	done, err := w.store.RunComplete(sj.RunID)
+	if err != nil {
+		return err
+	}
+	if done {
+		return w.store.SetRunStatus(sj.RunID, honker.RunCompleted)
 	}
 	return nil
 }
@@ -499,8 +621,9 @@ func (w *Worker) recordFailure(sj StepJob, claimed *honker.Job, cause error) {
 	if claimed != nil {
 		_, _ = claimed.Retry(0, cause.Error())
 	}
-	// A failing final step (no downstream) marks the run failed.
-	if len(sj.Downstream) == 0 {
+	// Mark the run failed once no step is left pending (all deps satisfied,
+	// so nothing else will run) (ADR-0023).
+	if done, _ := w.store.RunComplete(sj.RunID); done {
 		_ = w.store.SetRunStatus(sj.RunID, honker.RunFailed)
 	}
 }

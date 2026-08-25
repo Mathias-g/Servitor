@@ -564,3 +564,88 @@ func TestDedupeKeyEvaluatedAtExecution(t *testing.T) {
 		t.Fatalf("result = %v, want prior result (dedupe_key expression matched)", res)
 	}
 }
+
+// switchStubRunner is a StepRunner that answers a switch step with a fixed
+// chosen branch and returns a fixed result for other steps, without spawning
+// subprocesses.
+type switchStubRunner struct {
+	chosen string
+	ran    map[string]bool
+}
+
+func (s *switchStubRunner) Run(_ context.Context, req exec.Request) (exec.Result, error) {
+	return exec.Result{Output: s.chosen}, nil
+}
+
+// TestSwitchRoutesChosenBranchAndSkipsOthers pins switch routing (ADR-0022):
+// the chosen branch runs, the skipped branch is recorded skipped, and a rejoin
+// step depending on both runs once all deps are satisfied (ADR-0023).
+func TestSwitchRoutesChosenBranchAndSkipsOthers(t *testing.T) {
+	w, store, q := newWorker(t, 30, 3, nil)
+	stub := &switchStubRunner{chosen: "notify_finance", ran: map[string]bool{}}
+	w.runner = stub
+
+	// Build the switch workflow as a StepJob tree: route -> [notify_finance,
+	// log_and_done] -> record.
+	record := StepJob{RunID: "run-1", WorkflowID: "wf", StepID: "record", StepName: "record", StepType: "shell", Command: []string{"ignored"}}
+	nf := StepJob{RunID: "run-1", WorkflowID: "wf", StepID: "notify_finance", StepName: "notify_finance", StepType: "shell", Command: []string{"ignored"},
+		Dependents: []string{"record"}, Downstream: []StepJob{record}}
+	ld := StepJob{RunID: "run-1", WorkflowID: "wf", StepID: "log_and_done", StepName: "log_and_done", StepType: "shell", Command: []string{"ignored"},
+		Dependents: []string{"record"}, Downstream: []StepJob{record}}
+	route := StepJob{RunID: "run-1", WorkflowID: "wf", StepID: "route", StepName: "route", StepType: "switch",
+		Config:     map[string]any{"cases": map[string]any{"high": "notify_finance", "low": "log_and_done"}},
+		Command:    []string{"servitor", "__switch", "steps.check"},
+		Dependents: []string{"notify_finance", "log_and_done"},
+		Downstream: []StepJob{nf, ld},
+	}
+
+	// Init run deps: route depends on nothing; nf, ld depend on route; record
+	// depends on both nf and ld.
+	if err := store.InitRunDeps(honker.NewRunDeps("run-1", map[string]int{
+		"route": 0, "notify_finance": 1, "log_and_done": 1, "record": 2,
+	}, []string{"route", "notify_finance", "log_and_done", "record"})); err != nil {
+		t.Fatalf("InitRunDeps: %v", err)
+	}
+
+	if _, err := q.Enqueue(route); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	// Process jobs until the run completes.
+	runLoop(t, w, q)
+
+	if st, _ := store.RunStatus("run-1"); st != honker.RunCompleted {
+		t.Fatalf("run status = %q, want completed", st)
+	}
+	// notify_finance ran; log_and_done skipped.
+	nfRes := claimResultJSON(t, store, "run-1", "notify_finance").(map[string]any)
+	if _, ok := nfRes["ok"]; !ok {
+		t.Fatalf("notify_finance result = %v, want ran (not skipped)", nfRes)
+	}
+	ldRes := claimResultJSON(t, store, "run-1", "log_and_done").(map[string]any)
+	if ldRes["skipped"] != true {
+		t.Fatalf("log_and_done result = %v, want skipped", ldRes)
+	}
+	// record (rejoin) ran.
+	recRes := claimResultJSON(t, store, "run-1", "record")
+	if recRes == nil {
+		t.Fatalf("record (rejoin) did not run")
+	}
+}
+
+// runLoop claims and handles jobs until none remain for the worker.
+func runLoop(t *testing.T, w *Worker, q *honker.Queue) {
+	t.Helper()
+	for {
+		job, err := q.ClaimOne("worker-1")
+		if err != nil {
+			t.Fatalf("claim: %v", err)
+		}
+		if job == nil {
+			return
+		}
+		if err := w.handle(context.Background(), job); err != nil {
+			t.Fatalf("handle: %v", err)
+		}
+	}
+}

@@ -105,3 +105,19 @@ func (s *Store) RunDepsRemaining(runID, stepID string) (int, error) {
 	}
 	return n, nil
 }
+
+// RunComplete reports whether every step in the run has its dependencies
+// satisfied (remaining == 0), which is the dependency-based run-completion
+// signal (ADR-0023): a run is done when no step is left waiting on a dependency.
+// It returns true when the run has no tracked steps.
+func (s *Store) RunComplete(runID string) (bool, error) {
+	var n int
+	err := s.db.Raw().QueryRow(
+		`SELECT COUNT(*) FROM run_deps WHERE run_id = ? AND remaining > 0`,
+		runID,
+	).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	return n == 0, nil
+}

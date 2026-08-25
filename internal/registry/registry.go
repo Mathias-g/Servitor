@@ -101,12 +101,14 @@ var stepTypes = []*StepType{
 		},
 	},
 	{
-		Name:       "branch",
-		Desc:       "Conditionally route based on inputs.",
+		Name:       "switch",
+		Desc:       "Route to one named branch based on a value.",
 		SideEffect: false,
 		Group:      Core,
 		Fields: map[string]*Field{
-			"when": {Type: "string", Required: true, Desc: "A condition over the input.", Examples: []any{"input.status == 'ok'"}},
+			"expression": {Type: "string", Required: true, Desc: "A JSONata expression over the step's `{event, steps}` input producing the routing value (ADR-0020, ADR-0022).", Examples: []any{"steps.check"}},
+			"cases":      {Type: "object", Required: true, Desc: "Map of value to the name of the top-level step to route to.", Examples: []any{map[string]any{"high": "notify_finance", "low": "log_and_done"}}},
+			"default":    {Type: "string", Desc: "Name of the top-level step to route to when no `cases` key matches.", Examples: []any{"log_unknown"}},
 		},
 	},
 	{

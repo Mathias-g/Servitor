@@ -41,6 +41,16 @@ func commandFor(s wafer.Step) ([]string, error) {
 			return nil, fmt.Errorf("step %q: locate servitor binary: %w", stepName(s), err)
 		}
 		return []string{exe, "__transform", expr}, nil
+	case "switch":
+		expr, ok := s.Config["expression"].(string)
+		if !ok || expr == "" {
+			return nil, fmt.Errorf("step %q: switch requires a string expression", stepName(s))
+		}
+		exe, err := os.Executable()
+		if err != nil {
+			return nil, fmt.Errorf("step %q: locate servitor binary: %w", stepName(s), err)
+		}
+		return []string{exe, "__switch", expr}, nil
 	case "singer-tap":
 		tap, ok := s.Config["tap"].(string)
 		if !ok || tap == "" {
@@ -109,14 +119,22 @@ func FromWafer(w *wafer.Wafer, event map[string]any) (*worker.StepJob, error) {
 		idxByName[d.Name] = i
 	}
 
-	// Link each step to the steps that depend on it (its dependents). A step's
-	// dependents are the steps that list it in their DependsOn.
-	for i, d := range dag.Steps {
+	// Assign each step's dependents (the steps that list it in their DependsOn).
+	// Dependents are assigned fully first, so when a job is later copied into a
+	// parent's Downstream it carries the complete dependents set (the value copy
+	// would otherwise be stale).
+	for _, d := range dag.Steps {
 		for _, dep := range d.DependsOn {
 			if j, ok := idxByName[dep]; ok {
 				jobs[j].Dependents = append(jobs[j].Dependents, d.Name)
-				jobs[j].Downstream = append(jobs[j].Downstream, *jobs[i])
 			}
+		}
+	}
+	// Build each job's Downstream from its (now complete) dependents.
+	for j := range jobs {
+		for _, depID := range jobs[j].Dependents {
+			k := idxByName[depID]
+			jobs[j].Downstream = append(jobs[j].Downstream, *jobs[k])
 		}
 	}
 

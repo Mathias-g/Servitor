@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-08-25
 decision-makers: [Mathias]
 consulted: []
@@ -65,6 +65,40 @@ completes when its last step finishes and no step remains pending.
 A linear chain is the degenerate case of this model (each step depends on at
 most the previous), so existing linear workflows keep working.
 
+## Skipped-branch and completion semantics
+
+When a `switch` step (ADR-0022) picks one branch, the non-chosen branches'
+steps never run. Their semantics are settled as follows, matching how the
+established systems treat skipped branches (Argo and GitHub Actions treat a
+skipped step as terminal and satisfied; Airflow's rejoin rule is
+`none_failed_min_one_success`).
+
+- **A skipped step is satisfied (Argo-style).** A step in a non-chosen branch is
+  marked satisfied and counts as done for dependency purposes, so the run
+  completes uniformly and never deadlocks waiting on a branch that did not run.
+  A skipped step is not a failure and does not fail the run.
+- **A skipped branch contributes nothing to a rejoin's input.** The skipped
+  branch's steps are absent from the `{event, steps}` input of a rejoin step,
+  never present as a null value (a null would be indistinguishable from a branch
+  that legitimately returned null). The fact that a branch was skipped lives on
+  the step's status, not in the data.
+- **The switch's output carries the chosen branch.** If a downstream consumer
+  needs to know which branch ran, it reads it from the switch step's own result,
+  not from the absent branch bodies.
+- **No arity special-casing.** If/else is a two-case switch and behaves
+  identically to a multi-way switch: exactly one branch runs, the rest are
+  skipped, and a rejoin fires once the chosen branch satisfies the counter.
+- **Every step records a status** (`ran` / `skipped` / `failed`) so the run's
+  final report distinguishes skipped from failed from actually-ran. A skipped
+  step is treated as satisfied for the counter but is recorded separately, so it
+  is not conflated with a success (avoiding the confusion Argo's "skipped is
+  successful" causes).
+- **The all-skipped edge case runs the rejoin.** If a rejoin step's only feeder
+  was skipped, the rejoin still runs (Argo-style) rather than being skipped
+  itself. This is pinned by a test. Making this selectable is deferred until a
+  real workflow needs it (BSSN); if one does, it becomes a new decision, not
+  speculative scaffolding.
+
 ### Consequences
 
 - Good: switch branches and fan-in rejoin are expressible, enabling conditional
@@ -81,9 +115,11 @@ most the previous), so existing linear workflows keep working.
 ### Confirmation
 
 `go test ./...` passes. Tests pin: a switch enqueues only its chosen branch; a
-rejoin step runs only after all its branch predecessors complete; a linear
-chain still runs end to end; and the decrement/readiness/enqueue happen in one
-atomic commit (a failure rolls back the dependent enqueue).
+rejoin step runs only after all its branch predecessors complete; a skipped
+branch counts as satisfied and is absent from a rejoin's input; the all-skipped
+rejoin edge case runs; a linear chain still runs end to end; and the
+decrement/readiness/enqueue happen in one atomic commit (a failure rolls back
+the dependent enqueue).
 
 ## Interface notes
 

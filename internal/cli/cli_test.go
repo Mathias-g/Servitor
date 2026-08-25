@@ -206,3 +206,55 @@ func TestTransformStepBadExpression(t *testing.T) {
 		t.Fatalf("__transform bad expr exit %d, want %d", code, exitFailure)
 	}
 }
+
+func TestSwitchStepSubprocess(t *testing.T) {
+	payload := `{"input":{"event":{"id":"e1"},"steps":{"check":"high"}},"cases":{"high":"notify_finance","low":"log_and_done"},"default":"log_unknown"}`
+
+	oldStdin := os.Stdin
+	t.Cleanup(func() { os.Stdin = oldStdin })
+	f, err := os.CreateTemp(t.TempDir(), "stdin-*.json")
+	if err != nil {
+		t.Fatalf("create stdin file: %v", err)
+	}
+	if _, err := f.WriteString(payload); err != nil {
+		t.Fatalf("write stdin: %v", err)
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		t.Fatalf("seek: %v", err)
+	}
+	os.Stdin = f
+
+	var out, errOut bytes.Buffer
+	if code := Run([]string{"__switch", `steps.check`}, &out, &errOut); code != exitOK {
+		t.Fatalf("__switch exit %d, want %d (stderr: %s)", code, exitOK, errOut.String())
+	}
+	if strings.TrimSpace(out.String()) != `"notify_finance"` {
+		t.Fatalf("switch output = %q, want notify_finance", out.String())
+	}
+}
+
+func TestSwitchStepDefault(t *testing.T) {
+	payload := `{"input":{"event":{"id":"e1"},"steps":{"check":"medium"}},"cases":{"high":"notify_finance","low":"log_and_done"},"default":"log_unknown"}`
+
+	oldStdin := os.Stdin
+	t.Cleanup(func() { os.Stdin = oldStdin })
+	f, err := os.CreateTemp(t.TempDir(), "stdin-*.json")
+	if err != nil {
+		t.Fatalf("create stdin file: %v", err)
+	}
+	if _, err := f.WriteString(payload); err != nil {
+		t.Fatalf("write stdin: %v", err)
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		t.Fatalf("seek: %v", err)
+	}
+	os.Stdin = f
+
+	var out, errOut bytes.Buffer
+	if code := Run([]string{"__switch", `steps.check`}, &out, &errOut); code != exitOK {
+		t.Fatalf("__switch default exit %d, want %d (stderr: %s)", code, exitOK, errOut.String())
+	}
+	if strings.TrimSpace(out.String()) != `"log_unknown"` {
+		t.Fatalf("switch default output = %q, want log_unknown", out.String())
+	}
+}
