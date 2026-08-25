@@ -32,7 +32,8 @@ How an agent learns what the server supports and how to use it (SPEC: How an age
 - [x] A step-type and trigger-type registry, each entry with its JSON Schema, grouped by integration with a `core` group for Servitor's own types.
 - [x] The schema-to-example generator: render a Wafer fragment from a schema (skeleton from the schema, sample values from each property's `examples`).
 - [x] `servitor capabilities [dir]` writes, per step and trigger, the schema and its derived example to files, grouped by integration, plus an index. A pipeline can commit the output so remote agents read it from the repo.
-- [x] Report declared secrets (names and presence, not values) in `capabilities` (a `secrets.yaml` from the varlock schema). Available Singer taps remain unreported until the Singer integration is built.
+- [x] Report declared secrets (names and presence, not values) in `capabilities` (a `secrets.yaml` from the varlock schema).
+- [ ] Report available Singer taps in `capabilities` (names of installed taps and their schemas). Blocked on the Singer integration; tracked as Phase 11 item below.
 
 **Done when:** an agent runs `servitor capabilities`, reads a step's schema and a valid example Wafer fragment, and can author a Wafer without guessing.
 
@@ -110,7 +111,7 @@ The record-stream integration layer (SPEC: Singer, data movement integrations). 
 - [ ] `singer-target` step type executor: spawn the named target as a subprocess and feed it the records.
 - [ ] State management: each tap's incremental sync state (the bookmark) stored in Honker and passed back into the next tap invocation (SPEC: State persistence).
 - [ ] Schema discovery: call the tap's `--about` and `--discover` once during a capabilities refresh and cache the config schema, available streams, and record schemas.
-- [ ] Report available Singer taps in `capabilities` (the half of the PLAN 35 item still blocked on this integration).
+- [ ] Report available Singer taps in `capabilities` (this is the open half of the Phase 3 capabilities item above).
 
 **Done when:** a Wafer can run a real tap and target as subprocesses with filtered secrets and bookmark state, and an agent can discover a tap's schemas via `capabilities`.
 
