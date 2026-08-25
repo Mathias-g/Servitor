@@ -268,7 +268,7 @@ The integrations themselves are declared in a local `servitor.integrations.yaml`
 - *(more per-service trigger types as integrations are added)*
 - `cron`. Honker scheduler.
 - `manual`. Invoked via CLI.
-- `internal`. Fired by another workflow's completion.
+- `internal`. Fired by another workflow's completion. Its `workflow` field names the workflow whose completion fires it; the run's event is `{trigger: "internal", from: <workflow name>, from_run: <completed run id>}`.
 
 #### Using webhook triggers
 
@@ -295,9 +295,11 @@ the secret, and each matching enabled workflow is enqueued (SPEC: Execution mode
 step 5).
 
 Not all webhook types are served yet. `standard_webhook` and `http_webhook` are
-built and verify signatures. The provider-specific types (`grist_webhook`,
-`github_webhook`, `slack_event`, `atomic_event`) and `email_received` are
-registered and listed in capabilities but their receivers are not built, so a
+built and verify signatures, as are the `github_webhook` (HMAC-SHA256 in
+`X-Hub-Signature-256`) and `slack_event` (HMAC-SHA256 over `v0:<timestamp>:<body>`
+in `X-Slack-Signature`, with the `url_verification` handshake) receivers. The
+provider-specific types `grist_webhook` and `atomic_event`, and `email_received`,
+are registered and listed in capabilities but their receivers are not built, so a
 workflow using one will not yet fire. Check the current build state (SPEC: Status)
 before relying on a provider-specific type.
 
@@ -498,10 +500,10 @@ Things deliberately out of scope for v1, kept here so the design doesn't quietly
 
 ## Status
 
-Early development. The daemon lifecycle, loopback control protocol, Wafer model and structured validation, capability discovery (including a `secrets.yaml` reporting declared secret names and presence, a `singer/taps.yaml` reporting declared Singer taps, and a `mcp/servers.yaml` reporting declared MCP servers; grouped by mechanism per ADR-0017, sourced from the declared integrations config per ADR-0018), dry-run DAG resolution (including redacted secret names and a `missing_secret` warning), the Honker durability store (with the transactional atom), step execution (the worker loop, subprocess isolation with env filtering, and the dedupe contract), the Singer integration (the `singer-tap` and `singer-target` executors, bookmark state committed with each tap step's result, and schema discovery; ADR-0016), the MCP integration (the `mcp-call` step type with a client-mode executor, both classic and stateless protocol support, and structured error mapping; ADR-0015), inbound triggers (a webhook receiver for Standard Webhooks and generic HMAC, plus cron and manual), the varlock integration (self-healing launch and per-step secret filtering), the shipped `SKILL.md` agent reference, run inspection (`servitor runs`, `servitor run <id>`, `servitor cancel`), and the release flow (`make release`) are built (`servitor run`, `stop`, `dry-run`, `capabilities`, `submit`, `update`, `enable`, `disable`, `trigger`, `runs`, `run`, `cancel`), the `transform` step handler and `dedupe_key` evaluation (JSONata via gnata, ADR-0020; `{event, steps}` threaded input, ADR-0021), and the `switch` and `foreach` step handlers with dependency-counter fan-out (ADR-0022, ADR-0023, ADR-0024). Provider-specific webhook receivers, the `internal` trigger, and the curated helpers are not yet built. Open questions, to be resolved as implementation progresses and tracked in ADRs in the `docs/adr/` directory:
+Early development. The daemon lifecycle, loopback control protocol, Wafer model and structured validation, capability discovery (including a `secrets.yaml` reporting declared secret names and presence, a `singer/taps.yaml` reporting declared Singer taps, and a `mcp/servers.yaml` reporting declared MCP servers; grouped by mechanism per ADR-0017, sourced from the declared integrations config per ADR-0018), dry-run DAG resolution (including redacted secret names and a `missing_secret` warning), the Honker durability store (with the transactional atom), step execution (the worker loop, subprocess isolation with env filtering, and the dedupe contract), the Singer integration (the `singer-tap` and `singer-target` executors, bookmark state committed with each tap step's result, and schema discovery; ADR-0016), the MCP integration (the `mcp-call` step type with a client-mode executor, both classic and stateless protocol support, and structured error mapping; ADR-0015), inbound triggers (a webhook receiver for Standard Webhooks, generic HMAC, and the GitHub and Slack provider-specific schemes, plus cron and manual), the varlock integration (self-healing launch and per-step secret filtering), the shipped `SKILL.md` agent reference, run inspection (`servitor runs`, `servitor run <id>`, `servitor cancel`), and the release flow (`make release`) are built (`servitor run`, `stop`, `dry-run`, `capabilities`, `submit`, `update`, `enable`, `disable`, `trigger`, `runs`, `run`, `cancel`), the `transform` step handler and `dedupe_key` evaluation (JSONata via gnata, ADR-0020; `{event, steps}` threaded input, ADR-0021), and the `switch` and `foreach` step handlers with dependency-counter fan-out (ADR-0022, ADR-0023, ADR-0024). Provider-specific webhook receivers for Grist and Atomic, the `email_received` trigger, and the curated helpers are not yet built. Open questions, to be resolved as implementation progresses and tracked in ADRs in the `docs/adr/` directory:
 
 - Worker concurrency limits; runs execute as a dependency DAG with fan-out (ADR-0023), but branches run sequentially rather than in parallel.
-- The trigger receiver's framing of bespoke per-provider signing schemes.
+- The trigger receiver's framing of the remaining bespoke per-provider signing schemes (Grist and Atomic).
  - How the varlock parent handles termination signals: whether `varlock run` forwards SIGTERM/SIGINT to the runner child and propagates its exit code. If it does not, the runner is wrapped with a minimal init such as `tini` or `dumb-init` so signals reach it cleanly.
 
 Contributions welcome once the initial scaffolding is in place.

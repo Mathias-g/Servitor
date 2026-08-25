@@ -15,6 +15,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -106,6 +107,16 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				http.Error(w, "invalid signature", http.StatusUnauthorized)
 				return
 			}
+			// Slack's URL verification handshake: echo the challenge and stop;
+			// it is a setup request, not a real event to run.
+			if tr.Type == "slack_event" {
+				if chal, ok := slackChallenge(body); ok {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(map[string]string{"challenge": chal})
+					return
+				}
+			}
 			matches = append(matches, parsed)
 		}
 	}
@@ -163,12 +174,50 @@ func (r *Receiver) Manual(ctx context.Context, name string, inputs map[string]an
 	return nil
 }
 
+// Internal fires a registered, enabled workflow whose `internal` trigger names
+// the workflow that just completed (SPEC: `internal` trigger). The event passed
+// to the downstream run records which workflow and run completed. A workflow
+// whose `internal` trigger names another workflow is left untouched.
+func (r *Receiver) Internal(completedWorkflow, completedRun string) error {
+	workflows, err := r.store.ListWorkflows()
+	if err != nil {
+		return fmt.Errorf("trigger: internal list workflows: %w", err)
+	}
+	for _, wf := range workflows {
+		if !wf.Enabled {
+			continue
+		}
+		w, perr := wafer.Parse([]byte(wf.Wafer))
+		if perr != nil {
+			continue
+		}
+		for _, tr := range w.On {
+			if tr.Type != "internal" {
+				continue
+			}
+			upstream, _ := tr.Config["workflow"].(string)
+			if upstream != completedWorkflow {
+				continue
+			}
+			event := map[string]any{
+				"trigger":  "internal",
+				"from":     completedWorkflow,
+				"from_run": completedRun,
+			}
+			runID := fmt.Sprintf("%s-internal-%d", w.Name, r.now().UnixNano())
+			if _, err := runner.StartRun(r.store, r.queue, w, event, runID); err != nil {
+				return fmt.Errorf("trigger: internal %q: %w", w.Name, err)
+			}
+		}
+	}
+	return nil
+}
+
 // isWebhookType reports whether the trigger type is served by the webhook
-// receiver. Provider-specific receivers are a later phase; the generic and
-// Standard Webhooks types are the ones this phase serves.
+// receiver.
 func isWebhookType(typ string) bool {
 	switch typ {
-	case "http_webhook", "standard_webhook":
+	case "http_webhook", "standard_webhook", "github_webhook", "slack_event":
 		return true
 	default:
 		return false
@@ -189,6 +238,10 @@ func (r *Receiver) verify(w *wafer.Wafer, tr wafer.Trigger, h http.Header, body 
 		return verifyStandardWebhook(secret, h, body, r.now())
 	case "http_webhook":
 		return verifyHMAC(secret, h, body)
+	case "github_webhook":
+		return verifyGitHub(secret, h, body)
+	case "slack_event":
+		return verifySlack(secret, h, body, r.now())
 	default:
 		return true
 	}
@@ -238,4 +291,57 @@ func verifyHMAC(secret string, h http.Header, body []byte) bool {
 	_, _ = mac.Write(body)
 	expected := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 	return hmac.Equal([]byte(got), []byte(expected))
+}
+
+// verifyGitHub verifies a GitHub webhook (SPEC: Triggers). GitHub signs the
+// body with HMAC-SHA256 using the shared secret and sends the hex digest in the
+// `X-Hub-Signature-256` header as `sha256=<hex>`.
+func verifyGitHub(secret string, h http.Header, body []byte) bool {
+	got := h.Get("X-Hub-Signature-256")
+	if !strings.HasPrefix(got, "sha256=") {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write(body)
+	expected := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(got), []byte(expected))
+}
+
+// verifySlack verifies a Slack events request (SPEC: Triggers). Slack signs
+// `v0:<timestamp>:<body>` with HMAC-SHA256 using the signing secret and sends
+// the hex digest in the `X-Slack-Signature` header as `v0=<hex>`. The
+// `X-Slack-Request-Timestamp` must be within tolerance to bound replay.
+func verifySlack(secret string, h http.Header, body []byte, now time.Time) bool {
+	tsRaw := h.Get("X-Slack-Request-Timestamp")
+	sig := h.Get("X-Slack-Signature")
+	if tsRaw == "" || sig == "" {
+		return false
+	}
+	ts, err := strconv.ParseInt(tsRaw, 10, 64)
+	if err != nil {
+		return false
+	}
+	if delta := now.Unix() - ts; delta < -300 || delta > 300 {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte("v0:" + tsRaw + ":" + string(body)))
+	expected := "v0=" + hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(sig), []byte(expected))
+}
+
+// slackChallenge reports whether the body is Slack's `url_verification` setup
+// handshake, and if so returns the challenge value to echo back.
+func slackChallenge(body []byte) (string, bool) {
+	var msg struct {
+		Type      string `json:"type"`
+		Challenge string `json:"challenge"`
+	}
+	if err := json.Unmarshal(body, &msg); err != nil {
+		return "", false
+	}
+	if msg.Type == "url_verification" && msg.Challenge != "" {
+		return msg.Challenge, true
+	}
+	return "", false
 }

@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/Mathias-g/Servitor/internal/honker"
 	"github.com/Mathias-g/Servitor/internal/wafer"
+	"github.com/Mathias-g/Servitor/internal/worker"
 )
 
 func extPath(t *testing.T) string {
@@ -76,6 +78,22 @@ func standardWebhookSignature(secret, id, ts string, body []byte) string {
 	_, _ = mac.Write([]byte(id + "." + ts + "."))
 	_, _ = mac.Write(body)
 	return "v1," + base64.StdEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// githubSignature computes the GitHub X-Hub-Signature-256 header value for a
+// body.
+func githubSignature(secret string, body []byte) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write(body)
+	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+// slackSignature computes the Slack X-Slack-Signature header value for a body
+// at the given timestamp.
+func slackSignature(secret, ts string, body []byte) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte("v0:" + ts + ":" + string(body)))
+	return "v0=" + hex.EncodeToString(mac.Sum(nil))
 }
 
 func TestWebhookPersistsEventAndEnqueuesRun(t *testing.T) {
@@ -239,5 +257,240 @@ func TestManualRejectsUnknownWorkflow(t *testing.T) {
 	r, _, _ := newReceiver(t, map[string]string{})
 	if err := r.Manual(context.Background(), "nope", nil); err == nil {
 		t.Fatal("expected error for unregistered workflow")
+	}
+}
+
+func TestGithubWebhookVerifiesAndEnqueues(t *testing.T) {
+	r, store, q := newReceiver(t, map[string]string{"GITHUB_SECRET": "ghsecret"})
+	register(t, store, `
+name: gh
+on:
+  - type: github_webhook
+    path: /hooks/github
+    secret: GITHUB_SECRET
+steps:
+  - type: shell
+    name: a
+    command: "true"
+`)
+	body := []byte(`{"action":"opened","issue":{"number":1}}`)
+	req := httptest.NewRequest(http.MethodPost, "/hooks/github", bytes.NewReader(body))
+	req.Header.Set("X-Hub-Signature-256", githubSignature("ghsecret", body))
+	rr := httptest.NewRecorder()
+
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if job, _ := q.ClaimOne("worker-1"); job == nil {
+		t.Fatal("run not enqueued")
+	}
+}
+
+func TestGithubWebhookRejectsBadSignature(t *testing.T) {
+	r, store, q := newReceiver(t, map[string]string{"GITHUB_SECRET": "ghsecret"})
+	register(t, store, `
+name: gh
+on:
+  - type: github_webhook
+    path: /hooks/github
+    secret: GITHUB_SECRET
+steps:
+  - type: shell
+    name: a
+    command: "true"
+`)
+	body := []byte(`{"x":1}`)
+	req := httptest.NewRequest(http.MethodPost, "/hooks/github", bytes.NewReader(body))
+	req.Header.Set("X-Hub-Signature-256", "sha256=deadbeef")
+	rr := httptest.NewRecorder()
+
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rr.Code)
+	}
+	if job, _ := q.ClaimOne("worker-1"); job != nil {
+		t.Fatal("run enqueued despite bad signature")
+	}
+}
+
+func TestSlackWebhookVerifiesAndEnqueues(t *testing.T) {
+	r, store, q := newReceiver(t, map[string]string{"SLACK_SECRET": "slacksecret"})
+	register(t, store, `
+name: sl
+on:
+  - type: slack_event
+    path: /hooks/slack
+    secret: SLACK_SECRET
+steps:
+  - type: shell
+    name: a
+    command: "true"
+`)
+	ts := strconv.FormatInt(time.Now().Unix(), 10)
+	body := []byte(`{"type":"message","text":"hi"}`)
+	req := httptest.NewRequest(http.MethodPost, "/hooks/slack", bytes.NewReader(body))
+	req.Header.Set("X-Slack-Request-Timestamp", ts)
+	req.Header.Set("X-Slack-Signature", slackSignature("slacksecret", ts, body))
+	rr := httptest.NewRecorder()
+
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if job, _ := q.ClaimOne("worker-1"); job == nil {
+		t.Fatal("run not enqueued")
+	}
+}
+
+func TestSlackUrlVerificationEchoesChallenge(t *testing.T) {
+	r, store, q := newReceiver(t, map[string]string{"SLACK_SECRET": "slacksecret"})
+	register(t, store, `
+name: sl
+on:
+  - type: slack_event
+    path: /hooks/slack
+    secret: SLACK_SECRET
+steps:
+  - type: shell
+    name: a
+    command: "true"
+`)
+	ts := strconv.FormatInt(time.Now().Unix(), 10)
+	body := []byte(`{"token":"t","type":"url_verification","challenge":"abc123"}`)
+	req := httptest.NewRequest(http.MethodPost, "/hooks/slack", bytes.NewReader(body))
+	req.Header.Set("X-Slack-Request-Timestamp", ts)
+	req.Header.Set("X-Slack-Signature", slackSignature("slacksecret", ts, body))
+	rr := httptest.NewRecorder()
+
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Challenge string `json:"challenge"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode challenge response: %v", err)
+	}
+	if resp.Challenge != "abc123" {
+		t.Fatalf("challenge = %q, want abc123", resp.Challenge)
+	}
+	// A verification handshake must not enqueue a run.
+	if job, _ := q.ClaimOne("worker-1"); job != nil {
+		t.Fatal("run enqueued for url_verification handshake")
+	}
+}
+
+func TestSlackRejectsStaleTimestamp(t *testing.T) {
+	r, store, q := newReceiver(t, map[string]string{"SLACK_SECRET": "slacksecret"})
+	register(t, store, `
+name: sl
+on:
+  - type: slack_event
+    path: /hooks/slack
+    secret: SLACK_SECRET
+steps:
+  - type: shell
+    name: a
+    command: "true"
+`)
+	old := strconv.FormatInt(time.Now().Add(-10*time.Minute).Unix(), 10)
+	body := []byte(`{"type":"message"}`)
+	req := httptest.NewRequest(http.MethodPost, "/hooks/slack", bytes.NewReader(body))
+	req.Header.Set("X-Slack-Request-Timestamp", old)
+	req.Header.Set("X-Slack-Signature", slackSignature("slacksecret", old, body))
+	rr := httptest.NewRecorder()
+
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 for stale timestamp", rr.Code)
+	}
+	if job, _ := q.ClaimOne("worker-1"); job != nil {
+		t.Fatal("run enqueued despite stale timestamp")
+	}
+}
+
+func TestInternalFiresDownstreamWorkflow(t *testing.T) {
+	r, store, q := newReceiver(t, map[string]string{})
+	register(t, store, `
+name: upstream
+on:
+  - type: manual
+steps:
+  - type: shell
+    name: a
+    command: "true"
+`)
+	register(t, store, `
+name: downstream
+on:
+  - type: internal
+    workflow: upstream
+steps:
+  - type: shell
+    name: a
+    command: "true"
+`)
+	if err := r.Internal("upstream", "run-1"); err != nil {
+		t.Fatalf("Internal: %v", err)
+	}
+	job, err := q.ClaimOne("worker-1")
+	if err != nil || job == nil {
+		t.Fatalf("downstream run not enqueued: %v", err)
+	}
+	var sj worker.StepJob
+	if err := job.UnmarshalPayload(&sj); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if sj.WorkflowID != "downstream" {
+		t.Fatalf("enqueued workflow = %q, want downstream", sj.WorkflowID)
+	}
+	ev := sj.Input["event"].(map[string]any)
+	if ev["trigger"] != "internal" || ev["from"] != "upstream" || ev["from_run"] != "run-1" {
+		t.Fatalf("event = %v, want internal/upstream/run-1", ev)
+	}
+}
+
+func TestInternalIgnoresOtherWorkflow(t *testing.T) {
+	r, store, q := newReceiver(t, map[string]string{})
+	register(t, store, `
+name: downstream
+on:
+  - type: internal
+    workflow: upstream
+steps:
+  - type: shell
+    name: a
+    command: "true"
+`)
+	if err := r.Internal("other-workflow", "run-1"); err != nil {
+		t.Fatalf("Internal: %v", err)
+	}
+	if job, _ := q.ClaimOne("worker-1"); job != nil {
+		t.Fatal("run enqueued for a workflow naming a different upstream")
+	}
+}
+
+func TestInternalSkipsDisabledWorkflow(t *testing.T) {
+	r, store, q := newReceiver(t, map[string]string{})
+	register(t, store, `
+name: downstream
+on:
+  - type: internal
+    workflow: upstream
+steps:
+  - type: shell
+    name: a
+    command: "true"
+`)
+	if err := store.SetWorkflowEnabled("downstream", false); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if err := r.Internal("upstream", "run-1"); err != nil {
+		t.Fatalf("Internal: %v", err)
+	}
+	if job, _ := q.ClaimOne("worker-1"); job != nil {
+		t.Fatal("run enqueued for a disabled workflow")
 	}
 }

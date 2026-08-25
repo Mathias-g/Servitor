@@ -355,6 +355,77 @@ func TestRunMarkedCompletedAfterLastStep(t *testing.T) {
 	}
 }
 
+func TestOnRunCompleteFiresWhenRunFinishes(t *testing.T) {
+	var gotWorkflow, gotRun string
+	ext := extPath(t)
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := honker.Open(dbPath, ext)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	q := store.Queue("steps", 30, 3)
+	w := New(store, q, "worker-1", Config{
+		OnRunComplete: func(workflowID, runID string) {
+			gotWorkflow = workflowID
+			gotRun = runID
+		},
+	})
+	if err := store.CreateRun("run-1", "wf"); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if _, err := q.Enqueue(StepJob{
+		RunID: "run-1", WorkflowID: "wf", StepID: "a", StepName: "a",
+		StepType: "shell", Command: shellCmd(`printf '{"ok":true}'`),
+	}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	job, err := q.ClaimOne("worker-1")
+	if err != nil || job == nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := w.handle(context.Background(), job); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if gotWorkflow != "wf" || gotRun != "run-1" {
+		t.Fatalf("OnRunComplete = (%q, %q), want (wf, run-1)", gotWorkflow, gotRun)
+	}
+}
+
+func TestOnRunCompleteNotFiredForIncompleteRun(t *testing.T) {
+	called := false
+	ext := extPath(t)
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := honker.Open(dbPath, ext)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	q := store.Queue("steps", 30, 3)
+	w := New(store, q, "worker-1", Config{OnRunComplete: func(_, _ string) { called = true }})
+	if err := store.CreateRun("run-1", "wf"); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	// Two steps: a -> b. Running a leaves b pending, so the run is not complete.
+	b := StepJob{RunID: "run-1", WorkflowID: "wf", StepID: "b", StepName: "b",
+		StepType: "shell", Command: shellCmd(`true`)}
+	a := StepJob{RunID: "run-1", WorkflowID: "wf", StepID: "a", StepName: "a",
+		StepType: "shell", Command: shellCmd(`printf '{"ok":true}'`), Downstream: []StepJob{b}}
+	if _, err := q.Enqueue(a); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	job, err := q.ClaimOne("worker-1")
+	if err != nil || job == nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := w.handle(context.Background(), job); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if called {
+		t.Fatal("OnRunComplete fired before the run finished")
+	}
+}
+
 func TestSingerTapPersistsBookmarkAcrossRuns(t *testing.T) {
 	w, store, q := newWorker(t, 30, 3, map[string]string{"OUT": filepath.Join(t.TempDir(), "inv.json")})
 

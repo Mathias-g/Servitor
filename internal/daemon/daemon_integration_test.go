@@ -199,6 +199,99 @@ func TestDaemonSubmitAndManual(t *testing.T) {
 	}
 }
 
+const wfInternalUpstreamYAML = `
+name: up
+on:
+  - type: manual
+steps:
+  - type: shell
+    name: a
+    command: "printf '{\"ok\":true}'"
+`
+
+const wfInternalDownstreamYAML = `
+name: down
+on:
+  - type: internal
+    workflow: up
+steps:
+  - type: shell
+    name: b
+    command: "printf '{\"fired\":true}'"
+`
+
+// TestDaemonInternalTrigger verifies that completing an upstream workflow fires
+// an enabled workflow with an `internal` trigger naming it: submit both, run the
+// upstream manually, and confirm the downstream runs too (two step results).
+func TestDaemonInternalTrigger(t *testing.T) {
+	ext := daemonExtPath(t)
+	dbPath := filepath.Join(t.TempDir(), "d.db")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan string, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, Config{
+			Addr:         "127.0.0.1:0",
+			DBPath:       dbPath,
+			ExtPath:      ext,
+			Workers:      1,
+			DrainTimeout: 2 * time.Second,
+			Started:      func(a string) { started <- a },
+		})
+	}()
+
+	select {
+	case cpAddr := <-started:
+		ctl := protocol.NewClient(cpAddr)
+		if err := ctl.Health(ctx); err != nil {
+			t.Fatalf("health: %v", err)
+		}
+		if _, err := ctl.Submit(ctx, []byte(wfInternalUpstreamYAML)); err != nil {
+			t.Fatalf("submit upstream: %v", err)
+		}
+		if _, err := ctl.Submit(ctx, []byte(wfInternalDownstreamYAML)); err != nil {
+			t.Fatalf("submit downstream: %v", err)
+		}
+		if err := ctl.Trigger(ctx, "up", []byte(`{"x":1}`)); err != nil {
+			t.Fatalf("trigger upstream: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("daemon did not start")
+	}
+
+	store, err := honker.Open(dbPath, ext)
+	if err != nil {
+		t.Fatalf("open test store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	// The upstream run and the downstream run it fired each write a step result.
+	deadline := time.After(5 * time.Second)
+	for {
+		n, _ := store.StepResultCount()
+		if n >= 2 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("internal trigger did not run the downstream workflow")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("daemon shutdown error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("daemon did not shut down")
+	}
+}
+
 // TestDaemonWebhookReceiver verifies a signed Standard Webhooks request to the
 // webhook listener enqueues a run.
 func TestDaemonWebhookReceiver(t *testing.T) {

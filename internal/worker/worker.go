@@ -146,6 +146,11 @@ type Config struct {
 	Singer SingerRunner
 	// MCP runs mcp-call subprocesses. Defaults to real subprocesses.
 	MCP MCPRunner
+	// OnRunComplete, if set, is called after a run transitions to completed
+	// (pending reaches zero). It lets the caller fire downstream work, such as
+	// the `internal` trigger (SPEC: `internal` trigger), without coupling the
+	// worker to the runner or trigger packages.
+	OnRunComplete func(workflowID, runID string)
 }
 
 // Worker claims and executes jobs from a queue, committing each step's
@@ -158,6 +163,7 @@ type Worker struct {
 	runner   StepRunner
 	singer   SingerRunner
 	mcp      MCPRunner
+	onDone   func(workflowID, runID string)
 }
 
 // New builds a worker over the store's queue. workerID is used for Honker
@@ -183,6 +189,7 @@ func New(store *honker.Store, queue *honker.Queue, workerID string, cfg Config) 
 		runner:   cfg.Runner,
 		singer:   cfg.Singer,
 		mcp:      cfg.MCP,
+		onDone:   cfg.OnRunComplete,
 	}
 }
 
@@ -407,7 +414,12 @@ func (w *Worker) checkRunComplete(ctx context.Context, sj StepJob) error {
 		return err
 	}
 	if pending == 0 {
-		return w.store.SetRunStatus(sj.RunID, honker.RunCompleted)
+		if err := w.store.SetRunStatus(sj.RunID, honker.RunCompleted); err != nil {
+			return err
+		}
+		if w.onDone != nil {
+			w.onDone(sj.WorkflowID, sj.RunID)
+		}
 	}
 	return nil
 }

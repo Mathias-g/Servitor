@@ -484,7 +484,16 @@ func Run(ctx context.Context, cfg Config) error {
 		rctx, cancelRunner = context.WithCancel(context.Background())
 		queue := srv.store.Queue(cfg.QueueName, cfg.VisibilityTimeoutS, cfg.MaxAttempts)
 		for i := 0; i < cfg.Workers; i++ {
-			w := worker.New(srv.store, queue, fmt.Sprintf("worker-%d", i), worker.Config{Secrets: cfg.Secrets})
+			w := worker.New(srv.store, queue, fmt.Sprintf("worker-%d", i), worker.Config{
+				Secrets: cfg.Secrets,
+				// When a run completes, fire any workflow with an `internal`
+				// trigger naming the completed workflow (SPEC: `internal` trigger).
+				OnRunComplete: func(workflowID, runID string) {
+					if srv.receiver != nil {
+						_ = srv.receiver.Internal(workflowID, runID)
+					}
+				},
+			})
 			go func() { _ = w.Run(rctx) }()
 		}
 		go func() { _ = srv.store.Scheduler().Run(rctx, "scheduler") }()
