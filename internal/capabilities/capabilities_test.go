@@ -20,9 +20,9 @@ func TestWriteProducesGroupedFiles(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "core", "http.yaml")); err != nil {
 		t.Fatalf("expected core/http.yaml: %v", err)
 	}
-	// integration grouping: slack trigger under slack/.
-	if _, err := os.Stat(filepath.Join(dir, "slack", "slack_event.yaml")); err != nil {
-		t.Fatalf("expected slack/slack_event.yaml: %v", err)
+	// mechanism grouping: webhook triggers under webhook/.
+	if _, err := os.Stat(filepath.Join(dir, "webhook", "slack_event.yaml")); err != nil {
+		t.Fatalf("expected webhook/slack_event.yaml: %v", err)
 	}
 	// index exists.
 	if _, err := os.Stat(filepath.Join(dir, "index.yaml")); err != nil {
@@ -63,18 +63,18 @@ func TestIndexListsIntegrations(t *testing.T) {
 	if !found {
 		t.Fatalf("core integration should list http step, got %v", core.Steps)
 	}
-	slack, ok := byName["slack"]
+	webhook, ok := byName["webhook"]
 	if !ok {
-		t.Fatal("index missing slack integration")
+		t.Fatal("index missing webhook mechanism")
 	}
 	found = false
-	for _, tr := range slack.Triggers {
+	for _, tr := range webhook.Triggers {
 		if tr == "slack_event" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("slack integration should list slack_event trigger, got %v", slack.Triggers)
+		t.Fatalf("webhook mechanism should list slack_event trigger, got %v", webhook.Triggers)
 	}
 }
 
@@ -181,13 +181,13 @@ esac
 	if err := Write(out); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(out, "taps.yaml"))
+	data, err := os.ReadFile(filepath.Join(out, "singer", "taps.yaml"))
 	if err != nil {
-		t.Fatalf("read taps.yaml: %v", err)
+		t.Fatalf("read singer/taps.yaml: %v", err)
 	}
 	rep := tapsReport{}
 	if err := yaml.Unmarshal(data, &rep); err != nil {
-		t.Fatalf("parse taps.yaml: %v", err)
+		t.Fatalf("parse singer/taps.yaml: %v", err)
 	}
 	if !rep.Generated {
 		t.Fatal("taps report should be marked generated")
@@ -200,5 +200,51 @@ esac
 	}
 	if !found {
 		t.Fatalf("taps report = %+v, want tap-fake with customers stream", rep.Taps)
+	}
+}
+
+func TestWriteProducesServersReport(t *testing.T) {
+	// A fake mcp-* server on PATH so the report is populated.
+	dir := t.TempDir()
+	server := filepath.Join(dir, "mcp-fake")
+	script := `#!/usr/bin/env python3
+import json, sys
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    if req.get("method") == "tools/list":
+        print(json.dumps({"jsonrpc":"2.0","id":req.get("id"),"result":{"tools":[{"name":"search","inputSchema":{"type":"object"}}]}}))
+    sys.stdout.flush()
+`
+	if err := os.WriteFile(server, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	out := t.TempDir()
+	if err := Write(out); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(out, "mcp", "servers.yaml"))
+	if err != nil {
+		t.Fatalf("read mcp/servers.yaml: %v", err)
+	}
+	rep := serversReport{}
+	if err := yaml.Unmarshal(data, &rep); err != nil {
+		t.Fatalf("parse mcp/servers.yaml: %v", err)
+	}
+	if !rep.Generated {
+		t.Fatal("servers report should be marked generated")
+	}
+	found := false
+	for _, s := range rep.Servers {
+		if s.Name == "mcp-fake" && len(s.Tools) == 1 && s.Tools[0].Name == "search" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("servers report = %+v, want mcp-fake with search tool", rep.Servers)
 	}
 }

@@ -26,11 +26,21 @@ type Field struct {
 	Examples []any
 }
 
-// Core is the group name for step and trigger types that are part of Servitor
-// itself rather than a third-party integration (SPEC: What counts as an
-// integration). Universal primitives and generic/webhook triggers are core;
-// integration helpers and their triggers belong to that integration.
-const Core = "core"
+// Group is the top-level mechanism a type belongs to. Mechanisms are how
+// Servitor interacts with a service (ADR-0017): `core` (universal primitives
+// and scheduling), `webhook` (inbound HTTP reception), `singer` (record
+// streaming), `mcp` (tool invocation), `helper` (compiled-in wrappers), and
+// `websocket` (inbound streaming, future). `capabilities` groups its output by
+// this value, so a service reached by several mechanisms appears in several
+// groups (SPEC: How an agent discovers integrations).
+const (
+	Core      = "core"
+	Webhook   = "webhook"
+	Helper    = "helper"
+	Singer    = "singer"
+	MCP       = "mcp"
+	Websocket = "websocket"
+)
 
 // StepType describes one step type (for example `http` or `singer-tap`).
 type StepType struct {
@@ -113,7 +123,7 @@ var stepTypes = []*StepType{
 		Name:       "singer-tap",
 		Desc:       "Run a Singer tap and capture records and state.",
 		SideEffect: true,
-		Group:      "singer",
+		Group:      Singer,
 		Fields: map[string]*Field{
 			"tap":     {Type: "string", Required: true, Desc: "The tap to run.", Examples: []any{"tap-stripe"}},
 			"config":  {Type: "object", Desc: "Tap config."},
@@ -124,22 +134,34 @@ var stepTypes = []*StepType{
 		Name:       "singer-target",
 		Desc:       "Run a Singer target consuming records.",
 		SideEffect: true,
-		Group:      "singer",
+		Group:      Singer,
 		Fields: map[string]*Field{
 			"target": {Type: "string", Required: true, Desc: "The target to run.", Examples: []any{"target-grist"}},
 			"config": {Type: "object", Desc: "Target config."},
 		},
 	},
+	{
+		Name:       "mcp-call",
+		Desc:       "Invoke one named tool on one named MCP server over stdio (ADR-0015).",
+		SideEffect: true,
+		Group:      MCP,
+		Fields: map[string]*Field{
+			"server": {Type: "string", Required: true, Desc: "The MCP server executable to run.", Examples: []any{"atomic-server"}},
+			"tool":   {Type: "string", Required: true, Desc: "The named tool to invoke.", Examples: []any{"search"}},
+			"input":  {Type: "object", Desc: "The tool arguments.", Examples: []any{map[string]any{"query": "meeting notes"}}},
+			"mode":   {Type: "string", Desc: "The MCP protocol mode the server speaks, `classic` or `stateless`, copied from capabilities. Omit to probe once at run time.", Examples: []any{"stateless"}},
+		},
+	},
 }
 
 var triggerTypes = []*TriggerType{
-	{Name: "http_webhook", Desc: "Generic inbound HTTP receiver with configurable HMAC verification.", Group: Core, Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/things"}}, "secret": {Type: "string", Desc: "Secret name to verify the x-servitor-signature HMAC header with.", Examples: []any{"MY_WEBHOOK_SECRET"}}}},
-	{Name: "standard_webhook", Desc: "Standard Webhooks-compliant receiver.", Group: Core, Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/std"}}, "secret": {Type: "string", Desc: "Secret name to verify the Standard Webhooks signature with.", Examples: []any{"WEBHOOK_SECRET"}}}},
-	{Name: "grist_webhook", Desc: "Grist-specific receiver.", Group: "grist", Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/grist"}}}},
-	{Name: "github_webhook", Desc: "GitHub-specific receiver.", Group: "github", Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/github"}}}},
-	{Name: "slack_event", Desc: "Slack events (messages, mentions).", Group: "slack", Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/slack"}}}},
-	{Name: "atomic_event", Desc: "Atomic knowledge-base changes.", Group: "atomic", Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/atomic"}}}},
-	{Name: "email_received", Desc: "Inbound email parsed into a structured payload.", Group: Core, Fields: map[string]*Field{}},
+	{Name: "http_webhook", Desc: "Generic inbound HTTP receiver with configurable HMAC verification.", Group: Webhook, Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/things"}}, "secret": {Type: "string", Desc: "Secret name to verify the x-servitor-signature HMAC header with.", Examples: []any{"MY_WEBHOOK_SECRET"}}}},
+	{Name: "standard_webhook", Desc: "Standard Webhooks-compliant receiver.", Group: Webhook, Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/std"}}, "secret": {Type: "string", Desc: "Secret name to verify the Standard Webhooks signature with.", Examples: []any{"WEBHOOK_SECRET"}}}},
+	{Name: "grist_webhook", Desc: "Grist-specific receiver.", Group: Webhook, Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/grist"}}}},
+	{Name: "github_webhook", Desc: "GitHub-specific receiver.", Group: Webhook, Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/github"}}}},
+	{Name: "slack_event", Desc: "Slack events (messages, mentions).", Group: Webhook, Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/slack"}}}},
+	{Name: "atomic_event", Desc: "Atomic knowledge-base changes.", Group: Webhook, Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/atomic"}}}},
+	{Name: "email_received", Desc: "Inbound email parsed into a structured payload.", Group: Helper, Fields: map[string]*Field{}},
 	{Name: "cron", Desc: "Run on the Honker scheduler.", Group: Core, Fields: map[string]*Field{"schedule": {Type: "string", Required: true, Desc: "Cron expression.", Examples: []any{"0 * * * *"}}}},
 	{Name: "manual", Desc: "Invoked via the CLI.", Group: Core, Fields: map[string]*Field{}},
 	{Name: "internal", Desc: "Fired by another workflow's completion.", Group: Core, Fields: map[string]*Field{"workflow": {Type: "string", Required: true, Desc: "The workflow that fires this.", Examples: []any{"upstream-workflow"}}}},

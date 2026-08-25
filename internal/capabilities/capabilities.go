@@ -17,6 +17,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/Mathias-g/Servitor/internal/mcp"
 	"github.com/Mathias-g/Servitor/internal/registry"
 	"github.com/Mathias-g/Servitor/internal/singer"
 )
@@ -70,6 +71,9 @@ func Write(dir string) error {
 	if err := writeTaps(dir); err != nil {
 		return err
 	}
+	if err := writeServers(dir); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -80,10 +84,12 @@ type tapsReport struct {
 	Taps      []singer.DiscoveredTap `yaml:"taps"`
 }
 
-// writeTaps writes a taps.yaml reporting the installed Singer taps and their
-// discovered schemas (SPEC: How an agent discovers integrations). If
-// enumeration fails it writes a note instead of failing, so `capabilities`
-// still works when no taps are installed.
+// writeTaps writes a taps.yaml under the singer/ group reporting the installed
+// Singer taps and their discovered schemas (SPEC: How an agent discovers
+// integrations). It sits beside the singer-tap step type so an agent sees both
+// the type and what is installed to run against it (ADR-0017). If enumeration
+// fails it writes a note instead of failing, so `capabilities` still works
+// when no taps are installed.
 func writeTaps(dir string) error {
 	report := tapsReport{Generated: true}
 	taps, err := singer.DiscoverTaps()
@@ -96,8 +102,39 @@ func writeTaps(dir string) error {
 	if err != nil {
 		return fmt.Errorf("capabilities: marshal taps: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "taps.yaml"), data, 0o644); err != nil {
-		return fmt.Errorf("capabilities: write taps.yaml: %w", err)
+	if err := os.MkdirAll(filepath.Join(dir, registry.Singer), 0o755); err != nil {
+		return fmt.Errorf("capabilities: create singer group: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, registry.Singer, "taps.yaml"), data, 0o644); err != nil {
+		return fmt.Errorf("capabilities: write singer/taps.yaml: %w", err)
+	}
+	return nil
+}
+
+// serversReport is the on-disk shape of the available-MCP-servers report.
+type serversReport struct {
+	Generated bool                   `yaml:"generated"`
+	Note      string                 `yaml:"note,omitempty"`
+	Servers   []mcp.DiscoveredServer `yaml:"servers"`
+}
+
+// writeServers writes a servers.yaml under the mcp/ group reporting the
+// installed MCP servers (ADR-0017): each `mcp-*` executable on PATH, its
+// protocol mode, and its tool schemas. It sits beside the mcp-call step type so
+// an agent sees both the type and what is installed. If a server cannot be
+// probed, the report records its error rather than failing.
+func writeServers(dir string) error {
+	report := serversReport{Generated: true}
+	report.Servers = mcp.DiscoverServers(nil)
+	data, err := yaml.Marshal(report)
+	if err != nil {
+		return fmt.Errorf("capabilities: marshal servers: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, registry.MCP), 0o755); err != nil {
+		return fmt.Errorf("capabilities: create mcp group: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, registry.MCP, "servers.yaml"), data, 0o644); err != nil {
+		return fmt.Errorf("capabilities: write mcp/servers.yaml: %w", err)
 	}
 	return nil
 }
