@@ -170,28 +170,24 @@ func TestErrorMapping(t *testing.T) {
 	}
 }
 
-func TestDiscoverServersEnumeratesMCPPrefix(t *testing.T) {
+func TestDiscoverServersFromDeclaration(t *testing.T) {
 	dir := t.TempDir()
 	server := fakeServer(t, dir, "stateless")
-	// Name the executable with the mcp- prefix so it is discoverable.
-	renamed := filepath.Join(dir, "mcp-fake")
-	if err := os.Rename(server, renamed); err != nil {
-		t.Fatal(err)
-	}
-	// A non-mcp- prefixed executable must NOT be discovered.
+
+	// Declared by exact command (ADR-0018): the server may have any name. A
+	// non-declared executable is not reported.
 	if err := os.WriteFile(filepath.Join(dir, "atomic-server"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Keep python3 (for the fake server's shebang) and system tools on PATH
-	// while making mcp-fake discoverable.
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// Keep python3 (for the fake server's shebang) on PATH for execution.
+	t.Setenv("PATH", os.Getenv("PATH"))
 
-	servers := DiscoverServers(nil)
+	servers := DiscoverServers(map[string][]string{"fake": {server}}, nil)
 	if len(servers) != 1 {
-		t.Fatalf("servers = %+v, want only mcp-fake", servers)
+		t.Fatalf("servers = %+v, want only the declared fake", servers)
 	}
-	if servers[0].Name != "mcp-fake" {
-		t.Fatalf("name = %q, want mcp-fake", servers[0].Name)
+	if servers[0].Name != "fake" {
+		t.Fatalf("name = %q, want fake", servers[0].Name)
 	}
 	if servers[0].Mode != ModeStateless {
 		t.Fatalf("mode = %q, want stateless", servers[0].Mode)

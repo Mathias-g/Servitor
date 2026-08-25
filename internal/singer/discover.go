@@ -3,11 +3,7 @@ package singer
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
-	"sort"
-	"strings"
 )
 
 // Stream is one entry of a tap's catalog, in the same shape the `catalog`
@@ -22,10 +18,10 @@ type Stream struct {
 	Metadata    []any          `json:"metadata"`
 }
 
-// DiscoveredTap is an installed tap discovered from PATH, with its config
-// schema (from --about) and catalog (from --discover). A discovery that fails
-// records the error rather than failing the whole report, so `capabilities`
-// still works when a tap is broken (SPEC: How an agent discovers integrations).
+// DiscoveredTap is a declared tap, with its config schema (from --about) and
+// catalog (from --discover). A discovery that fails records the error rather
+// than failing the whole report, so `capabilities` still works when a tap is
+// broken (SPEC: How an agent discovers integrations).
 type DiscoveredTap struct {
 	Name        string         `json:"name"`
 	Config      map[string]any `json:"config,omitempty"`
@@ -34,61 +30,37 @@ type DiscoveredTap struct {
 	DiscoverErr string         `json:"discover_error,omitempty"`
 }
 
-// DiscoverTaps enumerates the `tap-*` executables on PATH and discovers each
-// one's config schema and streams by calling `--about` and `--discover`. This
-// is invoked during a capabilities refresh, not per step execution (SPEC:
-// Capability discovery).
-func DiscoverTaps() ([]DiscoveredTap, error) {
-	names := tapsOnPath()
+// DiscoverTaps probes each declared tap (name to command) for its config
+// schema and streams via --about and --discover. It is invoked during a
+// capabilities refresh, not per step execution (SPEC: Capability discovery).
+// The declared set comes from the integrations config (ADR-0018); there is no
+// PATH scan.
+func DiscoverTaps(declared map[string][]string) []DiscoveredTap {
+	names := sortedKeys(declared)
 	taps := make([]DiscoveredTap, 0, len(names))
 	for _, name := range names {
-		taps = append(taps, discover(name))
+		taps = append(taps, discover(name, declared[name]))
 	}
-	return taps, nil
-}
-
-// tapsOnPath returns the executable names on PATH that look like Singer taps
-// (`tap-*`), sorted.
-func tapsOnPath() []string {
-	var found []string
-	seen := map[string]bool{}
-	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
-		if dir == "" {
-			continue
-		}
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			if e.IsDir() || !strings.HasPrefix(e.Name(), "tap-") {
-				continue
-			}
-			info, err := e.Info()
-			if err != nil || info.Mode()&0o111 == 0 {
-				continue
-			}
-			if !seen[e.Name()] {
-				seen[e.Name()] = true
-				found = append(found, e.Name())
-			}
-		}
-	}
-	sort.Strings(found)
-	return found
+	return taps
 }
 
 // discover calls --about and --discover on one tap and returns its schema and
 // streams. Failures are captured per-step rather than returned, so one broken
 // tap does not hide the rest.
-func discover(name string) DiscoveredTap {
+func discover(name string, command []string) DiscoveredTap {
 	t := DiscoveredTap{Name: name}
-	if out, err := exec.Command(name, "--about").Output(); err != nil {
+	base := command
+	if len(base) == 0 {
+		base = []string{name}
+	}
+	about := append(append([]string{}, base...), "--about")
+	if out, err := exec.Command(about[0], about[1:]...).Output(); err != nil {
 		t.AboutErr = err.Error()
 	} else if cfg, uerr := unmarshalObject(out); uerr == nil {
 		t.Config = cfg
 	}
-	if out, err := exec.Command(name, "--discover").Output(); err != nil {
+	disc := append(append([]string{}, base...), "--discover")
+	if out, err := exec.Command(disc[0], disc[1:]...).Output(); err != nil {
 		t.DiscoverErr = err.Error()
 	} else {
 		t.Catalog = parseCatalog(out)

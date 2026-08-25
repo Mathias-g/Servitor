@@ -198,12 +198,9 @@ esac
 	if err := os.WriteFile(tap, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", dir)
-
-	taps, err := DiscoverTaps()
-	if err != nil {
-		t.Fatalf("DiscoverTaps: %v", err)
-	}
+	// Declared by command (ADR-0018): the config names the exact command, so
+	// there is no PATH scan.
+	taps := DiscoverTaps(map[string][]string{"tap-fake": {tap}})
 	if len(taps) != 1 || taps[0].Name != "tap-fake" {
 		t.Fatalf("taps = %+v, want one tap-fake", taps)
 	}
