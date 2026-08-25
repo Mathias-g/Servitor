@@ -111,11 +111,11 @@ This means SQLite writes are serialized through the parent process, which is the
 
 Go keeps subprocess startup fast (roughly a millisecond), which is why every step runs as a subprocess rather than in-process (ADR-0008). Read concurrency is fine: workers reading their own claim, the control plane reading workflow state, and the trigger receivers reading config can all happen against WAL-mode SQLite without blocking the writer.
 
-### Building blocks (reference)
+### Dependencies and standards (reference)
 
-What each dependency is and what we use it for. Each is a stable interface, so each can be written in whatever language suits it (Honker is Rust, Varlock is JavaScript, Singer taps and targets are whatever their authors wrote them in). Only the runner itself is Go.
+The runner is a single Go binary, but it composes external pieces and speaks external standards. Two of these are runtime dependencies the runner actually pulls in (Honker, Varlock); the other two are standards it adheres to by spawning external tools or implementing a scheme (Singer, Standard Webhooks). Only the runner itself is Go.
 
-#### Honker, durable queue and scheduler
+#### Honker, durable queue and scheduler (runtime dependency)
 
 [Honker](https://honker.dev) is a SQLite extension that adds Postgres-style NOTIFY/LISTEN semantics to SQLite, plus a durable work queue, event streams, and a cron scheduler. One `.db` file is the entire system: no Redis, no separate broker.
 
@@ -129,7 +129,7 @@ What we use it for:
 - **Transactional commits.** A step's completion writes commit as a single atomic SQLite transaction rather than as separate operations. This is the mechanism behind the transactional fan-out guarantee; see step 8 of the Execution model for what the transaction contains and why it must never be split.
 - **Scheduler primitive.** Cron-style triggers use Honker's built-in scheduler.
 
-#### Varlock, secret management
+#### Varlock, secret management (runtime dependency)
 
 [Varlock](https://varlock.dev) is a typed, schema-validated `.env` replacement with runtime log redaction and plugin support for a range of secret managers (e.g. 1Password, HashiCorp Vault, AWS Secrets Manager). Servitor does not assume any particular one: the operator points varlock at whatever backing store they already use, and the runner only ever sees resolved env vars, so the choice of manager is the operator's, not Servitor's.
 
@@ -142,7 +142,7 @@ What we use it for:
 
 **Self-healing launch.** The danger with exposing the inner `servitor run` target is that someone reads `--help`, types `servitor run` directly, and boots the runner with no secrets in its environment, which is the one startup mistake that matters. This is prevented by a sentinel rather than by hiding the command. Varlock always sets `__VARLOCK_RUN=1` in the environment of the process it launches. So on startup the runner checks for `__VARLOCK_RUN`: if it is present, the process is already wrapped and boots normally; if it is absent, the process re-execs itself as `varlock run -- servitor run` and lets varlock populate the environment first. Both `servitor` and a directly typed `servitor run` therefore converge on the same wrapped path. The re-exec is idempotent: the inner invocation runs with `__VARLOCK_RUN` set, so it boots rather than wrapping itself again. If varlock is not installed, the runner boots anyway and warns that secret resolution is off; steps that declare secrets will then fail, which is the visible signal that varlock is missing.
 
-#### Singer, data movement integrations
+#### Singer, data movement integrations (standard)
 
 [Singer](https://www.singer.io) is an open spec for data integration. A *tap* is a CLI that emits records from a source as JSON; a *target* is a CLI that consumes records into a destination. Hundreds of taps exist across the ecosystem, most MIT-licensed, many actively maintained through [Meltano Hub](https://hub.meltano.com).
 
@@ -157,7 +157,7 @@ What we use it for:
 
 Singer steps and curated helpers can both perform actions against the same external service (a `target-grist` and the `grist` helper's `write_row` both write to Grist), so the distinction isn't action vs not-action; it's the *shape* of the step. Singer steps consume or emit streams of typed records with bookmark state. Helpers make discrete calls with discrete inputs and outputs.
 
-#### Standard Webhooks, modern webhook reception
+#### Standard Webhooks, modern webhook reception (standard)
 
 [Standard Webhooks](https://www.standardwebhooks.com) is a community-driven spec for webhook signing and verification, adopted by OpenAI, Anthropic, Google Gemini, Supabase, Twilio, Vanta, and others.
 

@@ -147,15 +147,6 @@ pipeline or an operator) can reach it.
 
 Servitor is designed to be driven by your coding agent. It ships a skill (a `SKILL.md`) that teaches the agent the CLI, so agents consume it through the skill and the CLI rather than an MCP server. The daemon protocol is kept transport-agnostic so an MCP adapter could sit beside the CLI later without a rewrite.
 
-## Building blocks
-
-The runner composes well-defined, maintained pieces, each doing a narrow job:
-
-- **Honker** (Rust, a SQLite extension): durable queue, scheduler, and NOTIFY/LISTEN semantics. One `.db` file is the whole system; no Redis.
-- **Varlock** (JavaScript): typed, schema-validated secrets with runtime log redaction. The runner only ever sees resolved env vars.
-- **Singer**: record-stream integration. Taps emit records from a source, targets consume them into a destination, with bookmark state.
-- **Standard Webhooks**: modern webhook signing and verification, one library for any compliant producer.
-
 ## The docs
 
 - **SPEC.md**: the full product and behavior spec: what Servitor is, the control-plane (CLI) surface, the Wafer format, and how it works end to end. The source of truth for what to build and why.
