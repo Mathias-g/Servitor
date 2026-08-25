@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Mathias-g/Servitor/internal/exec"
 	"github.com/Mathias-g/Servitor/internal/honker"
 	"github.com/Mathias-g/Servitor/internal/mcp"
 )
@@ -464,5 +465,102 @@ func TestMCPStepDispatchesAndMapsError(t *testing.T) {
 	res := claimResultJSON(t, store, "run-mcp", "m").(map[string]any)
 	if res["ok"] != false || res["code"] != "mcp_tool_error" {
 		t.Fatalf("result = %v, want mapped mcp_tool_error", res)
+	}
+}
+
+// stubRunner is a StepRunner that returns a fixed result without spawning a
+// subprocess, so threading of the {event, steps} input can be asserted.
+type stubRunner struct {
+	out any
+}
+
+func (s stubRunner) Run(_ context.Context, req exec.Request) (exec.Result, error) {
+	return exec.Result{Output: s.out}, nil
+}
+
+func TestDownstreamInputIsThreaded(t *testing.T) {
+	w, _, q := newWorker(t, 30, 3, nil)
+	// Replace the subprocess runner with a stub.
+	w.runner = stubRunner{out: map[string]any{"ok": true}}
+
+	headInput := map[string]any{"event": map[string]any{"id": "e1"}, "steps": map[string]any{}}
+	if _, err := q.Enqueue(StepJob{
+		RunID: "run-1", WorkflowID: "wf", StepID: "a", StepName: "a",
+		StepType: "shell", Input: headInput,
+		Command: []string{"ignored"},
+		Downstream: []StepJob{{
+			RunID: "run-1", WorkflowID: "wf", StepID: "b", StepName: "b",
+			StepType: "shell", Command: []string{"ignored"},
+		}},
+	}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	job, err := q.ClaimOne("worker-1")
+	if err != nil || job == nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := w.handle(context.Background(), job); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+
+	down, err := q.ClaimOne("worker-1")
+	if err != nil || down == nil {
+		t.Fatalf("downstream not claimable: %v", err)
+	}
+	var d StepJob
+	if err := down.UnmarshalPayload(&d); err != nil {
+		t.Fatalf("downstream payload: %v", err)
+	}
+	// The downstream's input must carry the event and step a's result under its name.
+	ev, _ := d.Input["event"].(map[string]any)
+	if ev["id"] != "e1" {
+		t.Fatalf("downstream event = %v, want e1", ev)
+	}
+	steps, _ := d.Input["steps"].(map[string]any)
+	ares, ok := steps["a"].(map[string]any)
+	if !ok || ares["ok"] != true {
+		t.Fatalf("downstream steps.a = %v, want {ok: true}", steps["a"])
+	}
+}
+
+// TestDedupeKeyEvaluatedAtExecution pins that a dedupe_key JSONata expression is
+// evaluated against the step's {event, steps} input at execution time (ADR-0020,
+// ADR-0021), not supplied pre-resolved.
+func TestDedupeKeyEvaluatedAtExecution(t *testing.T) {
+	w, store, q := newWorker(t, 30, 3, nil)
+
+	// Seed a prior successful dedupe for key derived from event.id = "e-7".
+	err := store.CommitStepAtom(honker.StepAtom{
+		RunID: "run-1", StepID: "a",
+		Result: map[string]any{"ok": true, "from": "prior"},
+		Dedupe: &honker.DedupeRecord{WorkflowID: "wf", StepName: "a", Key: "e-7", Succeeded: true, Result: map[string]any{"ok": true, "from": "prior"}},
+	})
+	if err != nil {
+		t.Fatalf("seed dedupe: %v", err)
+	}
+
+	// The step's dedupe_key is the expression event.id, evaluated against input.
+	if _, err := q.Enqueue(StepJob{
+		RunID: "run-2", WorkflowID: "wf", StepID: "a", StepName: "a",
+		StepType: "shell", DedupeKey: "event.id",
+		Input:   map[string]any{"event": map[string]any{"id": "e-7"}, "steps": map[string]any{}},
+		Command: shellCmd(`printf '{"ok":true,"from":"rerun"}'`),
+	}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	job, err := q.ClaimOne("worker-1")
+	if err != nil || job == nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := w.handle(context.Background(), job); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+
+	res, ok := claimResultJSON(t, store, "run-2", "a").(map[string]any)
+	if !ok {
+		t.Fatalf("result = %#v, want object", claimResultJSON(t, store, "run-2", "a"))
+	}
+	if res["from"] != "prior" {
+		t.Fatalf("result = %v, want prior result (dedupe_key expression matched)", res)
 	}
 }

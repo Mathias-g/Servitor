@@ -159,3 +159,50 @@ func TestDryRunUsageError(t *testing.T) {
 		t.Fatalf("dry-run exit %d, want %d", code, exitUsage)
 	}
 }
+
+func TestTransformStepSubprocess(t *testing.T) {
+	input := `{"event":{"id":"e1"},"steps":{"fetch":{"items":[{"amount":10,"active":true},{"amount":100,"active":false},{"amount":5,"active":true}]}}}`
+
+	oldStdin := os.Stdin
+	t.Cleanup(func() { os.Stdin = oldStdin })
+	f, err := os.CreateTemp(t.TempDir(), "stdin-*.json")
+	if err != nil {
+		t.Fatalf("create stdin file: %v", err)
+	}
+	if _, err := f.WriteString(input); err != nil {
+		t.Fatalf("write stdin: %v", err)
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		t.Fatalf("seek: %v", err)
+	}
+	os.Stdin = f
+
+	var out, errOut bytes.Buffer
+	if code := Run([]string{"__transform", `$sum(steps.fetch.items[active=true].amount)`}, &out, &errOut); code != exitOK {
+		t.Fatalf("__transform exit %d, want %d (stderr: %s)", code, exitOK, errOut.String())
+	}
+	if strings.TrimSpace(out.String()) != "15" {
+		t.Fatalf("transform output = %q, want 15", out.String())
+	}
+}
+
+func TestTransformStepBadExpression(t *testing.T) {
+	oldStdin := os.Stdin
+	t.Cleanup(func() { os.Stdin = oldStdin })
+	f, err := os.CreateTemp(t.TempDir(), "stdin-*.json")
+	if err != nil {
+		t.Fatalf("create stdin file: %v", err)
+	}
+	if _, err := f.WriteString(`{}`); err != nil {
+		t.Fatalf("write stdin: %v", err)
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		t.Fatalf("seek: %v", err)
+	}
+	os.Stdin = f
+
+	var out, errOut bytes.Buffer
+	if code := Run([]string{"__transform", `["unterminated`}, &out, &errOut); code != exitFailure {
+		t.Fatalf("__transform bad expr exit %d, want %d", code, exitFailure)
+	}
+}

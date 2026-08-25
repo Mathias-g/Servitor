@@ -65,8 +65,8 @@ func TestFromWaferBuildsChain(t *testing.T) {
 	if head.StepID != "a" || head.WorkflowID != "demo" {
 		t.Fatalf("head = %q/%q, want a/demo", head.StepID, head.WorkflowID)
 	}
-	if head.Input["trigger"] != "cron" {
-		t.Fatalf("head input = %v, want cron event", head.Input)
+	if head.Input["event"].(map[string]any)["trigger"] != "cron" {
+		t.Fatalf("head input event = %v, want cron event", head.Input)
 	}
 	if len(head.Downstream) != 1 {
 		t.Fatalf("head downstream = %d, want 1 (b)", len(head.Downstream))
@@ -85,8 +85,8 @@ func TestFromWaferRejectsUnsupportedType(t *testing.T) {
 name: demo
 on: []
 steps:
-  - type: transform
-    expression: "input"
+  - type: branch
+    when: "x"
 `))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -188,5 +188,56 @@ func TestRegisterCronFiresIntoQueue(t *testing.T) {
 	}
 	if head.StepID != "a" || head.RunID != "cron-run" {
 		t.Fatalf("head = %q/%q, want a/cron-run", head.StepID, head.RunID)
+	}
+}
+
+func TestTransformCommandWiresSelfInvocation(t *testing.T) {
+	w, err := wafer.Parse([]byte(`
+name: demo
+on: []
+steps:
+  - type: transform
+    name: t
+    expression: "steps.fetch.amount"
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	head, err := FromWafer(w, map[string]any{"trigger": "manual"})
+	if err != nil {
+		t.Fatalf("FromWafer: %v", err)
+	}
+	if len(head.Command) != 3 || head.Command[1] != "__transform" || head.Command[2] != "steps.fetch.amount" {
+		t.Fatalf("transform command = %v, want [exe __transform steps.fetch.amount]", head.Command)
+	}
+	// Head input is wrapped as {event, steps} (ADR-0021).
+	ev, ok := head.Input["event"].(map[string]any)
+	if !ok || ev["trigger"] != "manual" {
+		t.Fatalf("head input event = %v, want {trigger: manual}", head.Input)
+	}
+	if _, ok := head.Input["steps"].(map[string]any); !ok {
+		t.Fatalf("head input steps = %v, want a map", head.Input["steps"])
+	}
+}
+
+func TestFromWaferCarriesDedupeKeyExpression(t *testing.T) {
+	w, err := wafer.Parse([]byte(`
+name: demo
+on: []
+steps:
+  - type: shell
+    name: a
+    dedupe_key: "event.id"
+    command: "printf '{}'"
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	head, err := FromWafer(w, map[string]any{"id": "e1"})
+	if err != nil {
+		t.Fatalf("FromWafer: %v", err)
+	}
+	if head.DedupeKey != "event.id" {
+		t.Fatalf("head dedupe_key = %q, want event.id", head.DedupeKey)
 	}
 }

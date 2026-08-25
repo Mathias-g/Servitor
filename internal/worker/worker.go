@@ -14,10 +14,12 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/Mathias-g/Servitor/internal/exec"
+	"github.com/Mathias-g/Servitor/internal/expression"
 	"github.com/Mathias-g/Servitor/internal/honker"
 	"github.com/Mathias-g/Servitor/internal/mcp"
 	"github.com/Mathias-g/Servitor/internal/singer"
@@ -43,10 +45,9 @@ type StepJob struct {
 	Config map[string]any
 	// Input is the step's input: the trigger event plus prior step results.
 	Input map[string]any
-	// DedupeKey is the resolved value of the step's dedupe_key expression. It
-	// is evaluated at enqueue time; the expression language is an open SPEC
-	// question, so the caller supplies the resolved value. Empty means the
-	// step has no dedupe contract.
+	// DedupeKey is the step's dedupe_key JSONata expression (ADR-0020), evaluated
+	// against the step's {event, steps} input at execution time to form the
+	// dedupe key. Empty means the step has no dedupe contract.
 	DedupeKey string
 	// Command is the argv to run for this step.
 	Command []string
@@ -194,7 +195,16 @@ func (w *Worker) handle(ctx context.Context, claimed *honker.Job) error {
 		return nil
 	}
 
-	result, ran, state, err := w.runStep(ctx, sj)
+	// Resolve the step's dedupe_key JSONata expression against its {event, steps}
+	// input at execution time (ADR-0020, ADR-0021). The resolved key is used for
+	// the dedupe lookup and, on completion, for the dedupe record.
+	dedupeKey, derr := resolveDedupeKey(sj)
+	if derr != nil {
+		w.recordFailure(sj, claimed, derr)
+		return fmt.Errorf("worker: step %s (job %d): %w", sj.StepID, claimed.ID, derr)
+	}
+
+	result, ran, state, err := w.runStep(ctx, sj, dedupeKey)
 	if err != nil {
 		w.recordFailure(sj, claimed, err)
 		return fmt.Errorf("worker: step %s (job %d): %w", sj.StepID, claimed.ID, err)
@@ -209,16 +219,20 @@ func (w *Worker) handle(ctx context.Context, claimed *honker.Job) error {
 	if state != nil {
 		atom.SingerState = state
 	}
-	if sj.DedupeKey != "" && ran {
+	if dedupeKey != "" && ran {
 		atom.Dedupe = &honker.DedupeRecord{
 			WorkflowID: sj.WorkflowID,
 			StepName:   sj.StepName,
-			Key:        sj.DedupeKey,
+			Key:        dedupeKey,
 			Succeeded:  true,
 			Result:     result,
 		}
 	}
-	for _, d := range sj.Downstream {
+	for i := range sj.Downstream {
+		d := sj.Downstream[i]
+		// Thread the {event, steps} input forward: this step's result becomes
+		// available to each successor under this step's name (ADR-0021).
+		d.Input = threadInput(sj.Input, sj.StepName, result)
 		atom.Downstream = append(atom.Downstream, honker.Downstream{Queue: w.queue, Payload: d})
 	}
 	if err := w.store.CommitStepAtom(atom); err != nil {
@@ -232,14 +246,43 @@ func (w *Worker) handle(ctx context.Context, claimed *honker.Job) error {
 	return nil
 }
 
+// resolveDedupeKey evaluates a step's dedupe_key JSONata expression (ADR-0020)
+// against its {event, steps} input (ADR-0021) and stringifies the result to form
+// the dedupe key. It returns "" when the step has no dedupe_key. An expression
+// that evaluates to nothing is treated as no key.
+func resolveDedupeKey(sj StepJob) (string, error) {
+	if sj.DedupeKey == "" {
+		return "", nil
+	}
+	out, err := expression.Eval(sj.DedupeKey, sj.Input)
+	if err != nil {
+		return "", fmt.Errorf("dedupe_key expression: %w", err)
+	}
+	return dedupeString(out), nil
+}
+
+// dedupeString stringifies a JSONata result into a dedupe key. A string result
+// is used as-is (matching the common `event.id` / `row-42` form); anything else
+// is rendered as its JSON representation so the key is stable and unique.
+func dedupeString(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("%v", v)
+	}
+	return string(raw)
+}
+
 // runStep runs a single step to produce its result. It returns ran=false when
 // the step is skipped by a prior successful dedupe record, in which case
 // result is the prior result and no subprocess runs. It returns state, non-nil
 // only for a completed singer-tap step, whose new bookmark is committed with
 // the step's result (SPEC: Execution model step 8).
-func (w *Worker) runStep(ctx context.Context, sj StepJob) (result any, ran bool, state *honker.SingerState, err error) {
-	if sj.DedupeKey != "" {
-		out, lerr := w.store.LookupDedupe(sj.WorkflowID, sj.StepName, sj.DedupeKey)
+func (w *Worker) runStep(ctx context.Context, sj StepJob, dedupeKey string) (result any, ran bool, state *honker.SingerState, err error) {
+	if dedupeKey != "" {
+		out, lerr := w.store.LookupDedupe(sj.WorkflowID, sj.StepName, dedupeKey)
 		if lerr != nil {
 			return nil, false, nil, lerr
 		}
@@ -363,24 +406,56 @@ func (w *Worker) runMCPStep(ctx context.Context, sj StepJob) (result any, ran bo
 	return map[string]any{"ok": true, "content": res.Content, "data": res.Data}, true, nil, nil
 }
 
-// recordsFromInput extracts singer records from a step's input, which for a
-// target is the prior tap step's `records` array.
+// threadInput builds a downstream step's input from a completing step's input
+// and its result (ADR-0021). The input is an object with an `event` field (the
+// durable trigger payload) and a `steps` field (prior step results keyed by step
+// name). This step's result is added under this step's name; the event is passed
+// through unchanged.
+func threadInput(parentInput map[string]any, stepName string, result any) map[string]any {
+	event := parentInput["event"]
+	steps, _ := parentInput["steps"].(map[string]any)
+	if steps == nil {
+		steps = map[string]any{}
+	}
+	next := make(map[string]any, len(steps)+1)
+	for k, v := range steps {
+		next[k] = v
+	}
+	if stepName != "" {
+		next[stepName] = result
+	}
+	return map[string]any{"event": event, "steps": next}
+}
+
+// recordsFromInput extracts singer records from a step's `{event, steps}` input
+// (ADR-0021). A target is downstream of the tap that produced the records, so
+// the records live under the tap step's result, which has the shape
+// {records, streams, state}. In the linear chain a target has one
+// records-producing predecessor, so scanning the `steps` map for the first
+// result with a `records` array is unambiguous for now.
 func recordsFromInput(input map[string]any) []singer.Record {
 	var out []singer.Record
 	if input == nil {
 		return out
 	}
-	raw, ok := input["records"].([]any)
-	if !ok {
-		return out
-	}
-	for _, r := range raw {
-		rm, ok := r.(map[string]any)
+	steps, _ := input["steps"].(map[string]any)
+	for _, v := range steps {
+		rm, ok := v.(map[string]any)
 		if !ok {
 			continue
 		}
-		stream, _ := rm["stream"].(string)
-		out = append(out, singer.Record{Stream: stream, Record: rm["record"]})
+		raw, ok := rm["records"].([]any)
+		if !ok {
+			continue
+		}
+		for _, r := range raw {
+			rr, ok := r.(map[string]any)
+			if !ok {
+				continue
+			}
+			stream, _ := rr["stream"].(string)
+			out = append(out, singer.Record{Stream: stream, Record: rr["record"]})
+		}
 	}
 	return out
 }
@@ -398,13 +473,19 @@ func (w *Worker) recordFailure(sj StepJob, claimed *honker.Job, cause error) {
 		// No Job and no Downstream: the claim is not acked and successors do
 		// not run, so the step is re-issued on retry/visibility timeout.
 	}
+	// The dedupe key is resolved before the step runs; if it could not be
+	// evaluated we have no key, so no failed dedupe record is written. A later
+	// retry re-evaluates it.
 	if sj.DedupeKey != "" {
-		atom.Dedupe = &honker.DedupeRecord{
-			WorkflowID: sj.WorkflowID,
-			StepName:   sj.StepName,
-			Key:        sj.DedupeKey,
-			Succeeded:  false,
-			Result:     result,
+		key, err := resolveDedupeKey(sj)
+		if err == nil && key != "" {
+			atom.Dedupe = &honker.DedupeRecord{
+				WorkflowID: sj.WorkflowID,
+				StepName:   sj.StepName,
+				Key:        key,
+				Succeeded:  false,
+				Result:     result,
+			}
 		}
 	}
 	_ = w.store.CommitStepAtom(atom)

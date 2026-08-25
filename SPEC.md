@@ -309,7 +309,7 @@ Step types come in three kinds, roughly from most general to most specific:
 
 - `http`. Make an HTTP request, capture response.
 - `shell`. Execute a command.
-- `transform`. Reshape, extract, or compute over previous steps' JSON output, returning new JSON.
+- `transform`. Reshape, extract, or compute over previous steps' JSON output, returning new JSON. Its `expression` field is JSONata (ADR-0020), evaluated against the step's `{event, steps}` input (ADR-0021). It runs as a subprocess of the servitor binary's hidden `__transform` command (ADR-0008).
 - `branch`. Conditional routing based on inputs.
 - `foreach`. Fan out a step over a list.
 
@@ -387,7 +387,7 @@ Honker's at-least-once delivery means a step can run more than once: a worker ca
 
 The runner provides:
 
-- **`dedupe_key` field on every step.** A string expression evaluated against the step's inputs (often the trigger event ID, a row ID, or a hash). Before the step executes (whether by spawning a subprocess or running in-process), the parent checks a `step_dedupe` table keyed by `(workflow_id, step_name, dedupe_key)`. If the key is present and the prior run succeeded, the step is skipped and the prior result is returned. If the key is present and the prior run failed, the step proceeds.
+- **`dedupe_key` field on every step.** A JSONata expression (ADR-0020) evaluated at execution time against the step's `{event, steps}` input (ADR-0021) (often the trigger event ID, a row ID, or a hash); the result is stringified to form the key. Before the step executes, the parent checks a `step_dedupe` table keyed by `(workflow_id, step_name, dedupe_key)`. If the key is present and the prior run succeeded, the step is skipped and the prior result is returned. If the key is present and the prior run failed, the step proceeds.
 - **A short retention window on dedupe keys** (default 72h, configurable per step) so the table doesn't grow unboundedly.
 - **Default off, but loudly recommended.** Validation emits a warning when a step performs an externally-visible side effect (sending a message, creating a row, calling a non-idempotent HTTP method) and has no `dedupe_key`. Agents see this warning as a structured error of severity `warn` and can decide whether to suppress.
 
@@ -462,6 +462,28 @@ Getting onto the box is the operator's existing access (SSH or VPN), not a Servi
 
 ---
 
+## Gotchas
+
+Operational and security invariants that are easy to miss or re-litigate.
+
+- **The subprocess env is the security boundary, not how a step's input is
+  shaped.** A step can only see what its subprocess environment contains
+  (ADR-0008): only the secrets it declared. Whether the worker threads prior
+  results into the job or reads them back does not change what a step can
+  reach. Do not add an input-scoping mechanism on security grounds; the
+  isolation is the filtered subprocess env.
+- **A step's input is committed atomically with the result it depends on.** The
+  `{event, steps}` input a downstream step receives is written into the job's
+  payload inside the same `CommitStepAtom` transaction as the prior step's
+  result (SPEC: Execution model step 8, ADR-0021). A step's input can therefore
+  never disagree with the committed results it was built from; keep it that way.
+- **`dedupe_key` has two independent axes: the language and when it is
+  evaluated.** The language is JSONata (ADR-0020). When it is evaluated (now, at
+  step execution, alongside `transform`) is a separate decision (ADR-0021).
+  Do not conflate them when revisiting either.
+
+---
+
 ## Roadmap
 
 Things deliberately out of scope for v1, kept here so the design doesn't quietly commit to them later:
@@ -475,12 +497,10 @@ Things deliberately out of scope for v1, kept here so the design doesn't quietly
 
 ## Status
 
-Early development. The daemon lifecycle, loopback control protocol, Wafer model and structured validation, capability discovery (including a `secrets.yaml` reporting declared secret names and presence, a `singer/taps.yaml` reporting declared Singer taps, and a `mcp/servers.yaml` reporting declared MCP servers; grouped by mechanism per ADR-0017, sourced from the declared integrations config per ADR-0018), dry-run DAG resolution (including redacted secret names and a `missing_secret` warning), the Honker durability store (with the transactional atom), step execution (the worker loop, subprocess isolation with env filtering, and the dedupe contract), the Singer integration (the `singer-tap` and `singer-target` executors, bookmark state committed with each tap step's result, and schema discovery; ADR-0016), the MCP integration (the `mcp-call` step type with a client-mode executor, both classic and stateless protocol support, and structured error mapping; ADR-0015), inbound triggers (a webhook receiver for Standard Webhooks and generic HMAC, plus cron and manual), the varlock integration (self-healing launch and per-step secret filtering), the shipped `SKILL.md` agent reference, run inspection (`servitor runs`, `servitor run <id>`, `servitor cancel`), and the release flow (`make release`) are built (`servitor run`, `stop`, `dry-run`, `capabilities`, `submit`, `update`, `enable`, `disable`, `trigger`, `runs`, `run`, `cancel`). Provider-specific webhook receivers, the `internal` trigger, and the remaining step handlers (transform, branch, foreach) are not yet built. Open questions, to be resolved as implementation progresses and tracked in ADRs in the `docs/adr/` directory:
+Early development. The daemon lifecycle, loopback control protocol, Wafer model and structured validation, capability discovery (including a `secrets.yaml` reporting declared secret names and presence, a `singer/taps.yaml` reporting declared Singer taps, and a `mcp/servers.yaml` reporting declared MCP servers; grouped by mechanism per ADR-0017, sourced from the declared integrations config per ADR-0018), dry-run DAG resolution (including redacted secret names and a `missing_secret` warning), the Honker durability store (with the transactional atom), step execution (the worker loop, subprocess isolation with env filtering, and the dedupe contract), the Singer integration (the `singer-tap` and `singer-target` executors, bookmark state committed with each tap step's result, and schema discovery; ADR-0016), the MCP integration (the `mcp-call` step type with a client-mode executor, both classic and stateless protocol support, and structured error mapping; ADR-0015), inbound triggers (a webhook receiver for Standard Webhooks and generic HMAC, plus cron and manual), the varlock integration (self-healing launch and per-step secret filtering), the shipped `SKILL.md` agent reference, run inspection (`servitor runs`, `servitor run <id>`, `servitor cancel`), and the release flow (`make release`) are built (`servitor run`, `stop`, `dry-run`, `capabilities`, `submit`, `update`, `enable`, `disable`, `trigger`, `runs`, `run`, `cancel`), the `transform` step handler and `dedupe_key` evaluation (JSONata via gnata, ADR-0020; `{event, steps}` threaded input, ADR-0021). Provider-specific webhook receivers, the `internal` trigger, and the remaining step handlers (branch, foreach) are not yet built. Open questions, to be resolved as implementation progresses and tracked in ADRs in the `docs/adr/` directory:
 
 - Worker concurrency limits; runs currently execute as a sequential step chain, and parallel fan-out is deferred (ADR-0012).
-- The exact shape of the `dedupe_key` expression language (resolved values are supplied at enqueue time for now).
-- Which expression language `transform` uses. It runs as a subprocess, so the evaluator has no host access by construction (no file, shell, or network reach); the only remaining constraint is that evaluation is bounded.
- - The trigger receiver's framing of bespoke per-provider signing schemes.
+- The trigger receiver's framing of bespoke per-provider signing schemes.
  - How the varlock parent handles termination signals: whether `varlock run` forwards SIGTERM/SIGINT to the runner child and propagates its exit code. If it does not, the runner is wrapped with a minimal init such as `tini` or `dumb-init` so signals reach it cleanly.
 
 Contributions welcome once the initial scaffolding is in place.

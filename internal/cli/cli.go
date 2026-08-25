@@ -13,6 +13,7 @@ import (
 
 	"github.com/Mathias-g/Servitor/internal/capabilities"
 	"github.com/Mathias-g/Servitor/internal/daemon"
+	"github.com/Mathias-g/Servitor/internal/expression"
 	"github.com/Mathias-g/Servitor/internal/protocol"
 	"github.com/Mathias-g/Servitor/internal/varlock"
 	"github.com/Mathias-g/Servitor/internal/wafer"
@@ -70,6 +71,11 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return cmdTap(args[1:], stdout, stderr)
 	case "target":
 		return cmdTarget(args[1:], stdout, stderr)
+	case "__transform":
+		// Hidden subprocess entrypoint: the worker runs a `transform` step as
+		// a subprocess of the servitor binary itself (ADR-0008), so every step,
+		// including pure-computation steps, runs outside the runner's process.
+		return cmdTransformStep(args[1:], stdout, stderr)
 	}
 
 	// The remaining commands are daemon operations scheduled for later phases.
@@ -456,6 +462,44 @@ func cmdCancel(args []string, stdout, stderr io.Writer) int {
 		return exitFailure
 	}
 	_, _ = fmt.Fprintf(stdout, "servitor: cancelled %s\n", rest[0])
+	return exitOK
+}
+
+// cmdTransformStep is the hidden subprocess entrypoint for a `transform` step
+// (ADR-0020, ADR-0021). It reads the step's `{event, steps}` input from stdin
+// as JSON, evaluates the JSONata expression given as its single argument, and
+// writes the result as JSON to stdout. The worker spawns this as a subprocess,
+// so a transform never runs inside the runner's process (ADR-0008).
+func cmdTransformStep(args []string, stdout, stderr io.Writer) int {
+	if len(args) != 1 {
+		_, _ = fmt.Fprintf(stderr, "servitor: __transform: usage: __transform <expression>\n")
+		return exitUsage
+	}
+	expr := args[0]
+
+	data, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: __transform: read input: %v\n", err)
+		return exitFailure
+	}
+	var input any
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &input); err != nil {
+			_, _ = fmt.Fprintf(stderr, "servitor: __transform: input is not valid JSON: %v\n", err)
+			return exitFailure
+		}
+	}
+
+	out, err := expression.Eval(expr, input)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: __transform: %v\n", err)
+		return exitFailure
+	}
+	enc := json.NewEncoder(stdout)
+	if err := enc.Encode(out); err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: __transform: encode result: %v\n", err)
+		return exitFailure
+	}
 	return exitOK
 }
 

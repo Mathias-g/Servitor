@@ -12,16 +12,17 @@ package runner
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/Mathias-g/Servitor/internal/honker"
 	"github.com/Mathias-g/Servitor/internal/wafer"
 	"github.com/Mathias-g/Servitor/internal/worker"
 )
 
-// commandFor maps a step to the argv the worker runs for it. In Phase 6 the
-// `shell` step is the concrete subprocess primitive; the other handlers
-// (transform, branch, foreach, integration helpers) dispatch through the same
-// machinery in later phases.
+// commandFor maps a step to the argv the worker runs for it. Every step runs as
+// a subprocess (ADR-0008); `transform` re-invokes the servitor binary's hidden
+// `__transform` command so even pure-computation steps stay out of the runner's
+// process.
 func commandFor(s wafer.Step) ([]string, error) {
 	switch s.Type {
 	case "shell":
@@ -30,6 +31,16 @@ func commandFor(s wafer.Step) ([]string, error) {
 			return nil, fmt.Errorf("step %q: shell requires a string command", stepName(s))
 		}
 		return []string{"/bin/sh", "-c", cmd}, nil
+	case "transform":
+		expr, ok := s.Config["expression"].(string)
+		if !ok || expr == "" {
+			return nil, fmt.Errorf("step %q: transform requires a string expression", stepName(s))
+		}
+		exe, err := os.Executable()
+		if err != nil {
+			return nil, fmt.Errorf("step %q: locate servitor binary: %w", stepName(s), err)
+		}
+		return []string{exe, "__transform", expr}, nil
 	case "singer-tap":
 		tap, ok := s.Config["tap"].(string)
 		if !ok || tap == "" {
@@ -90,16 +101,17 @@ func FromWafer(w *wafer.Wafer, event map[string]any) (*worker.StepJob, error) {
 			Config:     s.Config,
 			Command:    cmd,
 			Secrets:    s.Secrets,
-			// Input and DedupeKey are filled by the trigger path: the event for
-			// the head step, and the resolved dedupe value once the expression
-			// language is settled (SPEC: open questions).
+			DedupeKey:  s.DedupeKey,
+			// Input is filled by the trigger path: the event wraps the head
+			// step's input as {event, steps}, and later steps get their input
+			// threaded forward (ADR-0021).
 		}
 	}
 	for i := 0; i < len(jobs)-1; i++ {
 		jobs[i].Downstream = []worker.StepJob{*jobs[i+1]}
 	}
 	head := jobs[0]
-	head.Input = event
+	head.Input = map[string]any{"event": event, "steps": map[string]any{}}
 	return head, nil
 }
 

@@ -97,7 +97,7 @@ var stepTypes = []*StepType{
 		SideEffect: false,
 		Group:      Core,
 		Fields: map[string]*Field{
-			"expression": {Type: "string", Required: true, Desc: "An expression over the input.", Examples: []any{"input.items | map(select(.active))"}},
+			"expression": {Type: "string", Required: true, Desc: "A JSONata expression over the step's `{event, steps}` input (ADR-0020, ADR-0021).", Examples: []any{"$sum(steps.fetch.items[active=true].amount)"}},
 		},
 	},
 	{
