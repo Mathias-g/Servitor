@@ -2,7 +2,7 @@
 
 Build order with dependencies and a clear "done" for each phase. The design lives in [SPEC.md](SPEC.md); the decisions live in [docs/adr/](docs/adr/); this is just the sequencing.
 
-Current state: the Go project is scaffolded, the enforcement gates are wired (`make check`, adrlint, pre-commit, CI), and all phases 1-11 are built (daemon + loopback control protocol, Wafer model/validation, capability discovery, dry-run DAG resolution, Honker integration, step execution, triggers/webhooks, varlock integration, SKILL.md, run inspection, packaging/release, and the Singer integration with its tap/target executors, bookmark state, and capabilities taps report). The daemon owns a WAL SQLite file with the Honker extension loaded; the transactional atom ({result, dedupe, downstream, claim_ack} in one commit) is a tested primitive, and for Singer steps the bookmark is part of that same commit; the worker loop runs steps as subprocesses with env filtering and dedupe; inbound triggers include webhook (Standard Webhooks + generic HMAC), cron, and manual, with event persistence and workflow registration over the loopback control plane; the runner self-heals under `varlock run` so it boots with resolved secrets, which are filtered per step into subprocess environments; a `SKILL.md` teaches agents the discover-author-dry-run-PR workflow; the full CLI command set is implemented; `make release` drives the release flow (ADR-0012, ADR-0013, ADR-0014); and Singer taps/targets run as subprocesses with bookmark state persisted in the same transaction as each step's result (ADR-0016). The runner has no workflow registry consulted by the worker; runs are built from a Wafer into a self-contained step chain, and the trigger receiver matches against a stored index of registered workflows.
+Current state: the Go project is scaffolded, the enforcement gates are wired (`make check`, adrlint, pre-commit, CI), and the daemon + loopback control protocol, Wafer model/validation, capability discovery, dry-run DAG resolution, Honker integration, step execution (shell, singer-tap, singer-target, mcp-call), triggers/webhooks (http_webhook, standard_webhook, manual), varlock integration, SKILL.md, run inspection, packaging/release, the Singer integration, the MCP integration, and the declared integrations config (ADR-0018) are built. The daemon owns a WAL SQLite file with the Honker extension loaded; the transactional atom ({result, dedupe, downstream, claim_ack} in one commit) is a tested primitive, and for Singer steps the bookmark is part of that same commit; the worker loop runs steps as subprocesses with env filtering and dedupe; inbound webhooks (Standard Webhooks + generic HMAC) and manual triggers are served with event persistence; the runner self-heals under `varlock run` so it boots with resolved secrets, which are filtered per step into subprocess environments; a `SKILL.md` teaches agents the discover-author-dry-run-PR workflow; the full CLI command set (plus `mcp`/`tap`/`target`) is implemented; `make release` drives the release flow (ADR-0012, ADR-0013, ADR-0014); Singer taps/targets run as subprocesses with bookmark state persisted in the same transaction as each step's result (ADR-0016); and MCP servers are declared in a local `servitor.integrations.yaml` and probed at refresh (ADR-0018). Not yet functional: cron triggers (the scheduler runs but registration is not wired), the `transform`/`branch`/`foreach` and provider-specific-webhook/`internal` executors, and the curated helpers. See "Outstanding work" below. The runner has no workflow registry consulted by the worker; runs are built from a Wafer into a self-contained step chain, and the trigger receiver matches against the stored registered workflows.
 
 ## Phase 1: Daemon and control protocol (foundation)
 
@@ -53,7 +53,7 @@ The durability layer. Requires the cgo `mattn/go-sqlite3` driver to load the Hon
 - [x] Load the Honker SQLite extension into the daemon's connection (honker-go; extension provided via `HONKER_EXTENSION_PATH`, pinned and checksummed in CI).
 - [x] The daemon owns the SQLite file (WAL mode) and its single write connection.
 - [x] The transactional atom: a `CommitStepAtom` primitive that writes {result, dedupe_record, downstream_enqueues, claim_ack} as one SQLite transaction, never split (SPEC: Execution model step 8). The dedupe table and lookup are in place.
-- [x] Workflow run queue worker loop (claim, execute, ack; visibility timeout and dead-letter on repeated failure) and cron triggers via Honker's scheduler. Built in Phase 6 alongside subprocess execution.
+- [x] Workflow run queue worker loop (claim, execute, ack; visibility timeout and dead-letter on repeated failure) and the Honker scheduler runs. Cron trigger *registration* from Wafers is not yet wired; see Phase 7.
 
 **Done when:** a step's completion commits result + dedupe + downstream enqueues + claim ack in one transaction (this phase), and a crashed worker's claim is re-issued on visibility timeout (Phase 6).
 
@@ -73,9 +73,10 @@ Inbound events.
 
 - [x] HTTP receiver bound for webhooks, signature verification (Standard Webhooks + generic HMAC). Provider-specific receivers (grist/github/slack/atomic/email) are deferred.
 - [x] Event persisted before matching; run enqueued with the event payload as input.
-- [x] Trigger types: `http_webhook`, `standard_webhook`, `cron`, `manual`. Provider-specific types and `internal` are deferred; registration (`submit`/`enable`/`disable`) and manual `trigger` are wired through the control plane.
+- [x] Trigger types: `http_webhook`, `standard_webhook`, `manual`. Provider-specific types and `internal` are deferred; registration (`submit`/`enable`/`disable`) and manual `trigger` are wired through the control plane.
+- [ ] **Cron triggers are not wired.** The Honker scheduler runs (`daemon.go` starts `Scheduler().Run`), but nothing calls `RegisterCron` when a workflow with a `cron` trigger is submitted or enabled. A `cron` trigger in a Wafer currently never fires. Wire `RegisterCron` into the submit/enable path (register the scheduled task for each `cron` trigger; remove on disable/update).
 
-**Done when:** a signed webhook is verified, the event persisted, the workflow matched, and a run enqueued. (Done for `standard_webhook`/`http_webhook`/`manual`; provider-specific and `internal` remain.)
+**Done when:** a signed webhook is verified, the event persisted, the workflow matched, and a run enqueued. (Done for `standard_webhook`/`http_webhook`/`manual`; provider-specific and `internal` remain, and `cron` needs wiring.)
 
 ## Phase 8: Varlock integration
 
@@ -136,3 +137,35 @@ A standards-based integration path alongside the curated helpers (ADR-0015). The
 - [x] The control plane stays gated and loopback-only throughout (ADR-0009); the deploy path is CI/CD-gated and operator-owned/documented (ADR-0019).
 - [ ] Agent authoring reference: committed examples of the Wafer format for every step and trigger type (core, singer, mcp-call, curated helpers, webhooks), so an agent sees a valid example without running `capabilities`. The generator is already generic, so this is deferred until the type set stabilizes; until then each new type's registry fields should carry `examples`, and `servitor capabilities` renders them on demand.
 - [x] Declared integrations config (ADR-0018): replace PATH-prefix discovery with a single declared config (`servitor.integrations.yaml`, per-mechanism sections for MCP servers and Singer taps/targets, each with exact command and env) as the source of what `capabilities` reports, plus a management CLI (`servitor mcp`/`tap`/`target` add/list/remove) that writes entries and delegates the actual software install to the ecosystem's package managers.
+
+## Outstanding work
+
+Everything still to do, consolidated from the review of SPEC/ADRs vs the code.
+
+### Bugs / gaps (documented as built but not functional)
+
+- [ ] **Cron triggers not wired.** The Honker scheduler runs but no cron task is registered when a Wafer with a `cron` trigger is submitted or enabled; a `cron` trigger never fires. Wire `RegisterCron` into submit/enable (and unregister on disable/update). See Phase 7.
+
+### Not yet built (registered as types, no executor/receiver)
+
+- [ ] **`transform` step executor.** Registered; SPEC lists it. Runs as a subprocess; the expression language is an open question (SPEC: open questions).
+- [ ] **`branch` step executor.** Registered; conditional routing.
+- [ ] **`foreach` step executor.** Registered; fan out over a list.
+- [ ] **Provider-specific webhook receivers.** `grist_webhook`, `github_webhook`, `slack_event`, `atomic_event` are registered as types but `isWebhookType` only serves `http_webhook`/`standard_webhook`, so they cannot match inbound events yet. Also inbound `email_received` (a helper trigger).
+- [ ] **`internal` trigger.** Registered; fired by another workflow's completion, not yet implemented.
+
+### Curated integration helpers (SPEC lists, not built)
+
+- [ ] **`grist`** helper (read, write, list, query).
+- [ ] **`slack`** helper (post messages, read events).
+- [ ] **`github`** helper (issues, PRs, releases).
+- [ ] **`email`** helper (send, parse incoming).
+
+### Deferred / open decisions
+
+- [ ] **Agent authoring reference.** Committed examples of the Wafer format for every step and trigger type, so an agent sees a valid example without running `capabilities`. Deferred until the type set stabilizes; each new type's registry fields should carry `examples` meanwhile.
+- [ ] **Worker concurrency limits.** Runs currently execute as a sequential step chain; parallel fan-out is deferred (ADR-0012).
+- [ ] **`dedupe_key` expression language.** Resolved values are supplied at enqueue time for now (SPEC: open questions).
+- [ ] **`transform` expression language.** It runs as a subprocess, so no host access; only boundedness is required (SPEC: open questions).
+- [ ] **Bespoke per-provider signing schemes.** The trigger receiver's framing for non-standard signatures (SPEC: open questions).
+- [ ] **Varlock signal handling.** Whether `varlock run` forwards SIGTERM/SIGINT to the runner child and propagates its exit code; otherwise wrap with a minimal init (SPEC: open questions).
