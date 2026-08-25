@@ -59,6 +59,9 @@ codes: `0` ok, `1` operation failed, `2` usage error, `3` daemon not running.
 | `servitor runs` | List run history |
 | `servitor run <id>` | Inspect one run and its step outcomes |
 | `servitor cancel <id>` | Stop an in-flight run |
+| `servitor mcp add/list/remove` | Declare/remove an MCP server (ADR-0018) |
+| `servitor tap add/list/remove` | Declare/remove a Singer tap (ADR-0018) |
+| `servitor target add/list/remove` | Declare/remove a Singer target (ADR-0018) |
 
 `update` replaces a registered workflow's definition (submit without one first
 errors, pointing you to submit).
@@ -79,9 +82,15 @@ JSON Schema and a derived example fragment, plus an `index.yaml` listing the
 mechanisms. Read `./capabilities/index.yaml` to see what exists, then read the
 schema for the specific type you need (for example
 `./capabilities/core/shell.yaml`) to learn its required fields and a valid
-example. Discovered executables sit with their mechanism (`singer/taps.yaml`,
-`mcp/servers.yaml`), so you can see what is installed to run against a step
+example. The declared integrations sit with their mechanism (`singer/taps.yaml`,
+`mcp/servers.yaml`), so you can see what is available to run against a step
 type. The example is generated from the schema, so it cannot drift from it.
+
+Available MCP servers and Singer taps/targets are declared in a local
+`servitor.integrations.yaml` (ADR-0018), not auto-discovered from PATH. Manage
+them with `servitor mcp`/`tap`/`target` add/remove; the actual software install
+is delegated to the ecosystem's package managers (npx, pipx, uv, Meltano). If a
+step names a server/tap that is not declared, it will not appear here.
 
 > A committed `capabilities/` directory is a materialized snapshot you can read
 > from the repo without a running daemon (ADR-0009). If a runner is reachable,

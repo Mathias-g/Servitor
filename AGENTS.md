@@ -152,7 +152,7 @@ The automated checks enforce structure. This covers what they cannot:
 
 - **Version lives in `VERSION`** (one line, for example `0.1.0`). It is injected into the binary at build time via `-ldflags -X <module>/internal/app.Version=$(cat VERSION)`. Never hardcode a version string in source; `internal/app/version.go` holds the `Version` variable, default `dev`.
 - **Build the runner and CLI with `make build`** (or `make` for all targets). `go build ./...` compiles everything.
-- **Run the checks with `make check`** (or `make test` for tests alone): `go test ./...`, `go vet ./...`, `golangci-lint run`, and `gofmt -l`. These are the same checks CI runs.
+- **Run the checks with `make check`** (or `make test` for tests alone): `go test ./...`, `go vet ./...`, `golangci-lint run`, and `gofmt -l`. These are the same checks CI runs. Two setup notes for a fresh box: `make check` invokes `golangci-lint` by name, so it must be on `PATH` (run it with `PATH="$HOME/go/bin:$PATH"` if `go install` put it there); and the Honker-backed tests (`go test ./...`) skip unless `HONKER_EXTENSION_PATH` points at a loadable `libhonker_ext.so`, which CI supplies (ADR-0011).
 - **The runner loads the Honker SQLite extension at runtime.** Loading a loadable SQLite extension requires the cgo driver `mattn/go-sqlite3`; the pure-Go driver cannot load extensions. So the build needs cgo and is not fully static. This is a deliberate, recorded cost (ADR-0004), not something to "fix" by dropping Honker.
 - **Releasing** is `make release <new-version>`: it bumps `VERSION`, rebuilds, and prints the git tag/push commands. It does not tag or push; the operator verifies the build and runs the printed commands. Release a version when there is something worth shipping.
 
