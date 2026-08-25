@@ -19,6 +19,7 @@ import (
 
 	"github.com/Mathias-g/Servitor/internal/exec"
 	"github.com/Mathias-g/Servitor/internal/honker"
+	"github.com/Mathias-g/Servitor/internal/singer"
 )
 
 // StepJob is the payload of one queued step execution. It is fully
@@ -68,6 +69,25 @@ func (subprocessRunner) Run(ctx context.Context, req exec.Request) (exec.Result,
 	return exec.Run(ctx, req)
 }
 
+// SingerRunner runs a singer tap or target as a subprocess. It is an interface
+// so tests can stub it; the production value is subprocessSingerRunner.
+type SingerRunner interface {
+	RunTap(ctx context.Context, req singer.TapRequest) (singer.TapResult, error)
+	RunTarget(ctx context.Context, req singer.TargetRequest) (singer.TargetResult, error)
+}
+
+// subprocessSingerRunner runs singer taps and targets as real OS subprocesses
+// (ADR-0008, SPEC: Singer).
+type subprocessSingerRunner struct{}
+
+func (subprocessSingerRunner) RunTap(ctx context.Context, req singer.TapRequest) (singer.TapResult, error) {
+	return singer.RunTap(ctx, req)
+}
+
+func (subprocessSingerRunner) RunTarget(ctx context.Context, req singer.TargetRequest) (singer.TargetResult, error) {
+	return singer.RunTarget(ctx, req)
+}
+
 // Config controls a Worker.
 type Config struct {
 	// Secrets are the runner's resolved secrets (name to value). Only the
@@ -76,6 +96,9 @@ type Config struct {
 	Secrets map[string]string
 	// Runner runs step subprocesses. Defaults to real subprocesses.
 	Runner StepRunner
+	// Singer runs singer tap and target subprocesses. Defaults to real
+	// subprocesses.
+	Singer SingerRunner
 }
 
 // Worker claims and executes jobs from a queue, committing each step's
@@ -86,6 +109,7 @@ type Worker struct {
 	workerID string
 	secrets  map[string]string
 	runner   StepRunner
+	singer   SingerRunner
 }
 
 // New builds a worker over the store's queue. workerID is used for Honker
@@ -93,6 +117,9 @@ type Worker struct {
 func New(store *honker.Store, queue *honker.Queue, workerID string, cfg Config) *Worker {
 	if cfg.Runner == nil {
 		cfg.Runner = subprocessRunner{}
+	}
+	if cfg.Singer == nil {
+		cfg.Singer = subprocessSingerRunner{}
 	}
 	if cfg.Secrets == nil {
 		cfg.Secrets = map[string]string{}
@@ -103,6 +130,7 @@ func New(store *honker.Store, queue *honker.Queue, workerID string, cfg Config) 
 		workerID: workerID,
 		secrets:  cfg.Secrets,
 		runner:   cfg.Runner,
+		singer:   cfg.Singer,
 	}
 }
 
@@ -144,7 +172,7 @@ func (w *Worker) handle(ctx context.Context, claimed *honker.Job) error {
 		return nil
 	}
 
-	result, ran, err := w.runStep(ctx, sj)
+	result, ran, state, err := w.runStep(ctx, sj)
 	if err != nil {
 		w.recordFailure(sj, claimed, err)
 		return fmt.Errorf("worker: step %s (job %d): %w", sj.StepID, claimed.ID, err)
@@ -155,6 +183,9 @@ func (w *Worker) handle(ctx context.Context, claimed *honker.Job) error {
 		StepID: sj.StepID,
 		Result: result,
 		Job:    claimed,
+	}
+	if state != nil {
+		atom.SingerState = state
 	}
 	if sj.DedupeKey != "" && ran {
 		atom.Dedupe = &honker.DedupeRecord{
@@ -181,33 +212,111 @@ func (w *Worker) handle(ctx context.Context, claimed *honker.Job) error {
 
 // runStep runs a single step to produce its result. It returns ran=false when
 // the step is skipped by a prior successful dedupe record, in which case
-// result is the prior result and no subprocess runs.
-func (w *Worker) runStep(ctx context.Context, sj StepJob) (result any, ran bool, err error) {
+// result is the prior result and no subprocess runs. It returns state, non-nil
+// only for a completed singer-tap step, whose new bookmark is committed with
+// the step's result (SPEC: Execution model step 8).
+func (w *Worker) runStep(ctx context.Context, sj StepJob) (result any, ran bool, state *honker.SingerState, err error) {
 	if sj.DedupeKey != "" {
 		out, lerr := w.store.LookupDedupe(sj.WorkflowID, sj.StepName, sj.DedupeKey)
 		if lerr != nil {
-			return nil, false, lerr
+			return nil, false, nil, lerr
 		}
 		// Skip on a prior success; proceed on a prior failure or a first run.
 		if out != nil && out.Succeeded {
-			return out.Result, false, nil
+			return out.Result, false, nil, nil
 		}
 	}
 
+	if sj.StepType == "singer-tap" || sj.StepType == "singer-target" {
+		return w.runSingerStep(ctx, sj)
+	}
+
 	if len(sj.Command) == 0 {
-		return nil, true, fmt.Errorf("step type %q has no command to run", sj.StepType)
+		return nil, true, nil, fmt.Errorf("step type %q has no command to run", sj.StepType)
 	}
 
 	env, missing := exec.FilteredEnv(w.secrets, sj.Secrets)
 	if len(missing) > 0 {
-		return nil, true, fmt.Errorf("step declares secrets the runner does not have: %s", strings.Join(missing, ", "))
+		return nil, true, nil, fmt.Errorf("step declares secrets the runner does not have: %s", strings.Join(missing, ", "))
 	}
 
 	res, rerr := w.runner.Run(ctx, exec.Request{Command: sj.Command, Env: env, Input: sj.Input})
 	if rerr != nil {
-		return nil, true, rerr
+		return nil, true, nil, rerr
 	}
-	return res.Output, true, nil
+	return res.Output, true, nil, nil
+}
+
+// runSingerStep runs a singer-tap or singer-target step as a subprocess
+// (SPEC: Singer). A tap is fed its config, selected streams, and prior bookmark
+// on stdin and returns its records and next bookmark; the bookmark is returned
+// as state so it commits with the step's result. A target is fed the records
+// from the step's input.
+func (w *Worker) runSingerStep(ctx context.Context, sj StepJob) (result any, ran bool, state *honker.SingerState, err error) {
+	if len(sj.Command) == 0 {
+		return nil, true, nil, fmt.Errorf("step type %q has no command to run", sj.StepType)
+	}
+	env, missing := exec.FilteredEnv(w.secrets, sj.Secrets)
+	if len(missing) > 0 {
+		return nil, true, nil, fmt.Errorf("step declares secrets the runner does not have: %s", strings.Join(missing, ", "))
+	}
+
+	switch sj.StepType {
+	case "singer-tap":
+		cfg, _ := sj.Config["config"].(map[string]any)
+		prior, gerr := w.store.GetSingerState(sj.WorkflowID, sj.StepName)
+		if gerr != nil {
+			return nil, true, nil, gerr
+		}
+		res, rerr := w.singer.RunTap(ctx, singer.TapRequest{
+			Command: sj.Command,
+			Env:     env,
+			Config:  cfg,
+			Catalog: sj.Config["catalog"],
+			State:   prior,
+		})
+		if rerr != nil {
+			return nil, true, nil, rerr
+		}
+		return map[string]any{"records": res.Records, "streams": res.Streams, "state": res.State}, true,
+			&honker.SingerState{WorkflowID: sj.WorkflowID, StepName: sj.StepName, State: res.State}, nil
+	case "singer-target":
+		targetCfg, _ := sj.Config["config"].(map[string]any)
+		res, rerr := w.singer.RunTarget(ctx, singer.TargetRequest{
+			Command: sj.Command,
+			Env:     env,
+			Config:  targetCfg,
+			Records: recordsFromInput(sj.Input),
+		})
+		if rerr != nil {
+			return nil, true, nil, rerr
+		}
+		return map[string]any{"consumed": res.Consumed, "output": res.Output}, true, nil, nil
+	default:
+		return nil, true, nil, fmt.Errorf("step type %q is not a singer step", sj.StepType)
+	}
+}
+
+// recordsFromInput extracts singer records from a step's input, which for a
+// target is the prior tap step's `records` array.
+func recordsFromInput(input map[string]any) []singer.Record {
+	var out []singer.Record
+	if input == nil {
+		return out
+	}
+	raw, ok := input["records"].([]any)
+	if !ok {
+		return out
+	}
+	for _, r := range raw {
+		rm, ok := r.(map[string]any)
+		if !ok {
+			continue
+		}
+		stream, _ := rm["stream"].(string)
+		out = append(out, singer.Record{Stream: stream, Record: rm["record"]})
+	}
+	return out
 }
 
 // recordFailure persists a step's failure: a failed result row and, when the

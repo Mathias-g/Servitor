@@ -30,6 +30,18 @@ func commandFor(s wafer.Step) ([]string, error) {
 			return nil, fmt.Errorf("step %q: shell requires a string command", stepName(s))
 		}
 		return []string{"/bin/sh", "-c", cmd}, nil
+	case "singer-tap":
+		tap, ok := s.Config["tap"].(string)
+		if !ok || tap == "" {
+			return nil, fmt.Errorf("step %q: singer-tap requires a `tap` name", stepName(s))
+		}
+		return []string{tap}, nil
+	case "singer-target":
+		target, ok := s.Config["target"].(string)
+		if !ok || target == "" {
+			return nil, fmt.Errorf("step %q: singer-target requires a `target` name", stepName(s))
+		}
+		return []string{target}, nil
 	default:
 		return nil, fmt.Errorf("step %q: step type %q has no handler built yet (Phase 6 runs shell; the rest come later)", stepName(s), s.Type)
 	}

@@ -352,3 +352,73 @@ func TestRunMarkedCompletedAfterLastStep(t *testing.T) {
 		t.Fatalf("status = %q, want completed", st)
 	}
 }
+
+func TestSingerTapPersistsBookmarkAcrossRuns(t *testing.T) {
+	w, store, q := newWorker(t, 30, 3, map[string]string{"OUT": filepath.Join(t.TempDir(), "inv.json")})
+
+	// A fake tap that echoes the --state file it receives to $OUT (a declared
+	// secret), emits one RECORD and a STATE.
+	tap := filepath.Join(t.TempDir(), "tap-fake")
+	script := `#!/bin/sh
+state=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --state) state="$2"; shift 2;;
+    --config) shift 2;;
+    *) shift;;
+  esac
+done
+if [ -n "$state" ] && [ -f "$state" ]; then
+  cat "$state" > "$OUT"
+else
+  : > "$OUT"
+fi
+printf '%s\n' '{"type":"RECORD","stream":"customers","record":{"id":1}}'
+printf '%s\n' '{"type":"STATE","value":{"bookmark":"v1"}}'
+`
+	if err := os.WriteFile(tap, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	runTap := func(runID string) any {
+		t.Helper()
+		if _, err := q.Enqueue(StepJob{
+			RunID: runID, WorkflowID: "wf", StepID: "t", StepName: "t",
+			StepType: "singer-tap",
+			Config:   map[string]any{"tap": "tap-fake", "config": map[string]any{"client_id": "abc"}},
+			Command:  []string{tap},
+			Secrets:  []string{"OUT"},
+		}); err != nil {
+			t.Fatalf("enqueue: %v", err)
+		}
+		job, err := q.ClaimOne("worker-1")
+		if err != nil || job == nil {
+			t.Fatalf("claim: %v", err)
+		}
+		if err := w.handle(context.Background(), job); err != nil {
+			t.Fatalf("handle: %v", err)
+		}
+		return claimResultJSON(t, store, runID, "t")
+	}
+
+	// First run: no prior state.
+	res1 := runTap("run-1").(map[string]any)
+	if _, ok := res1["records"]; !ok {
+		t.Fatalf("first run result = %v, want records", res1)
+	}
+
+	// Second run of the same workflow/step: the prior bookmark must have been
+	// passed as a --state file (visible in $OUT).
+	runTap("run-2")
+	b, err := os.ReadFile(w.secrets["OUT"])
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	var prior map[string]any
+	if err := json.Unmarshal(b, &prior); err != nil {
+		t.Fatalf("state file not valid JSON: %v", err)
+	}
+	if prior["bookmark"] != "v1" {
+		t.Fatalf("prior bookmark = %v, want v1 passed via --state", prior)
+	}
+}
