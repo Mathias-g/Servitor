@@ -8,7 +8,24 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/Mathias-g/Servitor/internal/integrations"
 )
+
+// writeTestConfig writes the integrations config to the working directory
+// (where capabilities.Load reads it) and chdirs there.
+func writeTestConfig(t *testing.T, cfg *integrations.Config) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := integrations.Save(cfg, filepath.Join(dir, integrations.DefaultFile)); err != nil {
+		t.Fatalf("write test config: %v", err)
+	}
+	oldwd, _ := os.Getwd()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+}
 
 func TestWriteProducesGroupedFiles(t *testing.T) {
 	dir := t.TempDir()
@@ -161,7 +178,7 @@ func TestWriteSecretsWithVarlockReportsNamesAndPresence(t *testing.T) {
 }
 
 func TestWriteProducesTapsReport(t *testing.T) {
-	// A fake tap on PATH so the report is populated.
+	// A fake tap declared in the integrations config (ADR-0018).
 	dir := t.TempDir()
 	tap := filepath.Join(dir, "tap-fake")
 	script := `#!/bin/sh
@@ -173,9 +190,9 @@ esac
 	if err := os.WriteFile(tap, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Preserve the real PATH so shell/system tools still resolve, but prepend
-	// our dir so the fake tap is found.
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cfg := &integrations.Config{}
+	cfg.AddTap("tap-fake", []string{tap}, nil)
+	writeTestConfig(t, cfg)
 
 	out := t.TempDir()
 	if err := Write(out); err != nil {
@@ -204,9 +221,9 @@ esac
 }
 
 func TestWriteProducesServersReport(t *testing.T) {
-	// A fake mcp-* server on PATH so the report is populated.
+	// A fake MCP server declared in the integrations config (ADR-0018).
 	dir := t.TempDir()
-	server := filepath.Join(dir, "mcp-fake")
+	server := filepath.Join(dir, "atomic-server")
 	script := `#!/usr/bin/env python3
 import json, sys
 for line in sys.stdin:
@@ -221,7 +238,9 @@ for line in sys.stdin:
 	if err := os.WriteFile(server, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cfg := &integrations.Config{}
+	cfg.AddMCPServer("atomic", []string{server}, nil)
+	writeTestConfig(t, cfg)
 
 	out := t.TempDir()
 	if err := Write(out); err != nil {
@@ -240,11 +259,11 @@ for line in sys.stdin:
 	}
 	found := false
 	for _, s := range rep.Servers {
-		if s.Name == "mcp-fake" && len(s.Tools) == 1 && s.Tools[0].Name == "search" {
+		if s.Name == "atomic" && len(s.Tools) == 1 && s.Tools[0].Name == "search" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("servers report = %+v, want mcp-fake with search tool", rep.Servers)
+		t.Fatalf("servers report = %+v, want atomic with search tool", rep.Servers)
 	}
 }

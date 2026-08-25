@@ -18,6 +18,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/Mathias-g/Servitor/internal/integrations"
 	"github.com/Mathias-g/Servitor/internal/mcp"
 	"github.com/Mathias-g/Servitor/internal/registry"
 	"github.com/Mathias-g/Servitor/internal/singer"
@@ -85,19 +86,23 @@ type tapsReport struct {
 	Taps      []singer.DiscoveredTap `yaml:"taps"`
 }
 
-// writeTaps writes a taps.yaml under the singer/ group reporting the installed
+// writeTaps writes a taps.yaml under the singer/ group reporting the declared
 // Singer taps and their discovered schemas (SPEC: How an agent discovers
-// integrations). It sits beside the singer-tap step type so an agent sees both
-// the type and what is installed to run against it (ADR-0017). If enumeration
-// fails it writes a note instead of failing, so `capabilities` still works
-// when no taps are installed.
+// integrations, ADR-0018). It sits beside the singer-tap step type so an agent
+// sees both the type and what is declared to run against it (ADR-0017).
 func writeTaps(dir string) error {
 	report := tapsReport{Generated: true}
-	taps, err := singer.DiscoverTaps()
+	cfg, err := integrations.Load("")
 	if err != nil {
-		report.Note = "could not enumerate singer taps: " + err.Error()
+		report.Note = "could not load integrations config: " + err.Error()
 	} else {
-		report.Taps = taps
+		declared := map[string][]string{}
+		if cfg.Singer != nil {
+			for name, t := range cfg.Singer.Taps {
+				declared[name] = t.Command
+			}
+		}
+		report.Taps = singer.DiscoverTaps(declared)
 	}
 	data, err := yaml.Marshal(report)
 	if err != nil {
@@ -120,13 +125,22 @@ type serversReport struct {
 }
 
 // writeServers writes a servers.yaml under the mcp/ group reporting the
-// installed MCP servers (ADR-0017): each `mcp-*` executable on PATH, its
-// protocol mode, and its tool schemas. It sits beside the mcp-call step type so
-// an agent sees both the type and what is installed. If a server cannot be
-// probed, the report records its error rather than failing.
+// declared MCP servers (ADR-0017, ADR-0018): each declared server, its protocol
+// mode, and its tool schemas. It sits beside the mcp-call step type so an agent
+// sees both the type and what is declared. If a server cannot be probed, the
+// report records its error rather than failing.
 func writeServers(dir string) error {
 	report := serversReport{Generated: true}
-	report.Servers = mcp.DiscoverServers(nil)
+	cfg, err := integrations.Load("")
+	if err != nil {
+		report.Note = "could not load integrations config: " + err.Error()
+	} else {
+		declared := map[string][]string{}
+		for name, s := range cfg.MCP {
+			declared[name] = s.Command
+		}
+		report.Servers = mcp.DiscoverServers(declared, nil)
+	}
 	data, err := yaml.Marshal(report)
 	if err != nil {
 		return fmt.Errorf("capabilities: marshal servers: %w", err)
