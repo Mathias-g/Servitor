@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Mathias-g/Servitor/internal/honker"
+	"github.com/Mathias-g/Servitor/internal/mcp"
 )
 
 func extPath(t *testing.T) string {
@@ -420,5 +421,48 @@ printf '%s\n' '{"type":"STATE","value":{"bookmark":"v1"}}'
 	}
 	if prior["bookmark"] != "v1" {
 		t.Fatalf("prior bookmark = %v, want v1 passed via --state", prior)
+	}
+}
+
+// stubMCP is a test double for the MCP runner.
+type stubMCP struct {
+	result mcp.CallResult
+	err    error
+}
+
+func (s stubMCP) Call(_ context.Context, req mcp.CallRequest) (mcp.CallResult, error) {
+	return s.result, s.err
+}
+
+func TestMCPStepDispatchesAndMapsError(t *testing.T) {
+	ext := extPath(t)
+	store, err := honker.Open(filepath.Join(t.TempDir(), "test.db"), ext)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	q := store.Queue("steps", 30, 3)
+	w := New(store, q, "worker-1", Config{MCP: stubMCP{
+		result: mcp.CallResult{IsError: true, Content: "boom"},
+	}})
+
+	if _, err := q.Enqueue(StepJob{
+		RunID: "run-mcp", WorkflowID: "wf", StepID: "m", StepName: "m",
+		StepType: "mcp-call",
+		Config:   map[string]any{"server": "srv", "tool": "search", "input": map[string]any{"query": "x"}, "mode": "stateless"},
+		Command:  []string{"srv"},
+	}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	job, err := q.ClaimOne("worker-1")
+	if err != nil || job == nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := w.handle(context.Background(), job); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	res := claimResultJSON(t, store, "run-mcp", "m").(map[string]any)
+	if res["ok"] != false || res["code"] != "mcp_tool_error" {
+		t.Fatalf("result = %v, want mapped mcp_tool_error", res)
 	}
 }

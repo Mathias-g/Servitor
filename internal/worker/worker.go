@@ -19,6 +19,7 @@ import (
 
 	"github.com/Mathias-g/Servitor/internal/exec"
 	"github.com/Mathias-g/Servitor/internal/honker"
+	"github.com/Mathias-g/Servitor/internal/mcp"
 	"github.com/Mathias-g/Servitor/internal/singer"
 )
 
@@ -88,6 +89,20 @@ func (subprocessSingerRunner) RunTarget(ctx context.Context, req singer.TargetRe
 	return singer.RunTarget(ctx, req)
 }
 
+// MCPRunner runs an mcp-call step as a subprocess. It is an interface so tests
+// can stub it; the production value is subprocessMCPRunner.
+type MCPRunner interface {
+	Call(ctx context.Context, req mcp.CallRequest) (mcp.CallResult, error)
+}
+
+// subprocessMCPRunner runs mcp-call steps as real OS subprocesses (ADR-0008,
+// ADR-0015).
+type subprocessMCPRunner struct{}
+
+func (subprocessMCPRunner) Call(ctx context.Context, req mcp.CallRequest) (mcp.CallResult, error) {
+	return mcp.Call(ctx, req)
+}
+
 // Config controls a Worker.
 type Config struct {
 	// Secrets are the runner's resolved secrets (name to value). Only the
@@ -99,6 +114,8 @@ type Config struct {
 	// Singer runs singer tap and target subprocesses. Defaults to real
 	// subprocesses.
 	Singer SingerRunner
+	// MCP runs mcp-call subprocesses. Defaults to real subprocesses.
+	MCP MCPRunner
 }
 
 // Worker claims and executes jobs from a queue, committing each step's
@@ -110,6 +127,7 @@ type Worker struct {
 	secrets  map[string]string
 	runner   StepRunner
 	singer   SingerRunner
+	mcp      MCPRunner
 }
 
 // New builds a worker over the store's queue. workerID is used for Honker
@@ -121,6 +139,9 @@ func New(store *honker.Store, queue *honker.Queue, workerID string, cfg Config) 
 	if cfg.Singer == nil {
 		cfg.Singer = subprocessSingerRunner{}
 	}
+	if cfg.MCP == nil {
+		cfg.MCP = subprocessMCPRunner{}
+	}
 	if cfg.Secrets == nil {
 		cfg.Secrets = map[string]string{}
 	}
@@ -131,6 +152,7 @@ func New(store *honker.Store, queue *honker.Queue, workerID string, cfg Config) 
 		secrets:  cfg.Secrets,
 		runner:   cfg.Runner,
 		singer:   cfg.Singer,
+		mcp:      cfg.MCP,
 	}
 }
 
@@ -231,6 +253,10 @@ func (w *Worker) runStep(ctx context.Context, sj StepJob) (result any, ran bool,
 		return w.runSingerStep(ctx, sj)
 	}
 
+	if sj.StepType == "mcp-call" {
+		return w.runMCPStep(ctx, sj)
+	}
+
 	if len(sj.Command) == 0 {
 		return nil, true, nil, fmt.Errorf("step type %q has no command to run", sj.StepType)
 	}
@@ -295,6 +321,46 @@ func (w *Worker) runSingerStep(ctx context.Context, sj StepJob) (result any, ran
 	default:
 		return nil, true, nil, fmt.Errorf("step type %q is not a singer step", sj.StepType)
 	}
+}
+
+// runMCPStep runs an mcp-call step as a subprocess (SPEC: MCP integration,
+// ADR-0015). It spawns the named server with a filtered secret env, invokes one
+// tool, and maps an errored result onto Servitor's structured error format.
+func (w *Worker) runMCPStep(ctx context.Context, sj StepJob) (result any, ran bool, state *honker.SingerState, err error) {
+	if len(sj.Command) == 0 {
+		return nil, true, nil, fmt.Errorf("step type %q has no command to run", sj.StepType)
+	}
+	env, missing := exec.FilteredEnv(w.secrets, sj.Secrets)
+	if len(missing) > 0 {
+		return nil, true, nil, fmt.Errorf("step declares secrets the runner does not have: %s", strings.Join(missing, ", "))
+	}
+	tool, _ := sj.Config["tool"].(string)
+	if tool == "" {
+		return nil, true, nil, fmt.Errorf("step type mcp-call requires a `tool` name")
+	}
+	input, _ := sj.Config["input"].(map[string]any)
+	mode := mcp.ModeUnknown
+	if m, ok := sj.Config["mode"].(string); ok {
+		mode = mcp.Mode(m)
+	}
+
+	res, rerr := w.mcp.Call(ctx, mcp.CallRequest{
+		Server: mcp.ServerRequest{
+			Command: sj.Command,
+			Env:     env,
+			Mode:    mode,
+		},
+		Tool:  tool,
+		Input: input,
+	})
+	if rerr != nil {
+		return nil, true, nil, rerr
+	}
+	if res.IsError {
+		se := mcp.AsStructuredError(tool, res)
+		return map[string]any{"ok": false, "path": se.Path, "code": se.Code, "message": se.Message, "suggestion": se.Suggestion}, true, nil, nil
+	}
+	return map[string]any{"ok": true, "content": res.Content, "data": res.Data}, true, nil, nil
 }
 
 // recordsFromInput extracts singer records from a step's input, which for a

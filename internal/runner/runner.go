@@ -42,6 +42,12 @@ func commandFor(s wafer.Step) ([]string, error) {
 			return nil, fmt.Errorf("step %q: singer-target requires a `target` name", stepName(s))
 		}
 		return []string{target}, nil
+	case "mcp-call":
+		server, ok := s.Config["server"].(string)
+		if !ok || server == "" {
+			return nil, fmt.Errorf("step %q: mcp-call requires a `server` name", stepName(s))
+		}
+		return []string{server}, nil
 	default:
 		return nil, fmt.Errorf("step %q: step type %q has no handler built yet (Phase 6 runs shell; the rest come later)", stepName(s), s.Type)
 	}
