@@ -18,6 +18,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/Mathias-g/Servitor/internal/registry"
+	"github.com/Mathias-g/Servitor/internal/singer"
 )
 
 // DefaultDir is where capabilities writes when no directory is given.
@@ -65,6 +66,38 @@ func Write(dir string) error {
 	}
 	if err := writeSecrets(dir); err != nil {
 		return err
+	}
+	if err := writeTaps(dir); err != nil {
+		return err
+	}
+	return nil
+}
+
+// tapsReport is the on-disk shape of the available-taps report.
+type tapsReport struct {
+	Generated bool                   `yaml:"generated"`
+	Note      string                 `yaml:"note,omitempty"`
+	Taps      []singer.DiscoveredTap `yaml:"taps"`
+}
+
+// writeTaps writes a taps.yaml reporting the installed Singer taps and their
+// discovered schemas (SPEC: How an agent discovers integrations). If
+// enumeration fails it writes a note instead of failing, so `capabilities`
+// still works when no taps are installed.
+func writeTaps(dir string) error {
+	report := tapsReport{Generated: true}
+	taps, err := singer.DiscoverTaps()
+	if err != nil {
+		report.Note = "could not enumerate singer taps: " + err.Error()
+	} else {
+		report.Taps = taps
+	}
+	data, err := yaml.Marshal(report)
+	if err != nil {
+		return fmt.Errorf("capabilities: marshal taps: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "taps.yaml"), data, 0o644); err != nil {
+		return fmt.Errorf("capabilities: write taps.yaml: %w", err)
 	}
 	return nil
 }

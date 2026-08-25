@@ -159,3 +159,46 @@ func TestWriteSecretsWithVarlockReportsNamesAndPresence(t *testing.T) {
 		t.Fatalf("expected MAYBE not present, got %+v", entries)
 	}
 }
+
+func TestWriteProducesTapsReport(t *testing.T) {
+	// A fake tap on PATH so the report is populated.
+	dir := t.TempDir()
+	tap := filepath.Join(dir, "tap-fake")
+	script := `#!/bin/sh
+case "$1" in
+  --about) printf '%s' '{"properties":{"client_id":{"type":"string"}},"required":["client_id"]}';;
+  --discover) printf '%s' '[{"stream":"customers","schema":{"type":"object"}}]';;
+esac
+`
+	if err := os.WriteFile(tap, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Preserve the real PATH so shell/system tools still resolve, but prepend
+	// our dir so the fake tap is found.
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	out := t.TempDir()
+	if err := Write(out); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(out, "taps.yaml"))
+	if err != nil {
+		t.Fatalf("read taps.yaml: %v", err)
+	}
+	rep := tapsReport{}
+	if err := yaml.Unmarshal(data, &rep); err != nil {
+		t.Fatalf("parse taps.yaml: %v", err)
+	}
+	if !rep.Generated {
+		t.Fatal("taps report should be marked generated")
+	}
+	found := false
+	for _, tap := range rep.Taps {
+		if tap.Name == "tap-fake" && len(tap.Catalog) == 1 && tap.Catalog[0].Stream == "customers" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("taps report = %+v, want tap-fake with customers stream", rep.Taps)
+	}
+}
