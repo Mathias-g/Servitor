@@ -3,7 +3,10 @@
 // authoritative set that `servitor capabilities` reports (SPEC: How an agent
 // discovers integrations). The field metadata here is the single source of
 // truth: validation and the emitted JSON Schema both derive from it, so they
-// cannot drift apart.
+// cannot drift apart. Field `Examples` also feed the schema-to-example
+// generator (SPEC: How an agent discovers integrations), so a new type should
+// give every field a representative `Examples` value; otherwise its generated
+// example is an empty skeleton and the agent has to guess.
 package registry
 
 import (
@@ -64,8 +67,8 @@ var stepTypes = []*StepType{
 		Fields: map[string]*Field{
 			"url":     {Type: "string", Required: true, Desc: "The URL to request.", Examples: []any{"https://api.example.com/things"}},
 			"method":  {Type: "string", Required: true, Desc: "HTTP method.", Examples: []any{"GET"}},
-			"headers": {Type: "object", Desc: "Request headers as a map."},
-			"body":    {Type: "any", Desc: "Request body."},
+			"headers": {Type: "object", Desc: "Request headers as a map.", Examples: []any{map[string]any{"Content-Type": "application/json"}}},
+			"body":    {Type: "any", Desc: "Request body.", Examples: []any{map[string]any{"query": "SELECT * FROM things"}}},
 			"timeout": {Type: "integer", Desc: "Request timeout in seconds.", Examples: []any{30}},
 		},
 	},
@@ -114,7 +117,7 @@ var stepTypes = []*StepType{
 		Fields: map[string]*Field{
 			"tap":     {Type: "string", Required: true, Desc: "The tap to run.", Examples: []any{"tap-stripe"}},
 			"config":  {Type: "object", Desc: "Tap config."},
-			"streams": {Type: "array", Desc: "Streams to sync.", Examples: []any{[]any{"customers"}}},
+			"catalog": {Type: "array", Desc: "The selected streams to sync, copied from the tap's catalog in capabilities. Each entry is one stream with its schema and a `selected: true` metadata. Omit to sync all streams.", Examples: []any{[]any{map[string]any{"stream": "customers", "tap_stream_id": "customers", "schema": map[string]any{"type": "object"}, "metadata": []any{map[string]any{"breadcrumb": []any{}, "metadata": map[string]any{"selected": true}}}}}}},
 		},
 	},
 	{
@@ -130,8 +133,8 @@ var stepTypes = []*StepType{
 }
 
 var triggerTypes = []*TriggerType{
-	{Name: "http_webhook", Desc: "Generic inbound HTTP receiver with configurable HMAC verification.", Group: Core, Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/things"}}, "secret": {Type: "string", Desc: "Secret name to verify the x-servitor-signature HMAC header with."}}},
-	{Name: "standard_webhook", Desc: "Standard Webhooks-compliant receiver.", Group: Core, Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/std"}}, "secret": {Type: "string", Desc: "Secret name to verify the Standard Webhooks signature with."}}},
+	{Name: "http_webhook", Desc: "Generic inbound HTTP receiver with configurable HMAC verification.", Group: Core, Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/things"}}, "secret": {Type: "string", Desc: "Secret name to verify the x-servitor-signature HMAC header with.", Examples: []any{"MY_WEBHOOK_SECRET"}}}},
+	{Name: "standard_webhook", Desc: "Standard Webhooks-compliant receiver.", Group: Core, Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/std"}}, "secret": {Type: "string", Desc: "Secret name to verify the Standard Webhooks signature with.", Examples: []any{"WEBHOOK_SECRET"}}}},
 	{Name: "grist_webhook", Desc: "Grist-specific receiver.", Group: "grist", Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/grist"}}}},
 	{Name: "github_webhook", Desc: "GitHub-specific receiver.", Group: "github", Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/github"}}}},
 	{Name: "slack_event", Desc: "Slack events (messages, mentions).", Group: "slack", Fields: map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/slack"}}}},
