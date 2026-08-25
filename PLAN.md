@@ -122,10 +122,10 @@ A standards-based integration path alongside the curated helpers (ADR-0015). The
 - [x] `mcp-call` step type: spawn the named MCP server as a subprocess with a filtered secret env, send one `tools/call` over stdio, read the structured JSON response, and exit (client-mode executor, distinct from the singer run-and-read executor built in Phase 11). The `mode` the server speaks (`classic`/`stateless`) is authored into the Wafer so a step never re-probes.
 - [x] Support both MCP protocol versions: probe once at discovery, cache the detected mode, speak the old `initialize` handshake or the new stateless `_meta`-carrying protocol accordingly.
 - [x] Map MCP tool results (the `isError` flag and content blocks) onto Servitor's structured validation error format (`path`, `code`, `message`, `suggestion`).
-- [x] Capability discovery: discover installed `mcp-*` servers on PATH (ADR-0017), probe each once during a capabilities refresh, and report its tools and protocol mode in `mcp/servers.yaml`.
+- [x] Capability discovery: discover installed `mcp-*` servers on PATH (ADR-0017), probe each once during a capabilities refresh, and report its tools and protocol mode in `mcp/servers.yaml`. Superseded by ADR-0018 (declared integrations config) as the discovery source; see cross-cutting.
 - [ ] Pin server package versions the same way Singer taps are pinned.
 
-**Done when:** an agent can discover an MCP server's tools via `servitor capabilities`, author an `mcp-call` step, and run it as a subprocess with filtered secrets and correct error mapping, against both old- and new-spec servers.
+**Done when:** an agent can discover an MCP server's tools via `servitor capabilities`, author an `mcp-call` step, and run it as a subprocess with filtered secrets and correct error mapping, against both old- and new-spec servers. (The PATH-scan discovery built here is superseded by the declared integrations config of ADR-0018.)
 
 **v1 consumers:** Atomic via `mcp-call`; Grist, Slack, GitHub, email on curated helpers.
 
@@ -135,3 +135,4 @@ A standards-based integration path alongside the curated helpers (ADR-0015). The
 - [x] Exit codes carry the signal (0 ok, 1 operation failed, 2 usage error, 3 daemon not running).
 - [ ] The control plane stays gated and loopback-only throughout (ADR-0009); the deploy path is CI/CD-gated.
 - [ ] Agent authoring reference: committed examples of the Wafer format for every step and trigger type (core, singer, mcp-call, curated helpers, webhooks), so an agent sees a valid example without running `capabilities`. The generator is already generic, so this is deferred until the type set stabilizes; until then each new type's registry fields should carry `examples`, and `servitor capabilities` renders them on demand.
+- [ ] Declared integrations config (ADR-0018): replace PATH-prefix discovery with a single declared config (per-mechanism sections for MCP servers and Singer taps/targets, each with exact command and env) as the source of what `capabilities` reports, plus a management CLI (`servitor mcp add`/`tap add` and list/remove) that writes entries and delegates the actual software install to the ecosystem's package managers. Decided; not yet implemented.
