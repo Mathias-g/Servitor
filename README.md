@@ -72,10 +72,23 @@ itself under varlock to resolve secrets and boots the daemon.
    `make release <new-version>` (for example `make release 0.2.0`), which bumps
    `VERSION`, rebuilds, and prints the git tag/push commands.
 
-2. **Install varlock and declare secrets.** Varlock resolves secrets into the
-   runner's environment. Install it per [varlock.dev](https://varlock.dev), write
-   a `.env.schema` declaring the secrets your integrations need, and populate the
-   values via varlock from whichever backing store you use.
+2. **Install varlock and declare secrets.** Varlock is a typed, schema-validated
+   secrets tool (SPEC: Varlock). Install it per [varlock.dev](https://varlock.dev),
+   then declare the secrets your integrations need in a `.env.schema` in the
+   working directory, with each secret's type annotated in a `.env` file:
+
+       # .env
+       # @type=string
+       SLACK_TOKEN=your-token-here
+       # @type=string @optional
+       GRIST_API_KEY=
+
+   The runner resolves these secrets through varlock (injecting them as env
+   vars, validated against the schema) when it boots. Which backing store varlock
+   reads from, and how you populate the values into it, depends on the store you
+   use (for example 1Password, HashiCorp Vault, or AWS Secrets Manager); see
+   [varlock.dev](https://varlock.dev) for the commands. Servitor itself assumes
+   no particular store, only that varlock supplies the resolved env vars.
 
 3. **Download the Honker extension.** It is a loadable SQLite extension, pinned
    and checksummed (ADR-0011). The Linux x64 build for the version we pin:
