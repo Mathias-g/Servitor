@@ -78,5 +78,28 @@ Webhooks (which verifies the envelope) but is a standard place to describe what
 is inside one, for services that publish it. This could enrich `capabilities`
 without a new executor.
 
+## Adopt the official Standard Webhooks Go library for signature verification
+
+Servitor currently hand-rolls Standard Webhooks signature verification in
+`internal/trigger` (reads `webhook-id`/`webhook-timestamp`/`webhook-signature`,
+checks the timestamp within tolerance, HMAC-SHA256s `id.timestamp.body`, and
+compares against the `v1,<sig>` list). The Standard Webhooks project publishes an
+official Go library (`standard-webhooks/libraries/go`) that does exactly this,
+maintained by the technical steering committee and guaranteed spec-compliant.
+
+Why to consider it: we never drift from the spec, drop the hand-rolled
+verification, and inherit any upstream fixes. It fits the SPEC's "delegate hard
+problems to maintained tools."
+
+Why to hold off (the current leaning): the verification is a small, correct,
+tested function. Adding a dependency for roughly forty lines is the kind of
+thing BSSN (ADR-0002) would question, and the SPEC's "delegate" principle is
+aimed at big problems (identity, secrets, webhook signing as a class) rather
+than this tiny instance. We already handle it correctly.
+
+The other Standard Webhooks tools (Verify Webhook, Simulate Request, the
+receiving-webhooks AI skill) are interactive debugging aids or agent-guidance,
+not libraries to integrate; the Go library is the only real candidate.
+
 ## (Add more ideas here as they come up; delete them when they become ADRs or
 ## are discarded.)
