@@ -296,8 +296,10 @@ Step types come in three kinds, roughly from most general to most specific:
   structured JSON response on stdout, and exits. Fields: `server` (which MCP
   server to run), `tool` (which named tool), `input` (the tool arguments), and
   `mode` (the protocol mode the server speaks, `classic` or `stateless`, copied
-  from capabilities; omit to probe once at run time). Server packages are
-  pinned the same way Singer taps are.
+  from capabilities; omit to probe once at run time). Server package versions
+  are pinned by the operator's declared `command` (for example
+  `npx -y atomic-server@1.2.3`), matching how tap and server versions are pinned
+  (ADR-0018).
 
   `mcp-call` supports both the original MCP protocol (the `initialize` /
   `initialized` handshake) and the stateless revision that carries protocol

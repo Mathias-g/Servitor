@@ -123,7 +123,7 @@ A standards-based integration path alongside the curated helpers (ADR-0015). The
 - [x] Support both MCP protocol versions: probe once at discovery, cache the detected mode, speak the old `initialize` handshake or the new stateless `_meta`-carrying protocol accordingly.
 - [x] Map MCP tool results (the `isError` flag and content blocks) onto Servitor's structured validation error format (`path`, `code`, `message`, `suggestion`).
 - [x] Capability discovery: probe declared `mcp-*` servers during a capabilities refresh and report their tools and protocol mode in `mcp/servers.yaml` (sourced from the declared integrations config per ADR-0018).
-- [ ] Pin server package versions the same way Singer taps are pinned.
+- [x] Pin server package versions. Handled by the declared-config model: the operator's `command` is the pin (for example `npx -y atomic-server@1.2.3` or a fixed path to an installed binary), the same way opencode and other harnesses express it. No separate version field is needed.
 
 **Done when:** an agent can discover an MCP server's tools via `servitor capabilities`, author an `mcp-call` step, and run it as a subprocess with filtered secrets and correct error mapping, against both old- and new-spec servers.
 
@@ -133,6 +133,6 @@ A standards-based integration path alongside the curated helpers (ADR-0015). The
 
 - [x] Each CLI command implemented per the SPEC's command set and its mapping to daemon operations.
 - [x] Exit codes carry the signal (0 ok, 1 operation failed, 2 usage error, 3 daemon not running).
-- [ ] The control plane stays gated and loopback-only throughout (ADR-0009); the deploy path is CI/CD-gated.
+- [x] The control plane stays gated and loopback-only throughout (ADR-0009); the deploy path is CI/CD-gated and operator-owned/documented (ADR-0019).
 - [ ] Agent authoring reference: committed examples of the Wafer format for every step and trigger type (core, singer, mcp-call, curated helpers, webhooks), so an agent sees a valid example without running `capabilities`. The generator is already generic, so this is deferred until the type set stabilizes; until then each new type's registry fields should carry `examples`, and `servitor capabilities` renders them on demand.
 - [x] Declared integrations config (ADR-0018): replace PATH-prefix discovery with a single declared config (`servitor.integrations.yaml`, per-mechanism sections for MCP servers and Singer taps/targets, each with exact command and env) as the source of what `capabilities` reports, plus a management CLI (`servitor mcp`/`tap`/`target` add/list/remove) that writes entries and delegates the actual software install to the ecosystem's package managers.

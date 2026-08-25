@@ -64,8 +64,9 @@ Chosen option: **add `mcp-call` alongside the curated helpers.**
 fields `server` (which MCP server to run), `tool` (which named tool), and an
 `input` object (the tool arguments). The server runs as a subprocess with a
 filtered secret env; the step sends the tool call over stdio, reads the
-structured JSON response, and exits. The server package is pinned the same way
-Singer taps are. The name is `mcp-call`, not `mcp-tool`, to make clear the step
+structured JSON response, and exits. The server package version is pinned by
+the operator's declared command (ADR-0018); there is no separate version field.
+The name is `mcp-call`, not `mcp-tool`, to make clear the step
 invokes a tool rather than defines one.
 
 ## v1 consumers
@@ -102,9 +103,10 @@ shape, rather than abstractly:
 ### Confirmation
 
 `go test ./...` passes. The `mcp-call` executor, its capability discovery, and
-the old/new protocol support (below) are each pinned by tests. Per-step server
-versions are pinned in the Wafer or resolved from a pinned location, matching
-how taps are pinned.
+the old/new protocol support (below) are each pinned by tests. Server package
+versions are pinned by the operator's declared `command` (for example
+`npx -y atomic-server@1.2.3` or a fixed path to an installed binary) in the
+integrations config (ADR-0018); there is no separate version field.
 
 ## Protocol version support (old and new MCP)
 
