@@ -261,7 +261,7 @@ For a **remote agent**, capabilities reach it the same way Wafers do: the pipeli
 - `grist_webhook`. Grist-specific, knows the payload shape and HMAC scheme.
 - `github_webhook`. GitHub-specific.
 - `slack_event`. Slack events (messages, mentions, and so on).
-- `atomic_event`. Atomic knowledge-base changes (designed alongside this runner).
+- `atomic_event`. Atomic knowledge-base changes. Atomic is a separate, self-hostable project (atomicapp.ai) Servitor integrates with; it is not built as part of Servitor.
 - `email_received`. Inbound email parsed into a structured payload.
 - *(more per-service trigger types as integrations are added)*
 - `cron`. Honker scheduler.
