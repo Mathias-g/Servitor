@@ -31,7 +31,7 @@ How an agent learns what the server supports and how to use it (SPEC: How an age
 
 - [x] A step-type and trigger-type registry, each entry with its JSON Schema, grouped by integration with a `core` group for Servitor's own types.
 - [x] The schema-to-example generator: render a Wafer fragment from a schema (skeleton from the schema, sample values from each property's `examples`).
-- [x] `servitor capabilities [dir]` writes, per step and trigger, the schema and its derived example to files, grouped by integration, plus an index. A pipeline can commit the output so remote agents read it from the repo.
+- [x] `servitor capabilities [dir]` writes, per step and trigger, the schema and its derived example to files, grouped by mechanism (`core`, `webhook`, `singer`, `mcp`, `helper`, `websocket`; ADR-0017), plus an index. A pipeline can commit the output so remote agents read it from the repo.
 - [x] Report declared secrets (names and presence, not values) in `capabilities` (a `secrets.yaml` from the varlock schema).
 - [x] Report available Singer taps in `capabilities` (names of installed taps and their schemas). Done with the Singer integration; see Phase 11.
 
@@ -119,13 +119,13 @@ The record-stream integration layer (SPEC: Singer, data movement integrations). 
 
 A standards-based integration path alongside the curated helpers (ADR-0015). The curated helpers remain; `mcp-call` reaches the long tail of self-hostable MCP servers.
 
-- [ ] `mcp-call` step type: spawn the named MCP server as a subprocess with a filtered secret env, send one `tools/call` over stdio, read the structured JSON response, and exit (client-mode executor, distinct from the singer run-and-read executor built in Phase 11).
-- [ ] Capability discovery: call the server's tool-listing method (`tools/list` / `server/discover`) once during a capabilities refresh and cache the per-tool schemas, not per step execution.
-- [ ] Support both MCP protocol versions: probe once at discovery, cache the detected mode, speak the old `initialize` handshake or the new stateless `_meta`-carrying protocol accordingly.
-- [ ] Map MCP tool results (the `isError` flag and content blocks) onto Servitor's structured validation error format (`path`, `code`, `message`, `suggestion`).
+- [x] `mcp-call` step type: spawn the named MCP server as a subprocess with a filtered secret env, send one `tools/call` over stdio, read the structured JSON response, and exit (client-mode executor, distinct from the singer run-and-read executor built in Phase 11). The `mode` the server speaks (`classic`/`stateless`) is authored into the Wafer so a step never re-probes.
+- [x] Support both MCP protocol versions: probe once at discovery, cache the detected mode, speak the old `initialize` handshake or the new stateless `_meta`-carrying protocol accordingly.
+- [x] Map MCP tool results (the `isError` flag and content blocks) onto Servitor's structured validation error format (`path`, `code`, `message`, `suggestion`).
+- [ ] Capability discovery: discover installed `mcp-*` servers on PATH (ADR-0017), probe each once during a capabilities refresh, and report its tools and protocol mode. Not built yet; depends on the `mcp-*` enumeration being wired into capabilities.
 - [ ] Pin server package versions the same way Singer taps are pinned.
 
-**Done when:** an agent can discover an MCP server's tools via `servitor capabilities`, author an `mcp-call` step, and run it as a subprocess with filtered secrets and correct error mapping, against both old- and new-spec servers.
+**Done when:** an agent can discover an MCP server's tools via `servitor capabilities`, author an `mcp-call` step, and run it as a subprocess with filtered secrets and correct error mapping, against both old- and new-spec servers. (Executor and protocol support are built and tested against fake servers; the `mcp-*` capabilities report is the remaining piece.)
 
 **v1 consumers:** Atomic via `mcp-call`; Grist, Slack, GitHub, email on curated helpers.
 

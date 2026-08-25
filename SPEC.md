@@ -250,7 +250,7 @@ The example is **derived from the schema, not written by hand**: the structural 
 
 This is how "what integrations exist and how do I use them" is answered: the agent runs `capabilities`, reads the schemas and their derived examples, and generates a valid Wafer. The pipeline then re-validates the Wafer against the live server's capabilities on deploy (ADR-0009).
 
-`servitor capabilities [dir]` writes files rather than printing, so the schemas never sit in the agent's context: one file per step and trigger type (its JSON Schema plus derived example), grouped by integration into directories, with a `core` group for Servitor's own step and trigger types (the universal primitives and generic webhooks), a `secrets.yaml` reporting the declared secret names and whether each is present (never the values), plus an `index.yaml` listing the integrations. An integration is a service the runner can reach by any mechanism; a service with both a helper and a trigger (for example Slack's `slack` helper and `slack_event` trigger) is one integration, one directory (SPEC: What counts as an integration).
+`servitor capabilities [dir]` writes files rather than printing, so the schemas never sit in the agent's context: one file per step and trigger type (its JSON Schema plus derived example), grouped by **mechanism** into top-level directories, plus a `secrets.yaml` reporting the declared secret names and whether each is present (never the values) and an `index.yaml` listing the mechanisms. The mechanisms (ADR-0017) are how Servitor interacts with a service: `core` (universal primitives and scheduling), `webhook` (inbound HTTP reception), `singer` (record streaming), `mcp` (tool invocation), `helper` (compiled-in wrappers), and `websocket` (inbound streaming, future). A service reached by several mechanisms appears in several groups; the type name carries the service (`grist_webhook`, `slack_event`, `tap-grist`). The discovered executables sit with their mechanism: `singer/taps.yaml` lists the installed Singer taps, and `mcp/servers.yaml` lists the installed MCP servers, so an agent sees both a step type and what is installed to run against it. The distinction between a standard envelope and a bespoke one (for example `standard_webhook` vs `http_webhook` vs `grist_webhook`) is a per-type detail within a mechanism, not a separate group (SPEC: What counts as an integration).
 
 For a **remote agent**, capabilities reach it the same way Wafers do: the pipeline (which already runs the CLI on the box) runs `servitor capabilities` and commits the generated directory into the git repo, and the agent reads the files from the repo on demand. Capabilities are still per-server because the directory is generated from that box's compiled-in set; committing it is a materialized snapshot, not a hand-written doc, so it cannot drift. A local agent (on the box, or the pipeline's own runner) can also run `capabilities` directly into a scratch directory.
 
@@ -292,8 +292,10 @@ Step types come in three kinds, roughly from most general to most specific:
   a JSON Schema for its input, over stdio. The step runs the server with a
   filtered secret env, sends a single `tools/call` request on stdin, reads the
   structured JSON response on stdout, and exits. Fields: `server` (which MCP
-  server to run), `tool` (which named tool), and `input` (the tool arguments).
-  Server packages are pinned the same way Singer taps are.
+  server to run), `tool` (which named tool), `input` (the tool arguments), and
+  `mode` (the protocol mode the server speaks, `classic` or `stateless`, copied
+  from capabilities; omit to probe once at run time). Server packages are
+  pinned the same way Singer taps are.
 
   `mcp-call` supports both the original MCP protocol (the `initialize` /
   `initialized` handshake) and the stateless revision that carries protocol
@@ -301,7 +303,8 @@ Step types come in three kinds, roughly from most general to most specific:
   expects at discovery time and caching it. Tool schemas are discovered from the
   server once during a `capabilities` refresh and cached, not queried on every
   step execution. MCP tool results (an `isError` flag plus content blocks) map
-  onto Servitor's structured validation error format.
+  onto Servitor's structured validation error format. Installed servers are
+  the `mcp-*` executables on PATH (ADR-0017).
 
   MCP is an integration mechanism for this step type, unrelated to the
   control-plane question of whether Servitor's own daemon interface is ever
@@ -437,7 +440,7 @@ Things deliberately out of scope for v1, kept here so the design doesn't quietly
 
 ## Status
 
-Early development. The daemon lifecycle, loopback control protocol, Wafer model and structured validation, capability discovery (including a `secrets.yaml` reporting declared secret names and presence, and a `taps.yaml` reporting installed Singer taps and their schemas), dry-run DAG resolution (including redacted secret names and a `missing_secret` warning), the Honker durability store (with the transactional atom), step execution (the worker loop, subprocess isolation with env filtering, the dedupe contract, and cron triggers), the Singer integration (the `singer-tap` and `singer-target` executors, bookmark state committed with each tap step's result, and schema discovery; ADR-0016), inbound triggers (a webhook receiver for Standard Webhooks and generic HMAC, plus manual), the varlock integration (self-healing launch and per-step secret filtering), the shipped `SKILL.md` agent reference, run inspection (`servitor runs`, `servitor run <id>`, `servitor cancel`), and the release flow (`make release`) are built (`servitor run`, `stop`, `dry-run`, `capabilities`, `submit`, `update`, `enable`, `disable`, `trigger`, `runs`, `run`, `cancel`). Provider-specific webhook receivers, the `internal` trigger, and the remaining step handlers (transform, branch, foreach) are not yet built. The `mcp-call` step type (Phase 12, ADR-0015) is planned. Open questions, to be resolved as implementation progresses and tracked in ADRs in the `docs/adr/` directory:
+Early development. The daemon lifecycle, loopback control protocol, Wafer model and structured validation, capability discovery (including a `secrets.yaml` reporting declared secret names and presence, a `singer/taps.yaml` reporting installed Singer taps, and a `mcp/servers.yaml` reporting installed MCP servers; grouped by mechanism per ADR-0017), dry-run DAG resolution (including redacted secret names and a `missing_secret` warning), the Honker durability store (with the transactional atom), step execution (the worker loop, subprocess isolation with env filtering, the dedupe contract, and cron triggers), the Singer integration (the `singer-tap` and `singer-target` executors, bookmark state committed with each tap step's result, and schema discovery; ADR-0016), the MCP integration (the `mcp-call` step type with a client-mode executor, both classic and stateless protocol support, and structured error mapping; ADR-0015), inbound triggers (a webhook receiver for Standard Webhooks and generic HMAC, plus manual), the varlock integration (self-healing launch and per-step secret filtering), the shipped `SKILL.md` agent reference, run inspection (`servitor runs`, `servitor run <id>`, `servitor cancel`), and the release flow (`make release`) are built (`servitor run`, `stop`, `dry-run`, `capabilities`, `submit`, `update`, `enable`, `disable`, `trigger`, `runs`, `run`, `cancel`). Provider-specific webhook receivers, the `internal` trigger, and the remaining step handlers (transform, branch, foreach) are not yet built, and MCP server package pinning is open. Open questions, to be resolved as implementation progresses and tracked in ADRs in the `docs/adr/` directory:
 
 - Worker concurrency limits; runs currently execute as a sequential step chain, and parallel fan-out is deferred (ADR-0012).
 - The exact shape of the `dedupe_key` expression language (resolved values are supplied at enqueue time for now).
