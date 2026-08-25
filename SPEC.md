@@ -270,6 +270,37 @@ The integrations themselves are declared in a local `servitor.integrations.yaml`
 - `manual`. Invoked via CLI.
 - `internal`. Fired by another workflow's completion.
 
+#### Using webhook triggers
+
+All webhook triggers are the same mechanism (inbound HTTP event reception) and
+live under `webhook/` in capabilities; they differ only in which signing scheme
+they verify (SPEC: Triggers, ADR-0017). Pick the type that matches how the
+sender signs:
+
+- **`standard_webhook`** when the sending service speaks Standard Webhooks
+  (it sends `webhook-id`, `webhook-timestamp`, and `webhook-signature` headers).
+  Any compliant producer works with this type.
+- **`http_webhook`** when the service does not use Standard Webhooks but you can
+  configure it to sign the body with an HMAC-SHA256 in the `x-servitor-signature`
+  header. `secret` names the shared key.
+- **A provider-specific type** (`grist_webhook`, `github_webhook`, `slack_event`,
+  `atomic_event`) when that service has a bespoke signing scheme and the receiver
+  for it is built.
+
+Each type takes a `path` (the URL path it receives on) and, when the receiver
+verifies a signature, a `secret` (the varlock secret name holding the shared
+key; see SPEC: Varlock). A request that hits a configured `path` is persisted
+before matching (SPEC: Execution model step 2), its signature is verified against
+the secret, and each matching enabled workflow is enqueued (SPEC: Execution model
+step 5).
+
+Not all webhook types are served yet. `standard_webhook` and `http_webhook` are
+built and verify signatures. The provider-specific types (`grist_webhook`,
+`github_webhook`, `slack_event`, `atomic_event`) and `email_received` are
+registered and listed in capabilities but their receivers are not built, so a
+workflow using one will not yet fire. Check the current build state (SPEC: Status)
+before relying on a provider-specific type.
+
 ### Steps
 
 Step types come in three kinds, roughly from most general to most specific:
@@ -444,7 +475,7 @@ Things deliberately out of scope for v1, kept here so the design doesn't quietly
 
 ## Status
 
-Early development. The daemon lifecycle, loopback control protocol, Wafer model and structured validation, capability discovery (including a `secrets.yaml` reporting declared secret names and presence, a `singer/taps.yaml` reporting declared Singer taps, and a `mcp/servers.yaml` reporting declared MCP servers; grouped by mechanism per ADR-0017, sourced from the declared integrations config per ADR-0018), dry-run DAG resolution (including redacted secret names and a `missing_secret` warning), the Honker durability store (with the transactional atom), step execution (the worker loop, subprocess isolation with env filtering, the dedupe contract, and cron triggers), the Singer integration (the `singer-tap` and `singer-target` executors, bookmark state committed with each tap step's result, and schema discovery; ADR-0016), the MCP integration (the `mcp-call` step type with a client-mode executor, both classic and stateless protocol support, and structured error mapping; ADR-0015), inbound triggers (a webhook receiver for Standard Webhooks and generic HMAC, plus manual), the varlock integration (self-healing launch and per-step secret filtering), the shipped `SKILL.md` agent reference, run inspection (`servitor runs`, `servitor run <id>`, `servitor cancel`), and the release flow (`make release`) are built (`servitor run`, `stop`, `dry-run`, `capabilities`, `submit`, `update`, `enable`, `disable`, `trigger`, `runs`, `run`, `cancel`). Provider-specific webhook receivers, the `internal` trigger, and the remaining step handlers (transform, branch, foreach) are not yet built, and MCP server package pinning is open. Open questions, to be resolved as implementation progresses and tracked in ADRs in the `docs/adr/` directory:
+Early development. The daemon lifecycle, loopback control protocol, Wafer model and structured validation, capability discovery (including a `secrets.yaml` reporting declared secret names and presence, a `singer/taps.yaml` reporting declared Singer taps, and a `mcp/servers.yaml` reporting declared MCP servers; grouped by mechanism per ADR-0017, sourced from the declared integrations config per ADR-0018), dry-run DAG resolution (including redacted secret names and a `missing_secret` warning), the Honker durability store (with the transactional atom), step execution (the worker loop, subprocess isolation with env filtering, and the dedupe contract), the Singer integration (the `singer-tap` and `singer-target` executors, bookmark state committed with each tap step's result, and schema discovery; ADR-0016), the MCP integration (the `mcp-call` step type with a client-mode executor, both classic and stateless protocol support, and structured error mapping; ADR-0015), inbound triggers (a webhook receiver for Standard Webhooks and generic HMAC, plus manual), the varlock integration (self-healing launch and per-step secret filtering), the shipped `SKILL.md` agent reference, run inspection (`servitor runs`, `servitor run <id>`, `servitor cancel`), and the release flow (`make release`) are built (`servitor run`, `stop`, `dry-run`, `capabilities`, `submit`, `update`, `enable`, `disable`, `trigger`, `runs`, `run`, `cancel`). Cron triggers are not yet wired (the scheduler runs but no cron task is registered from a Wafer); provider-specific webhook receivers, the `internal` trigger, and the remaining step handlers (transform, branch, foreach) are not yet built. Open questions, to be resolved as implementation progresses and tracked in ADRs in the `docs/adr/` directory:
 
 - Worker concurrency limits; runs currently execute as a sequential step chain, and parallel fan-out is deferred (ADR-0012).
 - The exact shape of the `dedupe_key` expression language (resolved values are supplied at enqueue time for now).
