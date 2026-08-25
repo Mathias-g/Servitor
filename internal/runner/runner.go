@@ -73,8 +73,9 @@ func stepName(s wafer.Step) string {
 
 // FromWafer builds the head StepJob of a run from a validated Wafer and the
 // trigger event that started it. The returned job's Downstream carries the rest
-// of the workflow as a chain. It returns an error when a step type has no
-// handler yet or the DAG does not resolve.
+// of the workflow as a dependency DAG: each step's Dependents/Downstream lists
+// the steps that depend on it (ADR-0023). It returns an error when a step type
+// has no handler yet or the DAG does not resolve.
 func FromWafer(w *wafer.Wafer, event map[string]any) (*worker.StepJob, error) {
 	dag, issues := wafer.ResolveDAG(w)
 	if len(issues) > 0 {
@@ -84,8 +85,11 @@ func FromWafer(w *wafer.Wafer, event map[string]any) (*worker.StepJob, error) {
 		return nil, nil
 	}
 
-	// Build one StepJob per step in run order, then link each to the next.
+	// Build one StepJob per step, indexed by the step's position in the DAG
+	// run order. Each job carries the steps that depend on it so the worker can
+	// fan out correctly (ADR-0023).
 	jobs := make([]*worker.StepJob, len(dag.Steps))
+	idxByName := map[string]int{}
 	for i, d := range dag.Steps {
 		s := w.Steps[d.Index]
 		cmd, err := commandFor(s)
@@ -93,7 +97,6 @@ func FromWafer(w *wafer.Wafer, event map[string]any) (*worker.StepJob, error) {
 			return nil, err
 		}
 		jobs[i] = &worker.StepJob{
-			RunID:      "", // set by the caller (StartRun)
 			WorkflowID: w.Name,
 			StepID:     d.Name,
 			StepName:   s.Name,
@@ -102,22 +105,36 @@ func FromWafer(w *wafer.Wafer, event map[string]any) (*worker.StepJob, error) {
 			Command:    cmd,
 			Secrets:    s.Secrets,
 			DedupeKey:  s.DedupeKey,
-			// Input is filled by the trigger path: the event wraps the head
-			// step's input as {event, steps}, and later steps get their input
-			// threaded forward (ADR-0021).
+		}
+		idxByName[d.Name] = i
+	}
+
+	// Link each step to the steps that depend on it (its dependents). A step's
+	// dependents are the steps that list it in their DependsOn.
+	for i, d := range dag.Steps {
+		for _, dep := range d.DependsOn {
+			if j, ok := idxByName[dep]; ok {
+				jobs[j].Dependents = append(jobs[j].Dependents, d.Name)
+				jobs[j].Downstream = append(jobs[j].Downstream, *jobs[i])
+			}
 		}
 	}
-	for i := 0; i < len(jobs)-1; i++ {
-		jobs[i].Downstream = []worker.StepJob{*jobs[i+1]}
-	}
+
+	// Find the head step(s): those with no dependencies (DependsOn empty).
 	head := jobs[0]
+	for i, d := range dag.Steps {
+		if len(d.DependsOn) == 0 {
+			head = jobs[i]
+			break
+		}
+	}
 	head.Input = map[string]any{"event": event, "steps": map[string]any{}}
 	return head, nil
 }
 
-// StartRun builds a run's head job, records the run, and enqueues the head
-// onto the queue, assigning a fresh run id to every step in the chain. It
-// returns the run id and the head job.
+// StartRun builds a run's head job, records the run, initializes the fan-in
+// dependency counts, and enqueues the head. It assigns a fresh run id to every
+// step in the run's DAG. It returns the run id and the head job.
 func StartRun(store *honker.Store, queue *honker.Queue, w *wafer.Wafer, event map[string]any, runID string) (string, error) {
 	head, err := FromWafer(w, event)
 	if err != nil {
@@ -130,27 +147,48 @@ func StartRun(store *honker.Store, queue *honker.Queue, w *wafer.Wafer, event ma
 	if err := store.CreateRun(runID, w.Name); err != nil {
 		return "", err
 	}
+	if err := initDeps(store, w, runID); err != nil {
+		return "", err
+	}
 	if _, err := queue.Enqueue(head); err != nil {
 		return "", fmt.Errorf("run: enqueue head step: %w", err)
 	}
 	return runID, nil
 }
 
-// assignRunID sets the run id on a step job and, recursively, on every job in
-// its Downstream chain, so all of a run's steps land under the same run id.
-func assignRunID(head *worker.StepJob, runID string) {
-	for n := head; n != nil; n = next(n) {
-		n.RunID = runID
+// initDeps initializes the run_deps dependency counts for a run from the Wafer
+// (ADR-0023). Each step's count is the number of steps it depends on.
+func initDeps(store *honker.Store, w *wafer.Wafer, runID string) error {
+	dag, issues := wafer.ResolveDAG(w)
+	if len(issues) > 0 {
+		return fmt.Errorf("run: workflow %q does not resolve: %v", w.Name, issues)
 	}
+	depCount := map[string]int{}
+	order := []string{}
+	for _, d := range dag.Steps {
+		depCount[d.Name] = len(d.DependsOn)
+		order = append(order, d.Name)
+	}
+	return store.InitRunDeps(honker.NewRunDeps(runID, depCount, order))
 }
 
-// next returns the single downstream of a chained job, or nil. Runs built by
-// FromWafer are a linear chain (each step has at most one successor).
-func next(j *worker.StepJob) *worker.StepJob {
-	if len(j.Downstream) == 0 {
-		return nil
+// assignRunID sets the run id on every job in the run's DAG. Because a run can
+// fan out (ADR-0023), it does not walk a linear next pointer; it traverses the
+// full Downstream set from the head.
+func assignRunID(head *worker.StepJob, runID string) {
+	seen := map[*worker.StepJob]bool{}
+	var walk func(j *worker.StepJob)
+	walk = func(j *worker.StepJob) {
+		if j == nil || seen[j] {
+			return
+		}
+		seen[j] = true
+		j.RunID = runID
+		for i := range j.Downstream {
+			walk(&j.Downstream[i])
+		}
 	}
-	return &j.Downstream[0]
+	walk(head)
 }
 
 // CronTask registers one cron trigger for a workflow on the Honker scheduler.
@@ -179,6 +217,9 @@ func RegisterCron(store *honker.Store, queue *honker.Queue, w *wafer.Wafer, task
 		return nil
 	}
 	assignRunID(head, task.RunID)
+	if err := initDeps(store, w, task.RunID); err != nil {
+		return err
+	}
 	err = store.RegisterScheduledTask(honker.ScheduledTask{
 		Name:     task.Name,
 		Queue:    queue.Name(),

@@ -69,8 +69,16 @@ type StepAtom struct {
 	// Dedupe, when non-nil, records a dedupe_key outcome keyed by
 	// (WorkflowID, StepName, Dedupe.Key).
 	Dedupe *DedupeRecord
-	// Downstream are the downstream steps to enqueue once dependencies are
-	// satisfied. The caller supplies the queue each goes on.
+	// Dependents are the ids of the steps that depend on this one. Each is
+	// decremented in the run_deps table inside the transaction; a dependent is
+	// enqueued (from Downstream) only when its remaining count reaches zero
+	// (ADR-0023). A dependent with no matching Downstream entry is still
+	// decremented but not enqueued (for example a failed branch that must still
+	// count as done).
+	Dependents []string
+	// Downstream are the jobs to enqueue for dependents whose count reached
+	// zero, in the same transaction. Index i corresponds to the i-th entry of
+	// Dependents (the enqueue is skipped if that dependent is not ready).
 	Downstream []Downstream
 	// Job is the claimed job to ack.
 	Job *Job
@@ -90,7 +98,9 @@ type DedupeRecord struct {
 	Result any
 }
 
-// Downstream is one downstream job to enqueue in the same transaction.
+// Downstream is one dependent's job to enqueue, paired by index with a
+// Dependents entry in StepAtom. Payload is the job to enqueue; Queue is the
+// queue it goes on.
 type Downstream struct {
 	Queue   *Queue
 	Payload any
@@ -138,8 +148,24 @@ func (s *Store) CommitStepAtom(atom StepAtom) error {
 		}
 	}
 
-	// 3. Downstream enqueues.
-	for _, d := range atom.Downstream {
+	// 3. Dependency fan-out (ADR-0023): decrement each dependent's count and
+	// enqueue only those whose count reaches zero, all in this transaction.
+	ready := map[string]bool{}
+	if len(atom.Dependents) > 0 {
+		ids, err := tx.decrementDependents(atom.RunID, atom.Dependents)
+		if err != nil {
+			return err
+		}
+		for _, id := range ids {
+			ready[id] = true
+		}
+	}
+	for i, d := range atom.Downstream {
+		if len(atom.Dependents) > i && !ready[atom.Dependents[i]] {
+			// This dependent's other dependencies are not yet satisfied; do not
+			// enqueue it now.
+			continue
+		}
 		if err := tx.Enqueue(d.Queue, d.Payload); err != nil {
 			return fmt.Errorf("enqueue downstream: %w", err)
 		}
@@ -283,5 +309,11 @@ var schemaStmts = []string{
 		state       TEXT NOT NULL,
 		updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
 		PRIMARY KEY (workflow_id, step_name)
+	)`,
+	`CREATE TABLE IF NOT EXISTS run_deps (
+		run_id   TEXT NOT NULL,
+		step_id  TEXT NOT NULL,
+		remaining INTEGER NOT NULL,
+		PRIMARY KEY (run_id, step_id)
 	)`,
 }

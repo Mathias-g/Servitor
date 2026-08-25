@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded
 date: 2026-08-24
 decision-makers: [Mathias]
 consulted: []

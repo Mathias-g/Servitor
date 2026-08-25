@@ -54,7 +54,14 @@ type StepJob struct {
 	// Secrets are the names of the secrets this step declares. The subprocess
 	// environment is filtered to exactly these.
 	Secrets []string
-	// Downstream are the steps to enqueue when this step completes.
+	// Dependents are the ids of the steps that depend on this one. When this
+	// step completes, the worker decrements each dependent's count and enqueues
+	// it (from Downstream, aligned by index) only when its count reaches zero
+	// (ADR-0023). Empty means this step feeds nothing.
+	Dependents []string
+	// Downstream are the jobs for the dependents, aligned by index with
+	// Dependents. The worker enqueues a job only for a dependent whose count
+	// reached zero.
 	Downstream []StepJob
 }
 
