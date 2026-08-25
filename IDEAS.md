@@ -78,13 +78,5 @@ Webhooks (which verifies the envelope) but is a standard place to describe what
 is inside one, for services that publish it. This could enrich `capabilities`
 without a new executor.
 
-## Declared integrations config (decided, see ADR-0018)
-
-The idea of replacing PATH-prefix discovery (`mcp-*`/`tap-*`/`target-*`) with a
-declared integrations config is now a decision: see ADR-0018. It grew from the
-fragility of the prefix scan and the industry pattern (opencode, Claude Desktop,
-VS Code, JetBrains) of declaring local servers in a config. It is decided but
-not yet implemented; the current build still discovers via PATH-prefix scan.
-
 ## (Add more ideas here as they come up; delete them when they become ADRs or
 ## are discarded.)
