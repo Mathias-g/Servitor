@@ -74,6 +74,10 @@ type StepAtom struct {
 	Downstream []Downstream
 	// Job is the claimed job to ack.
 	Job *Job
+	// SingerState, when non-nil, upserts the step's Singer bookmark in the same
+	// transaction (SPEC: Execution model step 8). Keyed by (WorkflowID,
+	// StepName); it is set for a completed singer-tap step.
+	SingerState *SingerState
 }
 
 // DedupeRecord is a row in the step_dedupe table (SPEC: Idempotency).
@@ -138,6 +142,22 @@ func (s *Store) CommitStepAtom(atom StepAtom) error {
 	for _, d := range atom.Downstream {
 		if err := tx.Enqueue(d.Queue, d.Payload); err != nil {
 			return fmt.Errorf("enqueue downstream: %w", err)
+		}
+	}
+
+	// 3b. Singer bookmark. Written here, in the same transaction, so a tap's
+	// result and its next bookmark commit (or roll back) together; a crash
+	// between the two would re-emit records on the next run (SPEC: Idempotency).
+	if atom.SingerState != nil {
+		stateJSON, err := json.Marshal(atom.SingerState.State)
+		if err != nil {
+			return fmt.Errorf("marshal singer state: %w", err)
+		}
+		if err := tx.Exec(
+			`INSERT OR REPLACE INTO singer_state (workflow_id, step_name, state) VALUES (?, ?, ?)`,
+			atom.SingerState.WorkflowID, atom.SingerState.StepName, string(stateJSON),
+		); err != nil {
+			return fmt.Errorf("write singer state: %w", err)
 		}
 	}
 
@@ -256,5 +276,12 @@ var schemaStmts = []string{
 		workflow_name TEXT NOT NULL,
 		status        TEXT NOT NULL,
 		created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+	)`,
+	`CREATE TABLE IF NOT EXISTS singer_state (
+		workflow_id TEXT NOT NULL,
+		step_name   TEXT NOT NULL,
+		state       TEXT NOT NULL,
+		updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+		PRIMARY KEY (workflow_id, step_name)
 	)`,
 }

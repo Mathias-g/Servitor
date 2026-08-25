@@ -183,3 +183,31 @@ func TestCommitStepAtomWritesAllParts(t *testing.T) {
 		t.Fatalf("acked job reclaimed (id %d)", again.ID)
 	}
 }
+
+func TestSingerStateCommitsWithResultAtom(t *testing.T) {
+	s := openStore(t)
+
+	// No state recorded yet.
+	if v, err := s.GetSingerState("wf", "tap"); err != nil || v != nil {
+		t.Fatalf("initial state = %v (err %v), want nil", v, err)
+	}
+
+	// Commit a step result with its singer bookmark in one atom.
+	err := s.CommitStepAtom(StepAtom{
+		RunID: "run-1", StepID: "t",
+		Result:      map[string]any{"records": []any{}},
+		SingerState: &SingerState{WorkflowID: "wf", StepName: "tap", State: map[string]any{"bookmark": "x"}},
+	})
+	if err != nil {
+		t.Fatalf("CommitStepAtom: %v", err)
+	}
+
+	got, err := s.GetSingerState("wf", "tap")
+	if err != nil {
+		t.Fatalf("GetSingerState: %v", err)
+	}
+	bm, ok := got.(map[string]any)
+	if !ok || bm["bookmark"] != "x" {
+		t.Fatalf("bookmark = %#v, want {bookmark:x}", got)
+	}
+}
