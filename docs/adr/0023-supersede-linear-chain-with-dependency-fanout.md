@@ -65,16 +65,25 @@ completes when its last step finishes and no step remains pending.
 A linear chain is the degenerate case of this model (each step depends on at
 most the previous), so existing linear workflows keep working.
 
-The worker stays self-contained: it has no workflow registry and reads nothing
-from the store to run a job (a principle inherited from ADR-0012 and preserved
-here). To keep that, skipped branches are carried in the switch job's payload
-as skip-jobs rather than having the worker look up the run's DAG. A skip-job is
-an ordinary queued job marked to be skipped: it records the step as skipped and
-cascades to its own dependents without executing. This means a skipped branch's
-propagation to a rejoin happens through the normal queue and dependency-counter
-mechanism, so the worker still needs no registry or DAG read. The tradeoff is a
-larger switch payload (the skipped-branch chains ride with the switch job),
-which is bounded by workflow size and acceptable at this scale (BSSN).
+The worker stays self-contained in its control flow: it has no workflow registry
+and reads nothing from the store to decide what to run next (a principle
+inherited from ADR-0012 and preserved here). To keep that, skipped branches are
+carried in the switch job's payload as skip-jobs rather than having the worker
+look up the run's DAG. A skip-job is an ordinary queued job marked to be
+skipped: it records the step as skipped and cascades to its own dependents
+without executing. This means a skipped branch's propagation to a rejoin happens
+through the normal queue and dependency-counter mechanism, so the worker still
+needs no registry or DAG read for control flow. The tradeoff is a larger switch
+payload (the skipped-branch chains ride with the switch job), which is bounded
+by workflow size and acceptable at this scale (BSSN).
+
+This self-containment is about control flow, not about never reading the store:
+a `foreach` step collects its iteration results at the fan-in point by reading
+the committed results (ADR-0024). That is a scoped data read for aggregation,
+not a control-flow lookup; the worker still knows what to run from the job it
+was given. The distinction is deliberate: control flow stays self-contained,
+while a single, contained data read for aggregation is accepted where it is the
+simpler and correct option (ADR-0024).
 
 ## Skipped-branch and completion semantics
 

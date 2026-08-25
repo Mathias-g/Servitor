@@ -160,6 +160,7 @@ func (s *Store) CommitStepAtom(atom StepAtom) error {
 			ready[id] = true
 		}
 	}
+	enqueued := 0
 	for i, d := range atom.Downstream {
 		if len(atom.Dependents) > i && !ready[atom.Dependents[i]] {
 			// This dependent's other dependencies are not yet satisfied; do not
@@ -168,6 +169,18 @@ func (s *Store) CommitStepAtom(atom StepAtom) error {
 		}
 		if err := tx.Enqueue(d.Queue, d.Payload); err != nil {
 			return fmt.Errorf("enqueue downstream: %w", err)
+		}
+		enqueued++
+	}
+	// Track in-flight jobs (ADR-0023): each ack of a claim removes one pending
+	// job; each enqueued dependent adds one. The run completes when pending
+	// reaches zero.
+	if atom.Job != nil {
+		enqueued--
+	}
+	if enqueued != 0 {
+		if err := tx.AdjustPending(atom.RunID, enqueued); err != nil {
+			return err
 		}
 	}
 
@@ -248,6 +261,24 @@ func (s *Store) ResultJSON(runID, stepID string) (string, error) {
 	return r, nil
 }
 
+// Result returns the decoded result for a completed step, or nil when no result
+// row exists. It is how a rejoin step reads a foreach body's iteration results
+// to assemble the collected array (ADR-0024).
+func (s *Store) Result(runID, stepID string) (any, error) {
+	raw, err := s.ResultJSON(runID, stepID)
+	if err != nil {
+		return nil, err
+	}
+	if raw == "" {
+		return nil, nil
+	}
+	var v any
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		return nil, err
+	}
+	return v, nil
+}
+
 // StepResultCount returns the number of step result rows. It is how tests (and
 // later the run inspector) observe that runs have executed.
 func (s *Store) StepResultCount() (int, error) {
@@ -301,6 +332,7 @@ var schemaStmts = []string{
 		run_id        TEXT PRIMARY KEY,
 		workflow_name TEXT NOT NULL,
 		status        TEXT NOT NULL,
+		pending       INTEGER NOT NULL DEFAULT 0,
 		created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 	)`,
 	`CREATE TABLE IF NOT EXISTS singer_state (

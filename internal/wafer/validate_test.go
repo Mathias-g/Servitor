@@ -100,7 +100,8 @@ func TestTypeMismatch(t *testing.T) {
 name: w
 steps:
   - type: foreach
-    over: not-a-list
+    over: [not, a, string]
+    body: process_one
 `))
 	found := false
 	for _, e := range res.Errors {

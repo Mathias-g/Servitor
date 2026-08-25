@@ -328,3 +328,53 @@ func stepDependsOn(t *testing.T, route *worker.StepJob, deps ...string) bool {
 	}
 	return true
 }
+
+func TestFromWaferBuildsForeachDAG(t *testing.T) {
+	w, err := wafer.Parse([]byte(`
+name: demo
+on: []
+steps:
+  - type: transform
+    name: fetch_ids
+    expression: "[1, 2, 3]"
+  - type: foreach
+    name: fan
+    depends_on: [fetch_ids]
+    over: "steps.fetch_ids"
+    as: item
+    body: process_one
+  - type: shell
+    name: process_one
+    depends_on: [fan]
+    command: "printf '{}'"
+  - type: transform
+    name: summarize
+    depends_on: [process_one]
+    expression: "$count(steps.fan)"
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	head, err := FromWafer(w, map[string]any{})
+	if err != nil {
+		t.Fatalf("FromWafer: %v", err)
+	}
+	fan := findStep(t, head, "fan")
+	if fan == nil {
+		t.Fatal("no fan step in DAG")
+	}
+	if fan.Body == nil || fan.Body.StepID != "process_one" {
+		t.Fatalf("fan body = %v, want process_one", fan.Body)
+	}
+	if fan.BodyAs != "item" {
+		t.Fatalf("fan BodyAs = %q, want item", fan.BodyAs)
+	}
+	if len(fan.Rejoins) != 1 || fan.Rejoins[0] != "summarize" {
+		t.Fatalf("fan Rejoins = %v, want [summarize]", fan.Rejoins)
+	}
+	// The rejoin is marked to collect.
+	sum := findStep(t, head, "summarize")
+	if sum == nil || sum.CollectFrom != "process_one" || sum.CollectName != "fan" {
+		t.Fatalf("summarize collect = %+v, want CollectFrom=process_one CollectName=fan", sum)
+	}
+}

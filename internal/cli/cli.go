@@ -81,6 +81,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		// subprocess (ADR-0008) that evaluates the routing expression and
 		// returns the chosen branch's target step name (ADR-0022).
 		return cmdSwitchStep(args[1:], stdout, stderr)
+	case "__foreach":
+		// Hidden subprocess entrypoint: the worker runs a `foreach` step as a
+		// subprocess (ADR-0008) that evaluates the `over` expression and returns
+		// the list to iterate, so the worker can fan out the body once per
+		// element (ADR-0024).
+		return cmdForeachStep(args[1:], stdout, stderr)
 	}
 
 	// The remaining commands are daemon operations scheduled for later phases.
@@ -571,6 +577,50 @@ func stringify(v any) string {
 		return fmt.Sprintf("%v", v)
 	}
 	return string(raw)
+}
+
+// cmdForeachStep is the hidden subprocess entrypoint for a `foreach` step
+// (ADR-0020, ADR-0024). It reads the step's `{event, steps}` input on stdin,
+// evaluates the `over` JSONata expression (its single argument) to a list, and
+// writes that list as JSON to stdout. The worker runs this as a subprocess
+// (ADR-0008) and uses the returned list to fan out the body step once per
+// element.
+func cmdForeachStep(args []string, stdout, stderr io.Writer) int {
+	if len(args) != 1 {
+		_, _ = fmt.Fprintf(stderr, "servitor: __foreach: usage: __foreach <over-expression>\n")
+		return exitUsage
+	}
+	expr := args[0]
+
+	data, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: __foreach: read input: %v\n", err)
+		return exitFailure
+	}
+	var input any
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &input); err != nil {
+			_, _ = fmt.Fprintf(stderr, "servitor: __foreach: input is not valid JSON: %v\n", err)
+			return exitFailure
+		}
+	}
+
+	out, err := expression.Eval(expr, input)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: __foreach: %v\n", err)
+		return exitFailure
+	}
+	list, ok := out.([]any)
+	if !ok {
+		_, _ = fmt.Fprintf(stderr, "servitor: __foreach: expression did not evaluate to a list\n")
+		return exitFailure
+	}
+	enc := json.NewEncoder(stdout)
+	if err := enc.Encode(list); err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: __foreach: encode result: %v\n", err)
+		return exitFailure
+	}
+	return exitOK
 }
 
 // renderDryRunPlan prints a readable plan: the workflow name and triggers, then

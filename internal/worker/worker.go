@@ -67,6 +67,24 @@ type StepJob struct {
 	// Dependents. The worker enqueues a job only for a dependent whose count
 	// reached zero.
 	Downstream []StepJob
+	// Body, when set, marks a foreach scheduler step (ADR-0024): it carries the
+	// body step template to fan out once per element.
+	Body *StepJob
+	// BodyAs is the loop variable name for a foreach body, exposed in each
+	// iteration's input.
+	BodyAs string
+	// Rejoins are the step ids that depend on a foreach body and collect its
+	// results. The foreach sets their dependency count to the iteration count.
+	Rejoins []string
+	// CollectFrom, CollectAs, and CollectCount mark a rejoin step that assembles
+	// a foreach body's iteration results into an array under the foreach step's
+	// name (ADR-0024). CollectFrom is the body step id, CollectAs is the loop
+	// variable name, and CollectCount is the number of iterations. CollectName
+	// is the foreach step's id, the key the array is placed under in `steps`.
+	CollectFrom  string
+	CollectAs    string
+	CollectCount int
+	CollectName  string
 }
 
 // StepRunner runs a step subprocess. It is an interface so tests can stub it;
@@ -218,11 +236,28 @@ func (w *Worker) handle(ctx context.Context, claimed *honker.Job) error {
 		return w.handleSwitch(ctx, sj, claimed)
 	}
 
+	// A foreach step resolves its list and fans out the body step once per
+	// element, collecting results at the rejoin (ADR-0024).
+	if sj.StepType == "foreach" {
+		return w.handleForeach(ctx, sj, claimed)
+	}
+
 	return w.handleStep(ctx, sj, claimed)
 }
 
 // handleStep runs a normal step, commits its atom, and cascades to dependents.
 func (w *Worker) handleStep(ctx context.Context, sj StepJob, claimed *honker.Job) error {
+	// A rejoin step that collects a foreach body's results assembles the array
+	// of iteration results into its input before running (ADR-0024).
+	if sj.CollectFrom != "" {
+		assembled, aerr := w.assembleForeachInput(sj)
+		if aerr != nil {
+			w.recordFailure(sj, claimed, aerr)
+			return fmt.Errorf("worker: step %s (job %d): %w", sj.StepID, claimed.ID, aerr)
+		}
+		sj.Input = assembled
+	}
+
 	// Resolve the step's dedupe_key JSONata expression against its {event, steps}
 	// input at execution time (ADR-0020, ADR-0021). The resolved key is used for
 	// the dedupe lookup and, on completion, for the dedupe record.
@@ -362,17 +397,167 @@ func (w *Worker) runSwitch(ctx context.Context, sj StepJob) (string, error) {
 	return chosen, nil
 }
 
-// checkRunComplete marks a run completed once every step's dependencies are
-// satisfied (ADR-0023). It is called after a step (or skip) commits its atom.
+// checkRunComplete marks a run completed once its pending job count reaches
+// zero (ADR-0023). It is called after a step (or skip) commits its atom. The
+// pending count is adjusted in the same transaction as the commit, so by the
+// time this runs, pending reflects all in-flight work for the run.
 func (w *Worker) checkRunComplete(ctx context.Context, sj StepJob) error {
-	done, err := w.store.RunComplete(sj.RunID)
+	pending, err := w.store.RunPending(sj.RunID)
 	if err != nil {
 		return err
 	}
-	if done {
+	if pending == 0 {
 		return w.store.SetRunStatus(sj.RunID, honker.RunCompleted)
 	}
 	return nil
+}
+
+// handleForeach runs a foreach step: it resolves the list, sets each rejoin's
+// dependency count to the iteration count N, and enqueues N body-step jobs, one
+// per element (ADR-0024). Each body job carries the rejoins as its dependents
+// so, when it completes, it decrements each rejoin; a rejoin is enqueued once
+// its count reaches zero.
+func (w *Worker) handleForeach(ctx context.Context, sj StepJob, claimed *honker.Job) error {
+	items, err := w.runForeach(ctx, sj)
+	if err != nil {
+		w.recordFailure(sj, claimed, err)
+		return fmt.Errorf("worker: foreach %s (job %d): %w", sj.StepID, claimed.ID, err)
+	}
+	n := len(items)
+	if sj.Body == nil {
+		return fmt.Errorf("worker: foreach %s has no body step", sj.StepID)
+	}
+
+	// Set each rejoin's count to N so it waits for all iterations.
+	for _, rejoin := range sj.Rejoins {
+		if err := w.store.SetRunDepsRemaining(sj.RunID, rejoin, n); err != nil {
+			w.recordFailure(sj, claimed, err)
+			return fmt.Errorf("worker: foreach %s set rejoin count: %w", sj.StepID, err)
+		}
+		// Mark the rejoin to collect the array under this foreach step's name.
+		rj := w.findDownstreamJob(sj, rejoin)
+		if rj != nil {
+			rj.CollectFrom = sj.Body.StepID
+			rj.CollectAs = sj.BodyAs
+			rj.CollectCount = n
+		}
+	}
+
+	// The foreach step's own result records the items it fanned out. The N body
+	// jobs are enqueued as the atom's Downstream (with empty Dependents, so they
+	// are all enqueued immediately) and therefore count toward the run's pending
+	// in-flight work: the fan's ack removes one, each body adds one (ADR-0023).
+	atom := honker.StepAtom{
+		RunID:  sj.RunID,
+		StepID: sj.StepID,
+		Result: map[string]any{"items": items},
+		Job:    claimed,
+	}
+	// Enqueue N body jobs, each with the rejoins as dependents. The body job's
+	// own Config/Command are its template; only Input and Collect markers vary.
+	// Each body job gets a distinct StepID (`<body>#<i>`) so its result is stored
+	// separately and the rejoin can read all N in input order (ADR-0024).
+	for i, item := range items {
+		body := *sj.Body
+		body.RunID = sj.RunID
+		body.StepID = fmt.Sprintf("%s#%d", sj.Body.StepID, i)
+		body.Input = foreachItemInput(sj.Input, sj.BodyAs, item)
+		body.Dependents = sj.Rejoins
+		body.Downstream = w.rejoinJobs(sj, body)
+		body.CollectFrom = ""
+		body.CollectAs = ""
+		body.CollectCount = 0
+		body.CollectName = ""
+		atom.Downstream = append(atom.Downstream, honker.Downstream{Queue: w.queue, Payload: body})
+	}
+	if err := w.store.CommitStepAtom(atom); err != nil {
+		w.recordFailure(sj, claimed, err)
+		return fmt.Errorf("worker: commit foreach %s (job %d): %w", sj.StepID, claimed.ID, err)
+	}
+	return w.checkRunComplete(ctx, sj)
+}
+
+// runForeach runs the foreach step as a subprocess (ADR-0008) and returns the
+// list of elements to iterate.
+func (w *Worker) runForeach(ctx context.Context, sj StepJob) ([]any, error) {
+	if len(sj.Command) == 0 {
+		return nil, fmt.Errorf("step type foreach has no command to run")
+	}
+	env, missing := exec.FilteredEnv(w.secrets, sj.Secrets)
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("foreach declares secrets the runner does not have: %s", strings.Join(missing, ", "))
+	}
+	res, rerr := w.runner.Run(ctx, exec.Request{Command: sj.Command, Env: env, Input: sj.Input})
+	if rerr != nil {
+		return nil, rerr
+	}
+	list, ok := res.Output.([]any)
+	if !ok {
+		return nil, fmt.Errorf("foreach %s returned a non-list", sj.StepID)
+	}
+	return list, nil
+}
+
+// foreachItemInput builds a body iteration's input: the foreach step's
+// {event, steps} input plus the loop element under the loop-variable name
+// (ADR-0024).
+func foreachItemInput(parentInput map[string]any, as string, item any) map[string]any {
+	event := parentInput["event"]
+	steps, _ := parentInput["steps"].(map[string]any)
+	if steps == nil {
+		steps = map[string]any{}
+	}
+	return map[string]any{"event": event, "steps": steps, as: item}
+}
+
+// findDownstreamJob returns the job in sj's Downstream tree with the given id.
+func (w *Worker) findDownstreamJob(sj StepJob, id string) *StepJob {
+	for i := range sj.Downstream {
+		d := &sj.Downstream[i]
+		if d.StepID == id {
+			return d
+		}
+	}
+	return nil
+}
+
+// rejoinJobs returns the rejoin jobs for a body job, looked up from the
+// foreach step's Downstream by rejoin id.
+func (w *Worker) rejoinJobs(sj StepJob, body StepJob) []StepJob {
+	var out []StepJob
+	for _, rejoin := range sj.Rejoins {
+		if rj := w.findDownstreamJob(sj, rejoin); rj != nil {
+			out = append(out, *rj)
+		}
+	}
+	return out
+}
+
+// assembleForeachInput reads the N iteration results for a rejoin's foreach
+// body and places them, in input order, as an array under the foreach step's
+// name in the rejoin's `steps` input (ADR-0024). Each iteration's result is
+// stored under the distinct step id `<body>#<i>`.
+func (w *Worker) assembleForeachInput(sj StepJob) (map[string]any, error) {
+	steps, _ := sj.Input["steps"].(map[string]any)
+	if steps == nil {
+		steps = map[string]any{}
+	}
+	arr := make([]any, 0, sj.CollectCount)
+	for i := 0; i < sj.CollectCount; i++ {
+		id := fmt.Sprintf("%s#%d", sj.CollectFrom, i)
+		v, err := w.store.Result(sj.RunID, id)
+		if err != nil {
+			return nil, fmt.Errorf("foreach collect %s iteration %d: %w", sj.CollectFrom, i, err)
+		}
+		arr = append(arr, v)
+	}
+	steps[sj.CollectName] = arr
+	out := make(map[string]any, len(sj.Input)+1)
+	for k, v := range sj.Input {
+		out[k] = v
+	}
+	out["steps"] = steps
+	return out, nil
 }
 
 // resolveDedupeKey evaluates a step's dedupe_key JSONata expression (ADR-0020)
@@ -621,9 +806,7 @@ func (w *Worker) recordFailure(sj StepJob, claimed *honker.Job, cause error) {
 	if claimed != nil {
 		_, _ = claimed.Retry(0, cause.Error())
 	}
-	// Mark the run failed once no step is left pending (all deps satisfied,
-	// so nothing else will run) (ADR-0023).
-	if done, _ := w.store.RunComplete(sj.RunID); done {
-		_ = w.store.SetRunStatus(sj.RunID, honker.RunFailed)
-	}
+	// The failing step is not acked (it retries), so the run's pending count is
+	// unchanged and the run is neither completed nor failed yet. It resolves
+	// when the step succeeds or is dead-lettered.
 }

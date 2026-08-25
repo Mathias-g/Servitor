@@ -281,3 +281,27 @@ func TestSwitchStepNoMatchNoDefaultFails(t *testing.T) {
 		t.Fatalf("__switch no-match-no-default exit %d, want %d", code, exitFailure)
 	}
 }
+
+func TestForeachStepSubprocess(t *testing.T) {
+	oldStdin := os.Stdin
+	t.Cleanup(func() { os.Stdin = oldStdin })
+	f, err := os.CreateTemp(t.TempDir(), "stdin-*.json")
+	if err != nil {
+		t.Fatalf("create stdin file: %v", err)
+	}
+	if _, err := f.WriteString(`{"event":{"id":"e1"},"steps":{"fetch_ids":[1,2,3]}}`); err != nil {
+		t.Fatalf("write stdin: %v", err)
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		t.Fatalf("seek: %v", err)
+	}
+	os.Stdin = f
+
+	var out, errOut bytes.Buffer
+	if code := Run([]string{"__foreach", `steps.fetch_ids`}, &out, &errOut); code != exitOK {
+		t.Fatalf("__foreach exit %d, want %d (stderr: %s)", code, exitOK, errOut.String())
+	}
+	if strings.TrimSpace(out.String()) != `[1,2,3]` {
+		t.Fatalf("__foreach output = %q, want [1,2,3]", out.String())
+	}
+}

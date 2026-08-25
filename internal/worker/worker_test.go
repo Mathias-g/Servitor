@@ -126,7 +126,7 @@ func TestDedupeSkipReturnsPriorResult(t *testing.T) {
 	// A step with the same key; its subprocess would produce a different value.
 	if _, err := q.Enqueue(StepJob{
 		RunID: "run-2", WorkflowID: "wf", StepID: "a", StepName: "a",
-		StepType: "shell", DedupeKey: "k1",
+		StepType: "shell", DedupeKey: "\"k1\"",
 		Command: shellCmd(`printf '{"ok":true,"from":"rerun"}'`),
 	}); err != nil {
 		t.Fatalf("enqueue: %v", err)
@@ -167,7 +167,7 @@ func TestDedupeProceedsOnPriorFailure(t *testing.T) {
 
 	if _, err := q.Enqueue(StepJob{
 		RunID: "run-2", WorkflowID: "wf", StepID: "a", StepName: "a",
-		StepType: "shell", DedupeKey: "k1",
+		StepType: "shell", DedupeKey: "\"k1\"",
 		Command: shellCmd(`printf '{"ok":true,"from":"rerun"}'`),
 	}); err != nil {
 		t.Fatalf("enqueue: %v", err)
@@ -191,7 +191,7 @@ func TestStepFailureRetriesAndRecordsFailure(t *testing.T) {
 
 	if _, err := q.Enqueue(StepJob{
 		RunID: "run-1", WorkflowID: "wf", StepID: "a", StepName: "a",
-		StepType: "shell", DedupeKey: "k1",
+		StepType: "shell", DedupeKey: "\"k1\"",
 		Command: shellCmd(`echo boom >&2; exit 1`),
 	}); err != nil {
 		t.Fatalf("enqueue: %v", err)
@@ -574,7 +574,13 @@ type switchStubRunner struct {
 }
 
 func (s *switchStubRunner) Run(_ context.Context, req exec.Request) (exec.Result, error) {
-	return exec.Result{Output: s.chosen}, nil
+	// Only the switch step returns the branch name; body steps return a map.
+	for _, c := range req.Command {
+		if c == "__switch" {
+			return exec.Result{Output: s.chosen}, nil
+		}
+	}
+	return exec.Result{Output: map[string]any{"ok": true}}, nil
 }
 
 // TestSwitchRoutesChosenBranchAndSkipsOthers pins switch routing (ADR-0022):
@@ -601,6 +607,9 @@ func TestSwitchRoutesChosenBranchAndSkipsOthers(t *testing.T) {
 
 	// Init run deps: route depends on nothing; nf, ld depend on route; record
 	// depends on both nf and ld.
+	if err := store.CreateRun("run-1", "wf"); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
 	if err := store.InitRunDeps(honker.NewRunDeps("run-1", map[string]int{
 		"route": 0, "notify_finance": 1, "log_and_done": 1, "record": 2,
 	}, []string{"route", "notify_finance", "log_and_done", "record"})); err != nil {
@@ -646,6 +655,81 @@ func runLoop(t *testing.T, w *Worker, q *honker.Queue) {
 		}
 		if err := w.handle(context.Background(), job); err != nil {
 			t.Fatalf("handle: %v", err)
+		}
+	}
+}
+
+// foreachStubRunner answers a foreach step with the list and each body
+// iteration with a result derived from its `item` input.
+type foreachStubRunner struct{}
+
+func (foreachStubRunner) Run(_ context.Context, req exec.Request) (exec.Result, error) {
+	in, _ := req.Input.(map[string]any)
+	// A body iteration has an `item` key; return a result derived from it.
+	if _, isBody := in["item"]; isBody {
+		return exec.Result{Output: map[string]any{"item": in["item"]}}, nil
+	}
+	// A rejoin step has the collected array under the foreach step's name in its
+	// input; return it so the test can verify the collect.
+	if steps, ok := in["steps"].(map[string]any); ok {
+		if fan, ok := steps["fan"]; ok {
+			return exec.Result{Output: fan}, nil
+		}
+	}
+	// The foreach step itself returns the iteration list.
+	return exec.Result{Output: []any{"a", "b", "c"}}, nil
+}
+
+// TestForeachFansOutAndCollectsAtRejoin pins foreach (ADR-0024): the body runs
+// once per element, results collect into an array under the foreach step's name
+// at the rejoin, in input order.
+func TestForeachFansOutAndCollectsAtRejoin(t *testing.T) {
+	w, store, q := newWorker(t, 30, 3, nil)
+	w.runner = foreachStubRunner{}
+
+	// foreach fan -> body process_one (fanned N times) -> rejoin summarize.
+	summarize := StepJob{RunID: "run-1", WorkflowID: "wf", StepID: "summarize", StepName: "summarize",
+		StepType: "transform", Command: []string{"ignored"},
+		CollectFrom: "process_one", CollectAs: "item", CollectCount: 3, CollectName: "fan"}
+	processOne := StepJob{RunID: "run-1", WorkflowID: "wf", StepID: "process_one", StepName: "process_one",
+		StepType: "shell", Command: []string{"ignored"},
+		Dependents: []string{"summarize"}, Downstream: []StepJob{summarize}}
+	fan := StepJob{RunID: "run-1", WorkflowID: "wf", StepID: "fan", StepName: "fan",
+		StepType: "foreach", Command: []string{"servitor", "__foreach", "steps.ids"},
+		Body: &processOne, BodyAs: "item", Rejoins: []string{"summarize"},
+		Downstream: []StepJob{summarize}}
+
+	if err := store.CreateRun("run-1", "wf"); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if err := store.InitRunDeps(honker.NewRunDeps("run-1", map[string]int{
+		"fan": 0, "process_one": 1, "summarize": 1,
+	}, []string{"fan", "process_one", "summarize"})); err != nil {
+		t.Fatalf("InitRunDeps: %v", err)
+	}
+
+	if _, err := q.Enqueue(fan); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	runLoop(t, w, q)
+
+	if st, _ := store.RunStatus("run-1"); st != honker.RunCompleted {
+		t.Fatalf("run status = %q, want completed", st)
+	}
+	// The rejoin's result should be an array of {item: a/b/c}.
+	res := claimResultJSON(t, store, "run-1", "summarize")
+	arr, ok := res.([]any)
+	if !ok {
+		t.Fatalf("summarize result = %#v, want array", res)
+	}
+	if len(arr) != 3 {
+		t.Fatalf("collected array len = %d, want 3", len(arr))
+	}
+	want := []string{"a", "b", "c"}
+	for i, v := range arr {
+		m, _ := v.(map[string]any)
+		if m["item"] != want[i] {
+			t.Fatalf("collected[%d] = %v, want item %s (in input order)", i, v, want[i])
 		}
 	}
 }

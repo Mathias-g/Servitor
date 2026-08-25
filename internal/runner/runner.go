@@ -51,6 +51,16 @@ func commandFor(s wafer.Step) ([]string, error) {
 			return nil, fmt.Errorf("step %q: locate servitor binary: %w", stepName(s), err)
 		}
 		return []string{exe, "__switch", expr}, nil
+	case "foreach":
+		expr, ok := s.Config["over"].(string)
+		if !ok || expr == "" {
+			return nil, fmt.Errorf("step %q: foreach requires a string `over` expression", stepName(s))
+		}
+		exe, err := os.Executable()
+		if err != nil {
+			return nil, fmt.Errorf("step %q: locate servitor binary: %w", stepName(s), err)
+		}
+		return []string{exe, "__foreach", expr}, nil
 	case "singer-tap":
 		tap, ok := s.Config["tap"].(string)
 		if !ok || tap == "" {
@@ -79,6 +89,17 @@ func stepName(s wafer.Step) string {
 		return s.Name
 	}
 	return s.Type
+}
+
+// removeStr removes all occurrences of s from the slice, preserving order.
+func removeStr(xs []string, s string) []string {
+	out := xs[:0]
+	for _, x := range xs {
+		if x != s {
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
 // FromWafer builds the head StepJob of a run from a validated Wafer and the
@@ -128,6 +149,45 @@ func FromWafer(w *wafer.Wafer, event map[string]any) (*worker.StepJob, error) {
 			if j, ok := idxByName[dep]; ok {
 				jobs[j].Dependents = append(jobs[j].Dependents, d.Name)
 			}
+		}
+	}
+	// Handle foreach steps (ADR-0024): a foreach fanned out its body step N
+	// times, so the body is not a normal dependent of the foreach. Instead the
+	// foreach carries the body template, the loop-variable name, and the steps
+	// that depend on the body (the rejoins) which collect its results.
+	forEachBody := map[string]bool{}
+	for _, d := range dag.Steps {
+		if d.Type != "foreach" {
+			continue
+		}
+		fj := jobs[idxByName[d.Name]]
+		bodyName, _ := fj.Config["body"].(string)
+		bodyIdx, ok := idxByName[bodyName]
+		if !ok {
+			return nil, fmt.Errorf("run: foreach %q has unknown body %q", d.Name, bodyName)
+		}
+		// The body is fanned out, so remove it from the foreach's dependents.
+		fj.Dependents = removeStr(fj.Dependents, bodyName)
+		as, _ := fj.Config["as"].(string)
+		if as == "" {
+			as = "item"
+		}
+		fj.Body = jobs[bodyIdx]
+		fj.BodyAs = as
+		fj.Rejoins = jobs[bodyIdx].Dependents
+		forEachBody[bodyName] = true
+		// Mark the body's rejoins to collect; they keep the body in Dependents
+		// so the static DAG count exists, but the foreach overrides it to N at
+		// runtime (ADR-0024).
+		for _, rejoin := range fj.Rejoins {
+			rj := jobs[idxByName[rejoin]]
+			rj.CollectFrom = bodyName
+			rj.CollectAs = as
+			rj.CollectName = d.Name
+			// The foreach carries the rejoin jobs in its Downstream so the worker
+			// can build body jobs that point to them (they are not reachable via
+			// the body, which is fanned out).
+			fj.Downstream = append(fj.Downstream, *rj)
 		}
 	}
 	// Build each job's Downstream from its (now complete) dependents.

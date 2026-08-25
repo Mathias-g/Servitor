@@ -117,8 +117,9 @@ var stepTypes = []*StepType{
 		SideEffect: false,
 		Group:      Core,
 		Fields: map[string]*Field{
-			"over": {Type: "array", Required: true, Desc: "The list to iterate over.", Examples: []any{[]any{"a", "b", "c"}}},
-			"as":   {Type: "string", Desc: "Name for each element in the loop.", Examples: []any{"item"}},
+			"over": {Type: "string", Required: true, Desc: "A JSONata expression over the step's `{event, steps}` input yielding the list to iterate (ADR-0020, ADR-0024).", Examples: []any{"steps.fetch_ids"}},
+			"as":   {Type: "string", Desc: "Name for each element in the loop, exposed in each iteration's input. Defaults to `item`.", Examples: []any{"item"}},
+			"body": {Type: "string", Required: true, Desc: "Name of the top-level step to run once per element (ADR-0024).", Examples: []any{"process_one"}},
 		},
 	},
 	{

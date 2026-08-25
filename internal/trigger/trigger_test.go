@@ -228,8 +228,10 @@ steps:
 	if head.StepID != "a" {
 		t.Fatalf("head step = %q, want a", head.StepID)
 	}
-	if head.Input["x"] != float64(1) {
-		t.Fatalf("input = %v, want x:1", head.Input)
+	// Head input is wrapped as {event, steps} (ADR-0021).
+	ev, _ := head.Input["event"].(map[string]any)
+	if ev["x"] != float64(1) {
+		t.Fatalf("input = %v, want event.x:1", head.Input)
 	}
 }
 

@@ -31,17 +31,47 @@ type StepOutcome struct {
 }
 
 // CreateRun records a new run as running. It is called when a run's head step
-// is enqueued, so a run always has a row even before any step finishes.
+// is enqueued, so a run always has a row even before any step finishes. pending
+// is initialized to 1 (the head step about to run) so the run's completion is
+// tracked by in-flight jobs reaching zero (ADR-0023).
 func (s *Store) CreateRun(id, workflowName string) error {
 	if id == "" {
 		return fmt.Errorf("honker: create run: empty run id")
 	}
 	_, err := s.db.Raw().Exec(
-		`INSERT OR REPLACE INTO runs (run_id, workflow_name, status) VALUES (?, ?, ?)`,
-		id, workflowName, RunRunning,
+		`INSERT OR REPLACE INTO runs (run_id, workflow_name, status, pending) VALUES (?, ?, ?, ?)`,
+		id, workflowName, RunRunning, 1,
 	)
 	if err != nil {
 		return fmt.Errorf("honker: create run %s: %w", id, err)
+	}
+	return nil
+}
+
+// RunPending returns a run's pending job count, or (0, nil) when the run is not
+// recorded. The run is complete when pending reaches zero.
+func (s *Store) RunPending(id string) (int, error) {
+	var n int
+	err := s.db.Raw().QueryRow(`SELECT pending FROM runs WHERE run_id = ?`, id).Scan(&n)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return n, nil
+}
+
+// AdjustPending changes a run's pending job count by delta inside the given
+// transaction. It is how the worker tracks in-flight work: a step's completion
+// decrements pending by its own ack and increments it by the dependents it
+// enqueues, in the same atomic commit as the result (ADR-0023).
+func (t *Tx) AdjustPending(runID string, delta int) error {
+	_, err := t.tx.Exec(
+		`UPDATE runs SET pending = pending + ? WHERE run_id = ?`, delta, runID,
+	)
+	if err != nil {
+		return fmt.Errorf("honker: adjust pending %s by %d: %w", runID, delta, err)
 	}
 	return nil
 }

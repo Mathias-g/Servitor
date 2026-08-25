@@ -121,3 +121,17 @@ func (s *Store) RunComplete(runID string) (bool, error) {
 	}
 	return n == 0, nil
 }
+
+// SetRunDepsRemaining sets a run step's unsatisfied dependency count. A foreach
+// step uses this to override a rejoin's count to the (dynamic) iteration count
+// N (ADR-0024), so the rejoin waits for all N body iterations rather than the
+// static depends_on count.
+func (s *Store) SetRunDepsRemaining(runID, stepID string, remaining int) error {
+	if _, err := s.db.Raw().Exec(
+		`UPDATE run_deps SET remaining = ? WHERE run_id = ? AND step_id = ?`,
+		remaining, runID, stepID,
+	); err != nil {
+		return fmt.Errorf("honker: set run deps %s/%s: %w", runID, stepID, err)
+	}
+	return nil
+}
