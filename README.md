@@ -73,22 +73,28 @@ itself under varlock to resolve secrets and boots the daemon.
    `VERSION`, rebuilds, and prints the git tag/push commands.
 
 2. **Install varlock and declare secrets.** Varlock is a typed, schema-validated
-   secrets tool (SPEC: Varlock). Install it per [varlock.dev](https://varlock.dev),
-   then declare the secrets your integrations need in a `.env.schema` in the
-   working directory, with each secret's type annotated in a `.env` file:
+   secrets tool (SPEC: Varlock). Install it:
 
-       # .env
+       curl -sSfL https://varlock.dev/install.sh | sh -s
+       # or: brew install dmno-dev/tap/varlock
+
+   Then declare the secrets your integrations need in a `.env.schema` in the
+   working directory. Each secret is a `KEY=` line with `# @type=...` (and
+   `@sensitive` for secrets) decorators above it:
+
+       # .env.schema
+       # @sensitive @type=string
+       SLACK_TOKEN=
        # @type=string
-       SLACK_TOKEN=your-token-here
-       # @type=string @optional
-       GRIST_API_KEY=
+       APP_ENV=development
 
-   The runner resolves these secrets through varlock (injecting them as env
-   vars, validated against the schema) when it boots. Which backing store varlock
-   reads from, and how you populate the values into it, depends on the store you
-   use (for example 1Password, HashiCorp Vault, or AWS Secrets Manager); see
-   [varlock.dev](https://varlock.dev) for the commands. Servitor itself assumes
-   no particular store, only that varlock supplies the resolved env vars.
+   The runner resolves these secrets through varlock when it boots, validating
+   them against the schema and injecting them as env vars. Actual secret values
+   live in `.env.local` (git-ignored and encrypted) or come from a varlock
+   plugin / provider (for example 1Password, Infisical, or AWS Secrets Manager);
+   see [varlock.dev](https://varlock.dev) for how to populate them. Servitor
+   itself assumes no particular provider, only that varlock supplies the
+   resolved env vars.
 
 3. **Download the Honker extension.** It is a loadable SQLite extension, pinned
    and checksummed (ADR-0011). The Linux x64 build for the version we pin:
