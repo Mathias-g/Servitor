@@ -92,9 +92,11 @@ needs, without changing the trigger's role or the core.
 - Good: no new runtime file dependency; the daemon still reads only its store.
 - Good: the poll runs as a subprocess with a filtered secret env (SPEC:
   Varlock), so credentials never enter the runner's process.
-- Bad: the same mailbox's credentials live on the trigger, so a future SMTP send
-  step would duplicate them until the shared-integration refactor. Accepted for
-  now (BSSN).
+- Neutral: the trigger carries its own mailbox credentials. A future SMTP send
+  step is an independent concern: it carries its own credentials and may point
+  at a different account than the one received on. Only if many accounts are
+  used would a named-account registry (orthogonal to send vs receive) be worth
+  introducing; not needed now (BSSN).
 - Neutral: email is polled, so delivery is near-realtime but not push-instant;
   a provider push (webhook) is a possible future trigger type.
 
