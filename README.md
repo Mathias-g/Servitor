@@ -80,6 +80,22 @@ itself under varlock to resolve secrets and boots the daemon.
 Inspect results with `servitor runs` and `servitor run <id>`, and stop the
 daemon with `servitor stop`.
 
+## Deploying a Wafer
+
+Workflow changes are CI/CD-gated (ADR-0009, ADR-0019): an agent authors a Wafer
+and submits it as a reviewed pull request; the apply happens on the box via the
+CLI. Servitor ships the operations but not a deploy pipeline, because reaching
+the box is your existing SSH/VPN access. In your own pipeline (or a cron Wafer),
+run the apply on the box:
+
+    ./bin/servitor dry-run ./my-workflow.yml   # validate against this box
+    ./bin/servitor submit ./my-workflow.yml    # register / replace it
+    ./bin/servitor enable <name>               # arm its triggers
+    ./bin/servitor disable <name>              # disarm without deleting
+
+The control plane stays loopback-only; only a process already on the box (your
+pipeline or an operator) can reach it.
+
 ## Connecting your agent
 
 Servitor is designed to be driven by your coding agent. It ships a skill (a `SKILL.md`) that teaches the agent the CLI, so agents consume it through the skill and the CLI rather than an MCP server. The daemon protocol is kept transport-agnostic so an MCP adapter could sit beside the CLI later without a rewrite.
