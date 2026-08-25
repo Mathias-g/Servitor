@@ -69,3 +69,28 @@ func TestWaferSchema(t *testing.T) {
 		}
 	}
 }
+
+func TestRolesSeparateTriggerFromAction(t *testing.T) {
+	// A trigger-role step type (email_received) is valid under `on:` but not
+	// under `steps:`.
+	if LookupTrigger("email_received") == nil {
+		t.Fatal("email_received should be trigger-usable")
+	}
+	if LookupStep("email_received") != nil {
+		t.Fatal("email_received should not be action-usable")
+	}
+	// An action-role step type (http) is valid under `steps:` but not `on:`.
+	if LookupStep("http") == nil {
+		t.Fatal("http should be action-usable")
+	}
+	if LookupTrigger("http") != nil {
+		t.Fatal("http should not be trigger-usable")
+	}
+	// Delivery is set on trigger-role steps.
+	if tr := LookupTrigger("email_received"); tr.Delivery != DeliveryPolling {
+		t.Fatalf("email_received delivery = %q, want polling", tr.Delivery)
+	}
+	if tr := LookupTrigger("github_webhook"); tr.Delivery != DeliveryInstant {
+		t.Fatalf("github_webhook delivery = %q, want instant", tr.Delivery)
+	}
+}

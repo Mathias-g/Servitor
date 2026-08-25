@@ -17,7 +17,7 @@ Servitor is an opinionated take: a small, code-first, agent-friendly workflow ru
 Most workflow tools were built for humans clicking through a builder, with an API bolted on. An agent using such a tool is a second-class citizen. Servitor is designed for agents first:
 
 - **The artifact is the Wafer, not a database row.** Agents read, write, diff, and version-control the same file a human would.
-- **Capability discovery is a first-class operation.** The CLI returns every step type, trigger type, declared secret, and available Singer tap, with full JSON Schemas. An agent never has to guess.
+- **Capability discovery is a first-class operation.** The CLI returns every step type (with its role and delivery), declared secret, and available Singer tap, with full JSON Schemas. An agent never has to guess.
 - **Validation errors are structured, not stringified.** Errors come back as JSON with paths, codes, and suggestions.
 - **Dry-run is a real primitive.** It resolves the whole workflow, including secret references, and shows the DAG the runner *would* execute. Nothing runs, nothing is persisted.
 - **The same CLI serves humans and agents.** No private API the agent doesn't have access to.

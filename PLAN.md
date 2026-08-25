@@ -31,7 +31,7 @@ How an agent learns what the server supports and how to use it (SPEC: How an age
 
 - [x] A step-type and trigger-type registry, each entry with its JSON Schema, grouped by mechanism with a `core` group for Servitor's own types.
 - [x] The schema-to-example generator: render a Wafer fragment from a schema (skeleton from the schema, sample values from each property's `examples`).
-- [x] `servitor capabilities [dir]` writes, per step and trigger, the schema and its derived example to files, grouped by mechanism (`core`, `webhook`, `singer`, `mcp`, `helper`, `websocket`; ADR-0017), plus an index. A pipeline can commit the output so remote agents read it from the repo.
+- [x] `servitor capabilities [dir]` writes, per step type, the schema and its derived example to files, grouped by mechanism (`core`, `webhook`, `singer`, `mcp`, `helper`, `websocket`; ADR-0017), plus an index. A pipeline can commit the output so remote agents read it from the repo.
 - [x] Report declared secrets (names and presence, not values) in `capabilities` (a `secrets.yaml` from the varlock schema).
 - [x] Report available Singer taps in `capabilities` (names of installed taps and their schemas). Done with the Singer integration; see Phase 11.
 
@@ -135,7 +135,7 @@ A standards-based integration path alongside the curated helpers (ADR-0015). The
 - [x] Each CLI command implemented per the SPEC's command set and its mapping to daemon operations.
 - [x] Exit codes carry the signal (0 ok, 1 operation failed, 2 usage error, 3 daemon not running).
 - [x] The control plane stays gated and loopback-only throughout (ADR-0009); the deploy path is CI/CD-gated and operator-owned/documented (ADR-0019).
-- [ ] Agent authoring reference: committed examples of the Wafer format for every step and trigger type (core, singer, mcp-call, curated helpers, webhooks), so an agent sees a valid example without running `capabilities`. The generator is already generic, so this is deferred until the type set stabilizes; until then each new type's registry fields should carry `examples`, and `servitor capabilities` renders them on demand.
+- [ ] Agent authoring reference: committed examples of the Wafer format for every step type (core, singer, mcp-call, curated helpers, webhooks), so an agent sees a valid example without running `capabilities`. The generator is already generic, so this is deferred until the type set stabilizes; until then each new type's registry fields should carry `examples`, and `servitor capabilities` renders them on demand.
 - [x] Declared integrations config (ADR-0018): replace PATH-prefix discovery with a single declared config (`servitor.integrations.yaml`, per-mechanism sections for MCP servers and Singer taps/targets, each with exact command and env) as the source of what `capabilities` reports, plus a management CLI (`servitor mcp`/`tap`/`target` add/list/remove) that writes entries and delegates the actual software install to the ecosystem's package managers.
 
 ## Outstanding work
@@ -161,11 +161,11 @@ Everything still to do, consolidated from the review of SPEC/ADRs vs the code.
 - [ ] **`grist`** helper (read, write, list, query).
 - [ ] **`slack`** helper (post messages, read events).
 - [ ] **`github`** helper (issues, PRs, releases).
-- [ ] **`email` send helper (SMTP).** The outbound half of email (send via SMTP, using the same mailbox credentials as `email_received`). When built, the mailbox credentials would be shared between the send step and the `email_received` trigger, so a shared declared email integration becomes worth introducing (ADR-0027).
+- [ ] **`email` send step (SMTP).** The outbound half of email: a generic SMTP step that sends a message. It carries its own `host`/`username`/`secret` config (mirroring `email_received`) and may point at a different account than the one received on; send and receive are independent. Only if many accounts are used would a named-account registry be worth introducing; not needed now.
 
 ### Deferred / open decisions
 
-- [ ] **Agent authoring reference.** Committed examples of the Wafer format for every step and trigger type, so an agent sees a valid example without running `capabilities`. Deferred until the type set stabilizes; each new type's registry fields should carry `examples` meanwhile.
+- [ ] **Agent authoring reference.** Committed examples of the Wafer format for every step type, so an agent sees a valid example without running `capabilities`. Deferred until the type set stabilizes; each new type's registry fields should carry `examples` meanwhile.
 - [ ] **Worker concurrency limits.** Runs execute as a dependency DAG with fan-out (ADR-0023), but branches run sequentially rather than in parallel.
 - [x] **`dedupe_key` expression language.** JSONata via `internal/expression` (ADR-0020), evaluated at execution time against the step's `{event, steps}` input (ADR-0021) and stringified into the key.
 - [x] **`transform` expression language.** Settled: JSONata via gnata behind `internal/expression` (ADR-0020). Runs as a subprocess, so no host access; evaluation is bounded.

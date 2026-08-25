@@ -70,17 +70,17 @@ errors, pointing you to submit).
 
 ### 1. Discover what the runner supports
 
-Do not guess what a step or trigger type takes. Materialize the capability set
-and read the schemas:
+Do not guess what a step type takes or where it can be used. Materialize the
+capability set and read the schemas:
 
 ```
 servitor capabilities ./capabilities
 ```
 
-This writes, per mechanism, one file per step and trigger type containing its
-JSON Schema and a derived example fragment, plus an `index.yaml` listing the
-mechanisms. Read `./capabilities/index.yaml` to see what exists, then read the
-schema for the specific type you need (for example
+This writes, per mechanism, one file per step type containing its JSON Schema,
+role (trigger or action), and delivery, plus a derived example fragment, and an
+`index.yaml` listing the mechanisms. Read `./capabilities/index.yaml` to see
+what exists, then read the schema for the specific type you need (for example
 `./capabilities/core/shell.yaml`) to learn its required fields and a valid
 example. The declared integrations sit with their mechanism (`singer/taps.yaml`,
 `mcp/servers.yaml`), so you can see what is available to run against a step

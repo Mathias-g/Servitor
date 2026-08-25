@@ -119,6 +119,36 @@ func TestEntryContainsSchemaAndExample(t *testing.T) {
 	}
 }
 
+func TestEntryEmitsRoleAndDelivery(t *testing.T) {
+	dir := t.TempDir()
+	if err := Write(dir); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	// An action-role step carries role=action, no delivery.
+	act := entry{}
+	if data, err := os.ReadFile(filepath.Join(dir, "core", "http.yaml")); err != nil {
+		t.Fatalf("read http.yaml: %v", err)
+	} else if err := yaml.Unmarshal(data, &act); err != nil {
+		t.Fatalf("parse http.yaml: %v", err)
+	}
+	if act.Role != "action" {
+		t.Fatalf("http role = %q, want action", act.Role)
+	}
+	// A trigger-role step carries role=trigger and a delivery tag.
+	tr := entry{}
+	if data, err := os.ReadFile(filepath.Join(dir, "helper", "email_received.yaml")); err != nil {
+		t.Fatalf("read email_received.yaml: %v", err)
+	} else if err := yaml.Unmarshal(data, &tr); err != nil {
+		t.Fatalf("parse email_received.yaml: %v", err)
+	}
+	if tr.Role != "trigger" {
+		t.Fatalf("email_received role = %q, want trigger", tr.Role)
+	}
+	if tr.Delivery != "polling" {
+		t.Fatalf("email_received delivery = %q, want polling", tr.Delivery)
+	}
+}
+
 func TestWriteSecretsWithoutVarlockWritesNote(t *testing.T) {
 	// Ensure varlock is not on PATH so this is deterministic.
 	t.Setenv("PATH", t.TempDir())

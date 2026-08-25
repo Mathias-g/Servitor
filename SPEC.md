@@ -42,7 +42,7 @@ Most workflow tools were designed for humans clicking through a builder, with an
 Designing for agents first changes specific decisions:
 
 - **The artifact is the Wafer, not a database row.** Agents read, write, diff, and version-control the same file a human would. There is no "form state" living somewhere the agent can't see.
-- **Capability discovery is a first-class operation.** `servitor capabilities` returns every step type, every trigger type, every declared secret, and every Singer tap available, each with its JSON Schema and an example rendered from that schema. An agent never has to guess what fields a step takes.
+- **Capability discovery is a first-class operation.** `servitor capabilities` returns every step type (with its role and delivery), every declared secret, and every Singer tap available, each with its JSON Schema and an example rendered from that schema. An agent never has to guess what fields a step takes.
 - **Validation errors are structured, not stringified.** Errors are returned as JSON with paths, codes, and suggestions. An agent that submits a workflow with `type: slak` gets back an `unknown_step_type` error with `suggestion: slack`, the way an IDE would flag the typo. (See the Structured validation errors section for the full shape.)
 - **Dry-run is a real primitive.** `servitor dry-run` resolves the entire workflow and returns the DAG the runner *would* execute. No steps run, no external services are contacted, nothing is persisted. It reports the workflow's declared secret names (redacted, never values) and warns with a `missing_secret` code when one is not present in the environment, so an agent can verify structure, secret availability, and step configuration before committing.
 - **The same CLI serves humans and agents.** No private API the agent doesn't have access to. If a future UI exists, it talks to the same control plane.
@@ -85,7 +85,7 @@ That's it. Submit it via CLI, enable it, and the next time a row is added to you
 Read this once and the rest of the document fills in the details. The split: steps 1, 2, 6, and 8 are the runner's job (receive, verify, persist, execute). Steps 3, 4, 5, and 7 are the author's job, human or agent (decide what to build, write it, submit it, react to results). The runner never decides what a workflow should do; that is always the author, because the author has the context.
 
 1. **Start the runner.** `servitor run` boots the daemon under varlock, which resolves secrets into its environment. One process owns the SQLite file.
-2. **Discover what's possible.** `servitor capabilities` lists step types, trigger types, secrets, and Singer taps with schemas. An agent reads this instead of guessing.
+2. **Discover what's possible.** `servitor capabilities` lists step types (with roles and delivery), secrets, and Singer taps with schemas. An agent reads this instead of guessing.
 3. **Write a Wafer.** A human edits a YAML file, or an agent generates one from the capabilities schema. The Wafer declares triggers and steps.
 4. **Dry-run it.** `servitor dry-run ./wf.yml` validates and resolves the workflow without running anything, so the author sees the DAG and the declared secrets (redacted, with a `missing_secret` warning when one is absent).
 5. **Deploy via the pipeline.** The agent (or human) opens a pull request for the Wafer; the pipeline dry-runs it and applies it on the box with `servitor submit`, then `servitor enable <name>` registers its triggers (ADR-0009).
@@ -235,13 +235,22 @@ Agents learn the CLI from a shipped `SKILL.md`, the command reference that teach
 
 ## The Wafer
 
-A Wafer declares two things: **triggers** (what starts a workflow, written under `on:`) and **steps** (what it does once running, written under `steps:`). Both lists are representative, not exhaustive; `servitor capabilities` returns the authoritative live set, each entry with its JSON Schema.
+A Wafer declares a workflow's triggers and steps. These are not two different
+kinds of thing: every capability is a **step type** (one primitive that runs as
+a subprocess, ADR-0008), and "trigger" and "action" are *roles* describing where
+a step type is used (ADR-0028). A **trigger** is a step type that starts a run,
+written under `on:`; an **action** is a step type that does work mid-run, written
+under `steps:`. A step type may be valid as a trigger, an action, or both, and
+trigger-role step types carry a `delivery` tag (instant, polling, scheduled,
+event, manual) describing how they start a run. Both lists are representative,
+not exhaustive; `servitor capabilities` returns the authoritative live set, each
+entry with its JSON Schema, role, and delivery.
 
 ### How an agent discovers integrations
 
-Before writing a Wafer, an agent needs to know what the *target* server supports and how to use it. `servitor capabilities` answers both, and it is a per-server query: the authoritative set is what that runner has compiled in (step types, trigger types), what its varlock schema declares (secrets, present or not), and which integrations the operator has declared (Singer taps, MCP servers; ADR-0018). The agent asks the server rather than trusting a doc, because the answer differs per deployment.
+Before writing a Wafer, an agent needs to know what the *target* server supports and how to use it. `servitor capabilities` answers both, and it is a per-server query: the authoritative set is what that runner has compiled in (step types), what its varlock schema declares (secrets, present or not), and which integrations the operator has declared (Singer taps, MCP servers; ADR-0018). The agent asks the server rather than trusting a doc, because the answer differs per deployment.
 
-For each step type and trigger type, `capabilities` returns:
+For each step type, `capabilities` returns:
 
 - its **JSON Schema** (fields, required, types, constraints), and
 - an **example Wafer fragment** rendered from that schema.
@@ -250,7 +259,7 @@ The example is **derived from the schema, not written by hand**: the structural 
 
 This is how "what integrations exist and how do I use them" is answered: the agent runs `capabilities`, reads the schemas and their derived examples, and generates a valid Wafer. The pipeline then re-validates the Wafer against the live server's capabilities on deploy (ADR-0009).
 
-`servitor capabilities [dir]` writes files rather than printing, so the schemas never sit in the agent's context: one file per step and trigger type (its JSON Schema plus derived example), grouped by **mechanism** into top-level directories, plus a `secrets.yaml` reporting the declared secret names and whether each is present (never the values) and an `index.yaml` listing the mechanisms. The mechanisms (ADR-0017) are how Servitor interacts with a service: `core` (universal primitives and scheduling), `webhook` (inbound HTTP reception), `singer` (record streaming), `mcp` (tool invocation), `helper` (compiled-in wrappers), and `websocket` (inbound streaming, future). A service reached by several mechanisms appears in several groups; the type name carries the service (`grist_webhook`, `slack_event`, `tap-grist`). The declared integrations sit with their mechanism: `singer/taps.yaml` lists the declared Singer taps, and `mcp/servers.yaml` lists the declared MCP servers (ADR-0018), so an agent sees both a step type and what is installed to run against it. The distinction between a standard envelope and a bespoke one (for example `standard_webhook` vs `http_webhook` vs `grist_webhook`) is a per-type detail within a mechanism, not a separate group (SPEC: What counts as an integration).
+`servitor capabilities [dir]` writes files rather than printing, so the schemas never sit in the agent's context: one file per step type (its JSON Schema, role, and delivery, plus a derived example), grouped by **mechanism** into top-level directories, plus a `secrets.yaml` reporting the declared secret names and whether each is present (never the values) and an `index.yaml` listing the mechanisms. The mechanisms (ADR-0017) are how Servitor interacts with a service: `core` (universal primitives and scheduling), `webhook` (inbound HTTP reception), `singer` (record streaming), `mcp` (tool invocation), `helper` (compiled-in wrappers), and `websocket` (inbound streaming, future). A service reached by several mechanisms appears in several groups; the type name carries the service (`grist_webhook`, `slack_event`, `tap-grist`). The declared integrations sit with their mechanism: `singer/taps.yaml` lists the declared Singer taps, and `mcp/servers.yaml` lists the declared MCP servers (ADR-0018), so an agent sees both a step type and what is installed to run against it. The distinction between a standard envelope and a bespoke one (for example `standard_webhook` vs `http_webhook` vs `grist_webhook`) is a per-type detail within a mechanism, not a separate group (SPEC: What counts as an integration).
 
 For a **remote agent**, capabilities reach it the same way Wafers do: the pipeline (which already runs the CLI on the box) runs `servitor capabilities` and commits the generated directory into the git repo, and the agent reads the files from the repo on demand. Capabilities are still per-server because the directory is generated from that box's compiled-in set; committing it is a materialized snapshot, not a hand-written doc, so it cannot drift. A local agent (on the box, or the pipeline's own runner) can also run `capabilities` directly into a scratch directory.
 

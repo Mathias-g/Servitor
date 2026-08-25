@@ -17,13 +17,8 @@ func jsonType(t string) string {
 // JSONSchema returns the JSON Schema (draft 2020-12) for this step type's
 // config. It is derived from the same field metadata validation uses, so the
 // schema an agent reads cannot drift from what the validator enforces.
-func (st *StepType) JSONSchema() map[string]any {
-	return typeSchema(st.Name, st.Desc, st.Fields)
-}
-
-// JSONSchema returns the JSON Schema for this trigger type's config.
-func (tt *TriggerType) JSONSchema() map[string]any {
-	return typeSchema(tt.Name, tt.Desc, tt.Fields)
+func (t *StepType) JSONSchema() map[string]any {
+	return typeSchema(t.Name, t.Desc, t.Fields)
 }
 
 func typeSchema(name, desc string, fields map[string]*Field) map[string]any {
@@ -77,11 +72,11 @@ func sortedFieldNames(fields map[string]*Field) []string {
 // hand agents a schema they can validate Wafers against locally.
 func WaferSchema() map[string]any {
 	stepNames := []any{}
-	for _, st := range sortedStepTypes() {
+	for _, st := range StepTypes() {
 		stepNames = append(stepNames, st.Name)
 	}
 	triggerNames := []any{}
-	for _, tt := range sortedTriggerTypes() {
+	for _, tt := range TriggerTypes() {
 		triggerNames = append(triggerNames, tt.Name)
 	}
 

@@ -27,12 +27,14 @@ import (
 // DefaultDir is where capabilities writes when no directory is given.
 const DefaultDir = ".servitor/capabilities"
 
-// entry is the on-disk shape for one step or trigger type: its schema and a
-// derived example fragment.
+// entry is the on-disk shape for one step type: its role, delivery, schema, and
+// a derived example fragment.
 type entry struct {
 	Kind        string         `yaml:"kind"`
 	Type        string         `yaml:"type"`
 	Group       string         `yaml:"group"`
+	Role        string         `yaml:"role"`
+	Delivery    string         `yaml:"delivery,omitempty"`
 	Description string         `yaml:"description"`
 	Schema      map[string]any `yaml:"schema"`
 	Example     map[string]any `yaml:"example"`
@@ -231,6 +233,7 @@ func writeTypes(dir string) error {
 			Kind:        "step",
 			Type:        st.Name,
 			Group:       st.Group,
+			Role:        "action",
 			Description: st.Desc,
 			Schema:      st.JSONSchema(),
 			Example:     st.StepExample(),
@@ -241,9 +244,11 @@ func writeTypes(dir string) error {
 	}
 	for _, tt := range registry.TriggerTypes() {
 		e := entry{
-			Kind:        "trigger",
+			Kind:        "step",
 			Type:        tt.Name,
 			Group:       tt.Group,
+			Role:        "trigger",
+			Delivery:    tt.Delivery,
 			Description: tt.Desc,
 			Schema:      tt.JSONSchema(),
 			Example:     tt.TriggerExample(),
