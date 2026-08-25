@@ -2,7 +2,7 @@
 
 Build order with dependencies and a clear "done" for each phase. The design lives in [SPEC.md](SPEC.md); the decisions live in [docs/adr/](docs/adr/); this is just the sequencing.
 
-Current state: the Go project is scaffolded, the enforcement gates are wired (`make check`, adrlint, pre-commit, CI), and all phases 1-10 are built (daemon + loopback control protocol, Wafer model/validation, capability discovery, dry-run DAG resolution, Honker integration, step execution, triggers/webhooks, varlock integration, SKILL.md, run inspection, and packaging/release). The daemon owns a WAL SQLite file with the Honker extension loaded; the transactional atom ({result, dedupe, downstream, claim_ack} in one commit) is a tested primitive; the worker loop runs steps as subprocesses with env filtering and dedupe; inbound triggers include webhook (Standard Webhooks + generic HMAC), cron, and manual, with event persistence and workflow registration over the loopback control plane; the runner self-heals under `varlock run` so it boots with resolved secrets, which are filtered per step into subprocess environments; a `SKILL.md` teaches agents the discover-author-dry-run-PR workflow; the full CLI command set is implemented; and `make release` drives the release flow (ADR-0012, ADR-0013, ADR-0014). The runner has no workflow registry consulted by the worker; runs are built from a Wafer into a self-contained step chain, and the trigger receiver matches against a stored index of registered workflows.
+Current state: the Go project is scaffolded, the enforcement gates are wired (`make check`, adrlint, pre-commit, CI), and all phases 1-11 are built (daemon + loopback control protocol, Wafer model/validation, capability discovery, dry-run DAG resolution, Honker integration, step execution, triggers/webhooks, varlock integration, SKILL.md, run inspection, packaging/release, and the Singer integration with its tap/target executors, bookmark state, and capabilities taps report). The daemon owns a WAL SQLite file with the Honker extension loaded; the transactional atom ({result, dedupe, downstream, claim_ack} in one commit) is a tested primitive, and for Singer steps the bookmark is part of that same commit; the worker loop runs steps as subprocesses with env filtering and dedupe; inbound triggers include webhook (Standard Webhooks + generic HMAC), cron, and manual, with event persistence and workflow registration over the loopback control plane; the runner self-heals under `varlock run` so it boots with resolved secrets, which are filtered per step into subprocess environments; a `SKILL.md` teaches agents the discover-author-dry-run-PR workflow; the full CLI command set is implemented; `make release` drives the release flow (ADR-0012, ADR-0013, ADR-0014); and Singer taps/targets run as subprocesses with bookmark state persisted in the same transaction as each step's result (ADR-0016). The runner has no workflow registry consulted by the worker; runs are built from a Wafer into a self-contained step chain, and the trigger receiver matches against a stored index of registered workflows.
 
 ## Phase 1: Daemon and control protocol (foundation)
 
@@ -33,7 +33,7 @@ How an agent learns what the server supports and how to use it (SPEC: How an age
 - [x] The schema-to-example generator: render a Wafer fragment from a schema (skeleton from the schema, sample values from each property's `examples`).
 - [x] `servitor capabilities [dir]` writes, per step and trigger, the schema and its derived example to files, grouped by integration, plus an index. A pipeline can commit the output so remote agents read it from the repo.
 - [x] Report declared secrets (names and presence, not values) in `capabilities` (a `secrets.yaml` from the varlock schema).
-- [ ] Report available Singer taps in `capabilities` (names of installed taps and their schemas). Blocked on the Singer integration; tracked as Phase 11 item below.
+- [x] Report available Singer taps in `capabilities` (names of installed taps and their schemas). Done with the Singer integration; see Phase 11.
 
 **Done when:** an agent runs `servitor capabilities`, reads a step's schema and a valid example Wafer fragment, and can author a Wafer without guessing.
 
@@ -105,15 +105,15 @@ How an agent uses Servitor (SPEC: Consuming Servitor as a skill, ADR-0009).
 
 ## Phase 11: Singer integration
 
-The record-stream integration layer (SPEC: Singer, data movement integrations). The `singer-tap` / `singer-target` step types are registered but have no executor; this phase builds the subprocess execution pattern that `mcp-call` (Phase 12) is modeled on.
+The record-stream integration layer (SPEC: Singer, data movement integrations). The `singer-tap` / `singer-target` step types are registered but have no executor; this phase builds the subprocess execution pattern that `mcp-call` (Phase 12) is modeled on. Invocation contract is ADR-0016: the runner writes config (and state/catalog) to temp files and invokes the tap with `--config`/`--state`/`--catalog`, reading records and the next bookmark from stdout; a target gets `--config` and the records on stdin.
 
-- [ ] `singer-tap` step type executor: spawn the named tap as a subprocess with a filtered secret env, feed it config via stdin, capture the JSON records on stdout, and exit (run-and-read executor).
-- [ ] `singer-target` step type executor: spawn the named target as a subprocess and feed it the records.
-- [ ] State management: each tap's incremental sync state (the bookmark) stored in Honker and passed back into the next tap invocation (SPEC: State persistence).
-- [ ] Schema discovery: call the tap's `--about` and `--discover` once during a capabilities refresh and cache the config schema, available streams, and record schemas.
-- [ ] Report available Singer taps in `capabilities` (this is the open half of the Phase 3 capabilities item above).
+- [x] `singer-tap` step type executor: write the tap's config (and prior state and the authored `catalog`) to temp files, spawn the named tap as a subprocess with a filtered secret env, pass `--config`/`--state`/`--catalog`, capture the JSON records and next bookmark from stdout, and exit (run-and-read executor).
+- [x] `singer-target` step type executor: write the target's config to a temp file and pass `--config`, then spawn the named target as a subprocess and feed it the records on stdin.
+- [x] State management: each tap's incremental sync state (the bookmark) stored in Honker and passed back into the next tap invocation (SPEC: State persistence). The bookmark commits in the same transaction as the step result (SPEC: Execution model step 8).
+- [x] Schema discovery: call the tap's `--about` and `--discover` once during a capabilities refresh and cache the config schema, available streams, and record schemas. The report emits the catalog in the same shape the Wafer's `catalog` field accepts, so an agent copies it verbatim; the executor never re-discovers.
+- [x] Report available Singer taps in `capabilities` (this is the open half of the Phase 3 capabilities item above).
 
-**Done when:** a Wafer can run a real tap and target as subprocesses with filtered secrets and bookmark state, and an agent can discover a tap's schemas via `capabilities`.
+**Done when:** a Wafer can run a real tap and target as subprocesses with filtered secrets and bookmark state, and an agent can discover a tap's schemas via `capabilities`. (Validated against a fake tap fixture that speaks the Singer protocol and the file-flag convention per ADR-0016.)
 
 ## Phase 12: MCP integration (mcp-call)
 
@@ -134,3 +134,4 @@ A standards-based integration path alongside the curated helpers (ADR-0015). The
 - [x] Each CLI command implemented per the SPEC's command set and its mapping to daemon operations.
 - [x] Exit codes carry the signal (0 ok, 1 operation failed, 2 usage error, 3 daemon not running).
 - [ ] The control plane stays gated and loopback-only throughout (ADR-0009); the deploy path is CI/CD-gated.
+- [ ] Agent authoring reference: committed examples of the Wafer format for every step and trigger type (core, singer, mcp-call, curated helpers, webhooks), so an agent sees a valid example without running `capabilities`. The generator is already generic, so this is deferred until the type set stabilizes; until then each new type's registry fields should carry `examples`, and `servitor capabilities` renders them on demand.
