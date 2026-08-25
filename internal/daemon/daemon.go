@@ -22,6 +22,7 @@ import (
 
 	"github.com/Mathias-g/Servitor/internal/honker"
 	"github.com/Mathias-g/Servitor/internal/protocol"
+	"github.com/Mathias-g/Servitor/internal/runner"
 	"github.com/Mathias-g/Servitor/internal/trigger"
 	"github.com/Mathias-g/Servitor/internal/wafer"
 	"github.com/Mathias-g/Servitor/internal/worker"
@@ -90,6 +91,9 @@ type Server struct {
 	// store is the daemon's Honker handle, set by Run when a DBPath is
 	// configured. Handlers reach it for durable operations.
 	store *honker.Store
+	// queue is the worker's step queue, set by Run when a DBPath is
+	// configured. Handlers reach it to register cron tasks.
+	queue *honker.Queue
 	// receiver handles inbound webhooks and manual triggers, set by Run when a
 	// store and webhook address are configured.
 	receiver *trigger.Receiver
@@ -192,12 +196,54 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request, requireE
 			http.Error(w, "workflow "+wf.Name+" is not registered; use submit to register it", http.StatusNotFound)
 			return
 		}
+		// Unregister the old workflow's cron triggers before replacing it, so a
+		// removed or re-indexed cron trigger does not leave a stale schedule.
+		if old, perr := wafer.Parse([]byte(existing.Wafer)); perr == nil {
+			if err := s.unregisterCron(old); err != nil {
+				http.Error(w, "unregister old cron: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
 	}
 	if err := s.store.RegisterWorkflow(wf.Name, string(body)); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if err := s.registerCron(wf); err != nil {
+		http.Error(w, "register cron: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	_, _ = io.WriteString(w, "ok\n")
+}
+
+// registerCron registers a scheduled task for every `cron` trigger in the
+// Wafer (SPEC: Triggers, `cron`). Honker's scheduler persists tasks in the
+// store, so registering (idempotently, by name) here is all that is needed;
+// the daemon already runs the scheduler loop. A workflow with no cron trigger
+// registers nothing.
+func (s *Server) registerCron(w *wafer.Wafer) error {
+	if s.store == nil || s.queue == nil {
+		return nil
+	}
+	for i, tr := range w.On {
+		if tr.Type != "cron" {
+			continue
+		}
+		schedule, _ := tr.Config["schedule"].(string)
+		if schedule == "" {
+			return fmt.Errorf("cron trigger %d has no schedule", i)
+		}
+		err := runner.RegisterCron(s.store, s.queue, w, runner.CronTask{
+			Name:     fmt.Sprintf("%s:cron-%d", w.Name, i),
+			Schedule: schedule,
+			RunID:    fmt.Sprintf("%s-cron-%d", w.Name, i),
+			Event:    map[string]any{"trigger": "cron"},
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // handleEnable and handleDisable toggle a registered workflow's triggers.
@@ -223,7 +269,49 @@ func (s *Server) handleSetEnabled(w http.ResponseWriter, r *http.Request, enable
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	// Enabling arms a workflow's cron triggers; disabling unregisters them.
+	if err := s.syncCron(name, enabled); err != nil {
+		http.Error(w, "sync cron: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	_, _ = io.WriteString(w, "ok\n")
+}
+
+// syncCron registers a workflow's cron triggers when it is enabled, or
+// unregisters them when it is disabled.
+func (s *Server) syncCron(name string, enabled bool) error {
+	if s.store == nil || s.queue == nil {
+		return nil
+	}
+	wf, err := s.store.GetWorkflow(name)
+	if err != nil {
+		return err
+	}
+	if wf == nil {
+		return nil
+	}
+	w, perr := wafer.Parse([]byte(wf.Wafer))
+	if perr != nil {
+		return perr
+	}
+	if enabled {
+		return s.registerCron(w)
+	}
+	return s.unregisterCron(w)
+}
+
+// unregisterCron removes the scheduled task for every `cron` trigger in the
+// Wafer (the inverse of registerCron).
+func (s *Server) unregisterCron(w *wafer.Wafer) error {
+	for i, tr := range w.On {
+		if tr.Type != "cron" {
+			continue
+		}
+		if _, err := s.store.UnregisterScheduledTask(fmt.Sprintf("%s:cron-%d", w.Name, i)); err != nil {
+			return fmt.Errorf("cron: unregister %s:cron-%d: %w", w.Name, i, err)
+		}
+	}
+	return nil
 }
 
 // handleTrigger fires a manual run of a workflow with the request body as the
@@ -379,6 +467,7 @@ func Run(ctx context.Context, cfg Config) error {
 		// The trigger receiver drives inbound webhooks and manual triggers
 		// against the same store.
 		queue := store.Queue(cfg.QueueName, cfg.VisibilityTimeoutS, cfg.MaxAttempts)
+		srv.queue = queue
 		srv.receiver = trigger.NewReceiver(store, queue, cfg.Secrets)
 	}
 

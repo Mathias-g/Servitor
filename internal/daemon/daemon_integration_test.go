@@ -456,3 +456,80 @@ func TestDaemonUpdate(t *testing.T) {
 		t.Fatal("daemon did not shut down")
 	}
 }
+
+const wfCronYAML = `
+name: cron-demo
+on:
+  - type: cron
+    schedule: "*/5 * * * *"
+steps:
+  - type: shell
+    name: tick
+    command: "printf '{\"ok\":true}'"
+`
+
+// TestDaemonCronRegistration verifies that submitting a workflow with a cron
+// trigger registers a scheduled task, and that disabling it unregisters it.
+func TestDaemonCronRegistration(t *testing.T) {
+	ext := daemonExtPath(t)
+	dbPath := filepath.Join(t.TempDir(), "d.db")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan string, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, Config{
+			Addr:         "127.0.0.1:0",
+			DBPath:       dbPath,
+			ExtPath:      ext,
+			DrainTimeout: 2 * time.Second,
+			Started:      func(a string) { started <- a },
+		})
+	}()
+	var cpAddr string
+	select {
+	case cpAddr = <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("daemon did not start")
+	}
+	ctl := protocol.NewClient(cpAddr)
+
+	// Submit then enable the cron workflow.
+	if _, err := ctl.Submit(ctx, []byte(wfCronYAML)); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if err := ctl.Enable(ctx, "cron-demo"); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+
+	// Read the store from a second handle and confirm a scheduled task exists.
+	store, err := honker.Open(dbPath, ext)
+	if err != nil {
+		t.Fatalf("open test store: %v", err)
+	}
+	soonest, err := store.Scheduler().Soonest()
+	if err != nil || soonest <= 0 {
+		t.Fatalf("expected a scheduled cron task after enable, got soonest=%d err=%v", soonest, err)
+	}
+
+	// Disable unregisters the task.
+	if err := ctl.Disable(ctx, "cron-demo"); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	soonest, err = store.Scheduler().Soonest()
+	if err != nil {
+		t.Fatalf("soonest after disable: %v", err)
+	}
+	if soonest > 0 {
+		t.Fatalf("expected no scheduled task after disable, got soonest=%d", soonest)
+	}
+
+	_ = store.Close()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("daemon did not shut down")
+	}
+}

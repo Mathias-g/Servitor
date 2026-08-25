@@ -95,3 +95,13 @@ func (s *Store) RegisterScheduledTask(t ScheduledTask) error {
 		Payload:  t.Payload,
 	})
 }
+
+// UnregisterScheduledTask removes a cron task by name. It reports whether a
+// task was removed.
+func (s *Store) UnregisterScheduledTask(name string) (bool, error) {
+	n, err := s.db.Scheduler().Remove(name)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
