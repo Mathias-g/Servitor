@@ -19,7 +19,7 @@ vet:
 	go vet ./...
 
 lint:
-	golangci-lint run
+	PATH="$(shell go env GOPATH)/bin:$$PATH" golangci-lint run
 
 check: test vet lint
 	@test -z "$$(gofmt -l .)" || { echo "gofmt -l reports unformatted files:"; gofmt -l .; exit 1; }
