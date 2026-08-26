@@ -14,13 +14,15 @@ Servitor is an opinionated take: a small, code-first, agent-friendly workflow ru
 
 ## Why agent-first changes the design
 
-Most workflow tools were built for humans clicking through a builder, with an API bolted on. An agent using such a tool is a second-class citizen. Servitor is designed for agents first:
+Most workflow tools were designed for humans clicking through a builder, with an API bolted on. An agent using such a tool is a second-class citizen: it has to reverse-engineer what the UI assumes, guess at validation rules, and recover from opaque errors. Servitor is designed for agents first:
 
-- **The artifact is the Wafer, not a database row.** A Wafer is the YAML file that declares a workflow as triggers (`on:`) and nodes (`nodes:`), where every capability is a trigger, an action node (does work), or a flow node (routes or fans out). Agents read, write, diff, and version-control the same file a human would.
-- **Capability discovery is a first-class operation.** The CLI returns every capability (with its role and delivery), declared secret, and available Singer tap, with full JSON Schemas. An agent never has to guess.
-- **Validation errors are structured, not stringified.** Errors come back as JSON with paths, codes, and suggestions.
-- **Dry-run is a real primitive.** It resolves the whole workflow, including secret references, and shows the DAG the runner *would* execute. Nothing runs, nothing is persisted.
-- **The same CLI serves humans and agents.** No private API the agent doesn't have access to.
+- **The artifact is the Wafer, not a database row.** A Wafer is the YAML file that defines a whole workflow: triggers (`on:`) that start the run and nodes (`nodes:`) that do the work. Every capability is a trigger, an action node (does work), or a flow node (routes or fans out). Agents read, write, diff, and version-control the same file a human would; there is no "form state" the agent can't see.
+- **Capability discovery is a first-class operation.** `servitor capabilities` returns every capability (trigger, action node, or flow node, with its role and delivery), every declared secret, and every Singer tap available, each with its JSON Schema and an example rendered from that schema. An agent never has to guess what fields a node takes.
+- **Validation errors are structured, not stringified.** Errors come back as JSON with paths, codes, and suggestions, so a typo like `type: slak` is flagged as `unknown_node_type` with `suggestion: slack`, the way an IDE would catch it.
+- **Dry-run is a real primitive.** `servitor dry-run` resolves the entire workflow and shows the DAG the runner *would* execute, and warns when a declared secret is missing from the environment. Nothing runs, nothing is persisted.
+- **The same CLI serves humans and agents.** No private API the agent doesn't have access to; if a future UI exists, it talks to the same control plane.
+
+These are not nice-to-haves bolted on after the fact; they are why Servitor exists as a separate thing rather than a fork of an existing runner.
 
 ## How it works
 
