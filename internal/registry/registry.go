@@ -1,20 +1,19 @@
-// Package registry holds the set of step types the runner knows about, with a
-// stable JSON Schema per type. This is the per-server authoritative set that
-// `servitor capabilities` reports (SPEC: How an agent discovers integrations).
-// The field metadata here is the single source of truth: validation and the
-// emitted JSON Schema both derive from it, so they cannot drift apart. Field
-// `Examples` also feed the schema-to-example generator (SPEC: How an agent
-// discovers integrations), so a new type should give every field a
-// representative `Examples` value; otherwise its generated example is an empty
-// skeleton and the agent has to guess.
+// Package registry holds the set of capabilities the runner knows about, with a
+// stable JSON Schema per capability. This is the per-server authoritative set
+// that `servitor capabilities` reports (SPEC: How an agent discovers
+// integrations). The field metadata here is the single source of truth:
+// validation and the emitted JSON Schema both derive from it, so they cannot
+// drift apart. Field `Examples` also feed the schema-to-example generator (SPEC:
+// How an agent discovers integrations), so a new capability should give every
+// field a representative `Examples` value; otherwise its generated example is an
+// empty skeleton and the agent has to guess.
 //
-// Every capability is a step type; there is no separate "trigger" or "action"
-// kind (ADR-0028). A step type carries a `Role` describing where it can be used:
-// as a trigger (in `on:`, starting a run), as an action (in `steps:`, doing
-// work mid-run), or both. Trigger-role steps also carry a `Delivery` tag
+// Every capability is one of three things: a trigger (starts a run, under `on:`),
+// an action node (does work mid-run, under `nodes:`), or a flow node (routes or
+// fans out mid-run, under `nodes:`). Triggers also carry a `Delivery` tag
 // (instant/polling/scheduled/event) describing how the run is started, shown to
 // agents the way Zapier labels its triggers; it is informational, not
-// author-configurable. Action-role steps carry `SideEffect`, which keys the
+// author-configurable. Action nodes carry `SideEffect`, which keys the
 // missing_dedupe_key warning.
 package registry
 
@@ -22,7 +21,7 @@ import (
 	"sort"
 )
 
-// Field describes one config field of a step type.
+// Field describes one config field of a capability.
 type Field struct {
 	// Type is one of: string, integer, number, boolean, object, array, any.
 	Type string
@@ -35,21 +34,23 @@ type Field struct {
 	Examples []any
 }
 
-// Role is where a step type may be used (ADR-0028).
+// Role is where a capability may be used.
 type Role string
 
 const (
-	// RoleTrigger means the step type starts a run, used under `on:`.
+	// RoleTrigger means the capability starts a run, used under `on:`.
 	RoleTrigger Role = "trigger"
-	// RoleAction means the step type does work mid-run, used under `steps:`.
+	// RoleAction means the capability is an action node that does work
+	// mid-run, used under `nodes:`.
 	RoleAction Role = "action"
-	// RoleBoth means the step type is usable as either a trigger or an action.
-	RoleBoth Role = "both"
+	// RoleFlow means the capability is a flow node that routes or fans out
+	// mid-run (for example switch, foreach), used under `nodes:`.
+	RoleFlow Role = "flow"
 )
 
-// Delivery describes how a trigger-role step starts a run. It is informational
+// Delivery describes how a trigger starts a run. It is informational
 // (shown to agents like Zapier's trigger labels), not author-configurable: each
-// step type is fixed as one delivery.
+// capability is fixed as one delivery.
 const (
 	// DeliveryInstant means the run starts by a push (for example a webhook).
 	DeliveryInstant = "instant"
@@ -80,46 +81,48 @@ const (
 	Websocket = "websocket"
 )
 
-// StepType describes one step type (for example `http`, `email_received`, or
-// `singer-tap`).
-type StepType struct {
-	// Name is the step type as it appears in a Wafer's `type:` field.
+// Capability describes one capability (for example `http`, `email_received`, or
+// `singer-tap`). A capability is either a trigger, an action node, or a flow
+// node.
+type Capability struct {
+	// Name is the capability as it appears in a Wafer's `type:` field.
 	Name string
 	// Desc is a plain-language description.
 	Desc string
-	// Role is where this step type may be used: trigger, action, or both
-	// (ADR-0028). "" means RoleAction (the default for a capability that does
-	// work mid-run).
+	// Role is what this capability is: trigger, action, or flow. "" means
+	// RoleAction (the default for a capability that does work mid-run).
 	Role Role
-	// SideEffect is true when the step performs externally-visible actions,
+	// SideEffect is true when the node performs externally-visible actions,
 	// which is what the missing_dedupe_key warning keys off (SPEC: Idempotency).
-	// It applies to action-role use.
+	// It applies to action nodes.
 	SideEffect bool
-	// Delivery describes how a trigger-role step starts a run (instant,
-	// polling, scheduled, event, manual). It is informational, shown to agents,
-	// and fixed per step type. Empty for action-only step types.
+	// Delivery describes how a trigger starts a run (instant, polling,
+	// scheduled, event, manual). It is informational, shown to agents, and
+	// fixed per capability. Empty for node capabilities.
 	Delivery string
-	// Group is the mechanism this step belongs to, or Core for Servitor's own
-	// primitives (SPEC: What counts as an integration).
+	// Group is the mechanism this capability belongs to, or Core for Servitor's
+	// own primitives (SPEC: What counts as an integration).
 	Group string
-	// Fields is the step's config schema, keyed by field name.
+	// Fields is the capability's config schema, keyed by field name.
 	Fields map[string]*Field
 }
 
-// isTriggerRole reports whether the step type may be used as a trigger.
-func (t *StepType) isTriggerRole() bool {
-	return t.Role == RoleTrigger || t.Role == RoleBoth
+// isTriggerRole reports whether the capability may be used as a trigger.
+func (t *Capability) isTriggerRole() bool {
+	return t.Role == RoleTrigger
 }
 
-// isActionRole reports whether the step type may be used as an action.
-func (t *StepType) isActionRole() bool {
-	return t.Role == RoleAction || t.Role == RoleBoth || t.Role == ""
+// isNodeRole reports whether the capability may be used as a node (action or
+// flow).
+func (t *Capability) isNodeRole() bool {
+	return t.Role == RoleAction || t.Role == RoleFlow || t.Role == ""
 }
 
-// types is the full set of registered step types. A single list, since every
-// capability is a step type; role separates trigger-usable from action-usable
+// types is the full set of registered capabilities. A single list, since every
+// capability is one of trigger/action/flow; role separates trigger-usable from
+// node-usable.
 // (ADR-0028).
-var types = []*StepType{
+var types = []*Capability{
 	{
 		Name:       "http",
 		Desc:       "Make an HTTP request and capture the response.",
@@ -146,7 +149,7 @@ var types = []*StepType{
 	},
 	{
 		Name:       "transform",
-		Desc:       "Reshape, extract, or compute over previous steps' JSON output.",
+		Desc:       "Reshape, extract, or compute over previous nodes' JSON output.",
 		Role:       RoleAction,
 		SideEffect: false,
 		Group:      Core,
@@ -157,25 +160,25 @@ var types = []*StepType{
 	{
 		Name:       "switch",
 		Desc:       "Route to one named branch based on a value.",
-		Role:       RoleAction,
+		Role:       RoleFlow,
 		SideEffect: false,
 		Group:      Core,
 		Fields: map[string]*Field{
 			"expression": {Type: "string", Required: true, Desc: "A JSONata expression over the step's `{event, steps}` input producing the routing value (ADR-0020, ADR-0022).", Examples: []any{"steps.check"}},
-			"cases":      {Type: "object", Required: true, Desc: "Map of value to the name of the top-level step to route to.", Examples: []any{map[string]any{"high": "notify_finance", "low": "log_and_done"}}},
-			"default":    {Type: "string", Desc: "Name of the top-level step to route to when no `cases` key matches.", Examples: []any{"log_unknown"}},
+			"cases":      {Type: "object", Required: true, Desc: "Map of value to the name of the top-level node to route to.", Examples: []any{map[string]any{"high": "notify_finance", "low": "log_and_done"}}},
+			"default":    {Type: "string", Desc: "Name of the top-level node to route to when no `cases` key matches.", Examples: []any{"log_unknown"}},
 		},
 	},
 	{
 		Name:       "foreach",
-		Desc:       "Fan a step out over a list.",
-		Role:       RoleAction,
+		Desc:       "Fan a node out over a list.",
+		Role:       RoleFlow,
 		SideEffect: false,
 		Group:      Core,
 		Fields: map[string]*Field{
 			"over": {Type: "string", Required: true, Desc: "A JSONata expression over the step's `{event, steps}` input yielding the list to iterate (ADR-0020, ADR-0024).", Examples: []any{"steps.fetch_ids"}},
 			"as":   {Type: "string", Desc: "Name for each element in the loop, exposed in each iteration's input. Defaults to `item`.", Examples: []any{"item"}},
-			"body": {Type: "string", Required: true, Desc: "Name of the top-level step to run once per element (ADR-0024).", Examples: []any{"process_one"}},
+			"body": {Type: "string", Required: true, Desc: "Name of the top-level node to run once per element (ADR-0024).", Examples: []any{"process_one"}},
 		},
 	},
 	{
@@ -301,17 +304,17 @@ var types = []*StepType{
 	},
 }
 
-// Types returns all registered step types, sorted by name.
-func Types() []*StepType {
+// Types returns all registered capabilities, sorted by name.
+func Types() []*Capability {
 	return sortedTypes()
 }
 
-// StepTypes returns the action-usable step types (role action or both), sorted
-// by name. This is the set valid under a Wafer's `steps:` list.
-func StepTypes() []*StepType {
-	var out []*StepType
+// Nodes returns the node-usable capabilities (role action or flow), sorted by
+// name. This is the set valid under a Wafer's `nodes:` list.
+func Nodes() []*Capability {
+	var out []*Capability
 	for _, t := range types {
-		if t.isActionRole() {
+		if t.isNodeRole() {
 			out = append(out, t)
 		}
 	}
@@ -319,10 +322,10 @@ func StepTypes() []*StepType {
 	return out
 }
 
-// TriggerTypes returns the trigger-usable step types (role trigger or both),
-// sorted by name. This is the set valid under a Wafer's `on:` list.
-func TriggerTypes() []*StepType {
-	var out []*StepType
+// TriggerTypes returns the trigger capabilities, sorted by name. This is the
+// set valid under a Wafer's `on:` list.
+func TriggerTypes() []*Capability {
+	var out []*Capability
 	for _, t := range types {
 		if t.isTriggerRole() {
 			out = append(out, t)
@@ -332,19 +335,18 @@ func TriggerTypes() []*StepType {
 	return out
 }
 
-// LookupStep returns the action-usable step type with the given name, or nil.
-func LookupStep(name string) *StepType {
+// LookupNode returns the node-usable capability with the given name, or nil.
+func LookupNode(name string) *Capability {
 	for _, t := range types {
-		if t.Name == name && t.isActionRole() {
+		if t.Name == name && t.isNodeRole() {
 			return t
 		}
 	}
 	return nil
 }
 
-// LookupTrigger returns the trigger-usable step type with the given name, or
-// nil.
-func LookupTrigger(name string) *StepType {
+// LookupTrigger returns the trigger capability with the given name, or nil.
+func LookupTrigger(name string) *Capability {
 	for _, t := range types {
 		if t.Name == name && t.isTriggerRole() {
 			return t
@@ -353,8 +355,8 @@ func LookupTrigger(name string) *StepType {
 	return nil
 }
 
-// Lookup returns the step type with the given name regardless of role, or nil.
-func Lookup(name string) *StepType {
+// Lookup returns the capability with the given name regardless of role, or nil.
+func Lookup(name string) *Capability {
 	for _, t := range types {
 		if t.Name == name {
 			return t
@@ -363,8 +365,8 @@ func Lookup(name string) *StepType {
 	return nil
 }
 
-func sortedTypes() []*StepType {
-	out := make([]*StepType, len(types))
+func sortedTypes() []*Capability {
+	out := make([]*Capability, len(types))
 	copy(out, types)
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out

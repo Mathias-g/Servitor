@@ -20,7 +20,7 @@ name: my-workflow
 on:
   - type: cron
     schedule: "0 * * * *"
-steps:
+nodes:
   - type: http
     url: "https://api.example.com/things"
     method: GET
@@ -36,7 +36,7 @@ steps:
 }
 
 func TestMissingName(t *testing.T) {
-	res := Validate([]byte("steps:\n  - type: http\n    url: x\n    method: GET\n"))
+	res := Validate([]byte("nodes:\n  - type: http\n    url: x\n    method: GET\n"))
 	if res.Valid() {
 		t.Fatal("expected invalid")
 	}
@@ -51,10 +51,10 @@ func TestMissingName(t *testing.T) {
 	}
 }
 
-func TestUnknownStepTypeWithSuggestion(t *testing.T) {
+func TestUnknownNodeTypeWithSuggestion(t *testing.T) {
 	res := Validate([]byte(`
 name: w
-steps:
+nodes:
   - type: transformn
     expression: x
 `))
@@ -62,22 +62,22 @@ steps:
 		t.Fatal("expected invalid")
 	}
 	for _, e := range res.Errors {
-		if e.Code == "unknown_step_type" {
+		if e.Code == "unknown_node_type" {
 			if e.Suggestion != "transform" {
 				t.Fatalf("suggestion = %q, want transform", e.Suggestion)
 			}
-			if e.Path != "/steps/0/type" {
-				t.Fatalf("path = %q, want /steps/0/type", e.Path)
+			if e.Path != "/nodes/0/type" {
+				t.Fatalf("path = %q, want /nodes/0/type", e.Path)
 			}
 		}
 	}
 }
 
-func TestMissingRequiredFieldInStep(t *testing.T) {
+func TestMissingRequiredFieldInNode(t *testing.T) {
 	// http requires url and method; omit method.
 	res := Validate([]byte(`
 name: w
-steps:
+nodes:
   - type: http
     url: "https://example.com"
 `))
@@ -86,38 +86,38 @@ steps:
 	}
 	found := false
 	for _, e := range res.Errors {
-		if e.Path == "/steps/0/method" && e.Code == "missing_required_field" && e.Expected == "string" {
+		if e.Path == "/nodes/0/method" && e.Code == "missing_required_field" && e.Expected == "string" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("missing /steps/0/method error, got %s", mustJSON(t, res))
+		t.Fatalf("missing /nodes/0/method error, got %s", mustJSON(t, res))
 	}
 }
 
 func TestTypeMismatch(t *testing.T) {
 	res := Validate([]byte(`
 name: w
-steps:
+nodes:
   - type: foreach
     over: [not, a, string]
     body: process_one
 `))
 	found := false
 	for _, e := range res.Errors {
-		if e.Code == "type_mismatch" && e.Path == "/steps/0/over" {
+		if e.Code == "type_mismatch" && e.Path == "/nodes/0/over" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("expected type_mismatch for /steps/0/over, got %s", mustJSON(t, res))
+		t.Fatalf("expected type_mismatch for /nodes/0/over, got %s", mustJSON(t, res))
 	}
 }
 
 func TestMissingDedupeWarning(t *testing.T) {
 	res := Validate([]byte(`
 name: w
-steps:
+nodes:
   - type: shell
     command: "curl -X POST ..."
 `))
@@ -132,7 +132,7 @@ steps:
 func TestNoWarningWhenDedupePresent(t *testing.T) {
 	res := Validate([]byte(`
 name: w
-steps:
+nodes:
   - type: shell
     command: "true"
     dedupe_key: "input.event.id"
@@ -142,16 +142,16 @@ steps:
 	}
 }
 
-func TestMissingSteps(t *testing.T) {
+func TestMissingNodes(t *testing.T) {
 	res := Validate([]byte("name: w\n"))
 	found := false
 	for _, e := range res.Errors {
-		if e.Code == "missing_steps" {
+		if e.Code == "missing_nodes" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("expected missing_steps error, got %s", mustJSON(t, res))
+		t.Fatalf("expected missing_nodes error, got %s", mustJSON(t, res))
 	}
 }
 
@@ -159,7 +159,7 @@ func TestMultipleErrorsAtOnce(t *testing.T) {
 	// Three independent problems, all reported in one pass.
 	res := Validate([]byte(`
 name:
-steps:
+nodes:
   - type: nosuch
   - type: http
 `))

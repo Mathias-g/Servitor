@@ -73,21 +73,21 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "target":
 		return cmdTarget(args[1:], stdout, stderr)
 	case "__transform":
-		// Hidden subprocess entrypoint: the worker runs a `transform` step as
-		// a subprocess of the servitor binary itself (ADR-0008), so every step,
-		// including pure-computation steps, runs outside the runner's process.
-		return cmdTransformStep(args[1:], stdout, stderr)
+		// Hidden subprocess entrypoint: the worker runs a `transform` node as
+		// a subprocess of the servitor binary itself (ADR-0008), so every node,
+		// including pure-computation nodes, runs outside the runner's process.
+		return cmdTransformNode(args[1:], stdout, stderr)
 	case "__switch":
-		// Hidden subprocess entrypoint: the worker runs a `switch` step as a
+		// Hidden subprocess entrypoint: the worker runs a `switch` node as a
 		// subprocess (ADR-0008) that evaluates the routing expression and
-		// returns the chosen branch's target step name (ADR-0022).
-		return cmdSwitchStep(args[1:], stdout, stderr)
+		// returns the chosen branch's target node name (ADR-0022).
+		return cmdSwitchNode(args[1:], stdout, stderr)
 	case "__foreach":
-		// Hidden subprocess entrypoint: the worker runs a `foreach` step as a
+		// Hidden subprocess entrypoint: the worker runs a `foreach` node as a
 		// subprocess (ADR-0008) that evaluates the `over` expression and returns
 		// the list to iterate, so the worker can fan out the body once per
 		// element (ADR-0024).
-		return cmdForeachStep(args[1:], stdout, stderr)
+		return cmdForeachNode(args[1:], stdout, stderr)
 	case "__email_poll":
 		// Hidden subprocess entrypoint: the worker runs an `email_received`
 		// trigger's poll as a subprocess (ADR-0008). It reads the mailbox config
@@ -152,7 +152,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		return exitOK
 	}
 	if !varlock.Under() && !varlock.Available() {
-		_, _ = fmt.Fprintf(stderr, "servitor: warning: varlock not found on PATH; running without secret resolution (steps that declare secrets will fail)\n")
+		_, _ = fmt.Fprintf(stderr, "servitor: warning: varlock not found on PATH; running without secret resolution (nodes that declare secrets will fail)\n")
 	}
 
 	cfg := daemon.Config{
@@ -161,7 +161,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		ExtPath:     os.Getenv("HONKER_EXTENSION_PATH"),
 		WebhookAddr: webhookAddr,
 		// Resolved secrets (from varlock, when present) are exposed to the
-		// daemon; per-step filtering decides what a subprocess may see.
+		// daemon; per-node filtering decides what a subprocess may see.
 		Secrets: varlock.ResolvedSecrets(),
 		Started: func(a string) {
 			_, _ = fmt.Fprintf(stdout, "servitor: daemon listening on %s (loopback only, ADR-0009)\n", a)
@@ -206,7 +206,7 @@ func cmdStop(args []string, stdout, stderr io.Writer) int {
 
 // cmdDryRun validates a Wafer and resolves its dependency DAG without
 // executing, contacting, or persisting anything (SPEC: dry-run). By default it
-// prints a readable plan (steps in run order with their dependencies); --json
+// prints a readable plan (nodes in run order with their dependencies); --json
 // prints the structured result instead. It exits non-zero if there are blocking
 // errors.
 func cmdDryRun(args []string, stdout, stderr io.Writer) int {
@@ -435,7 +435,7 @@ func cmdRuns(args []string, stdout, stderr io.Writer) int {
 	return exitOK
 }
 
-// cmdRunDetail inspects one run and its step outcomes.
+// cmdRunDetail inspects one run and its node outcomes.
 func cmdRunDetail(args []string, stdout, stderr io.Writer) int {
 	addr, rest, code := parseAddr(args, "run", stderr)
 	if code != exitOK {
@@ -486,12 +486,12 @@ func cmdCancel(args []string, stdout, stderr io.Writer) int {
 	return exitOK
 }
 
-// cmdTransformStep is the hidden subprocess entrypoint for a `transform` step
-// (ADR-0020, ADR-0021). It reads the step's `{event, steps}` input from stdin
+// cmdTransformNode is the hidden subprocess entrypoint for a `transform` node
+// (ADR-0020, ADR-0021). It reads the node's `{event, steps}` input from stdin
 // as JSON, evaluates the JSONata expression given as its single argument, and
 // writes the result as JSON to stdout. The worker spawns this as a subprocess,
 // so a transform never runs inside the runner's process (ADR-0008).
-func cmdTransformStep(args []string, stdout, stderr io.Writer) int {
+func cmdTransformNode(args []string, stdout, stderr io.Writer) int {
 	if len(args) != 1 {
 		_, _ = fmt.Fprintf(stderr, "servitor: __transform: usage: __transform <expression>\n")
 		return exitUsage
@@ -524,14 +524,14 @@ func cmdTransformStep(args []string, stdout, stderr io.Writer) int {
 	return exitOK
 }
 
-// cmdSwitchStep is the hidden subprocess entrypoint for a `switch` step
-// (ADR-0020, ADR-0022). It reads a JSON object on stdin: `input` (the step's
-// `{event, steps}` input), `cases` (map of value to target step name), and
-// `default` (optional fallback step name). It evaluates the JSONata expression
+// cmdSwitchNode is the hidden subprocess entrypoint for a `switch` node
+// (ADR-0020, ADR-0022). It reads a JSON object on stdin: `input` (the node's
+// `{event, steps}` input), `cases` (map of value to target node name), and
+// `default` (optional fallback node name). It evaluates the JSONata expression
 // given as its single argument, matches the value against `cases`, and writes
-// the chosen target step name as JSON to stdout. The worker runs this as a
+// the chosen target node name as JSON to stdout. The worker runs this as a
 // subprocess (ADR-0008) and uses the returned target to do the fan-out.
-func cmdSwitchStep(args []string, stdout, stderr io.Writer) int {
+func cmdSwitchNode(args []string, stdout, stderr io.Writer) int {
 	if len(args) != 1 {
 		_, _ = fmt.Fprintf(stderr, "servitor: __switch: usage: __switch <expression>\n")
 		return exitUsage
@@ -589,13 +589,13 @@ func stringify(v any) string {
 	return string(raw)
 }
 
-// cmdForeachStep is the hidden subprocess entrypoint for a `foreach` step
-// (ADR-0020, ADR-0024). It reads the step's `{event, steps}` input on stdin,
+// cmdForeachNode is the hidden subprocess entrypoint for a `foreach` node
+// (ADR-0020, ADR-0024). It reads the node's `{event, steps}` input on stdin,
 // evaluates the `over` JSONata expression (its single argument) to a list, and
 // writes that list as JSON to stdout. The worker runs this as a subprocess
-// (ADR-0008) and uses the returned list to fan out the body step once per
+// (ADR-0008) and uses the returned list to fan out the body node once per
 // element.
-func cmdForeachStep(args []string, stdout, stderr io.Writer) int {
+func cmdForeachNode(args []string, stdout, stderr io.Writer) int {
 	if len(args) != 1 {
 		_, _ = fmt.Fprintf(stderr, "servitor: __foreach: usage: __foreach <over-expression>\n")
 		return exitUsage
@@ -694,7 +694,7 @@ func cmdEmailPoll(args []string, stdout, stderr io.Writer) int {
 }
 
 // renderDryRunPlan prints a readable plan: the workflow name and triggers, then
-// the steps in run order with their dependencies.
+// the nodes in run order with their dependencies.
 func renderDryRunPlan(w io.Writer, res wafer.DryRunResult) {
 	if !res.Result.Valid() {
 		_, _ = fmt.Fprintf(w, "workflow: (invalid)\n")
@@ -719,8 +719,8 @@ func renderDryRunPlan(w io.Writer, res wafer.DryRunResult) {
 		}
 		_, _ = fmt.Fprintf(w, "secrets: %s\n", strings.Join(redacted, ", "))
 	}
-	_, _ = fmt.Fprintf(w, "\nplan (%d step(s), in run order):\n", len(res.DAG.Steps))
-	for i, s := range res.DAG.Steps {
+	_, _ = fmt.Fprintf(w, "\nplan (%d node(s), in run order):\n", len(res.DAG.Nodes))
+	for i, s := range res.DAG.Nodes {
 		deps := "start"
 		if len(s.DependsOn) > 0 {
 			deps = "after " + strings.Join(s.DependsOn, ", ")

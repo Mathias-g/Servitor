@@ -50,23 +50,23 @@ type Config struct {
 	// hard-stopped.
 	DrainTimeout time.Duration
 
-	// QueueName is the queue the runner's worker loop claims steps from.
-	// Empty means "steps".
+	// QueueName is the queue the runner's worker loop claims nodes from.
+	// Empty means "nodes".
 	QueueName string
 	// VisibilityTimeoutS is how long a worker's claim lasts before it is
 	// re-issued to another worker after a crash (SPEC: Execution model step 9).
 	// Zero means 30s.
 	VisibilityTimeoutS int
-	// MaxAttempts is how many times a step is tried before it is dead-lettered.
+	// MaxAttempts is how many times a node is tried before it is dead-lettered.
 	// Zero means 3.
 	MaxAttempts int
 	// Secrets are the runner's resolved secrets (name to value). Only the
-	// secrets a step declares are passed to its subprocess. In later phases
+	// secrets a node declares are passed to its subprocess. In later phases
 	// this comes from varlock.
 	Secrets map[string]string
 	// Workers is how many worker loops to run. When DBPath is set and Workers
 	// is zero, one worker runs; set Workers to 0 with DisableRunner to run
-	// the daemon without executing steps.
+	// the daemon without executing nodes.
 	Workers int
 	// DisableRunner stops the worker loop and scheduler from starting even
 	// when a DBPath is set.
@@ -91,7 +91,7 @@ type Server struct {
 	// store is the daemon's Honker handle, set by Run when a DBPath is
 	// configured. Handlers reach it for durable operations.
 	store *honker.Store
-	// queue is the worker's step queue, set by Run when a DBPath is
+	// queue is the worker's node queue, set by Run when a DBPath is
 	// configured. Handlers reach it to register cron tasks.
 	queue *honker.Queue
 	// receiver handles inbound webhooks and manual triggers, set by Run when a
@@ -430,7 +430,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, runs)
 }
 
-// handleRun returns one run and its step outcomes as JSON.
+// handleRun returns one run and its node outcomes as JSON.
 func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	if s.store == nil {
 		http.Error(w, "no store; run the daemon with --db", http.StatusConflict)
@@ -450,12 +450,12 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "run not found", http.StatusNotFound)
 		return
 	}
-	steps, err := s.store.RunSteps(id)
+	nodes, err := s.store.RunNodes(id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, map[string]any{"run": run, "steps": steps})
+	writeJSON(w, map[string]any{"run": run, "nodes": nodes})
 }
 
 // handleCancel cancels an in-flight run.
@@ -501,7 +501,7 @@ func Run(ctx context.Context, cfg Config) error {
 		cfg.DrainTimeout = 30 * time.Second
 	}
 	if cfg.QueueName == "" {
-		cfg.QueueName = "steps"
+		cfg.QueueName = "nodes"
 	}
 	if cfg.VisibilityTimeoutS <= 0 {
 		cfg.VisibilityTimeoutS = 30
@@ -548,7 +548,7 @@ func Run(ctx context.Context, cfg Config) error {
 
 	// Start the runner's worker loop(s) and the cron scheduler when the daemon
 	// owns a store and execution is enabled. They stop when the daemon shuts
-	// down; in-flight steps drain as claims expire (SPEC: Graceful shutdown).
+	// down; in-flight nodes drain as claims expire (SPEC: Graceful shutdown).
 	var cancelRunner context.CancelFunc
 	if srv.store != nil && !cfg.DisableRunner {
 		var rctx context.Context

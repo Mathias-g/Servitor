@@ -2,7 +2,7 @@
 
 Build order with dependencies and a clear "done" for each phase. The design lives in [SPEC.md](SPEC.md); the decisions live in [docs/adr/](docs/adr/); this is just the sequencing.
 
-Current state: the Go project is scaffolded, the enforcement gates are wired (`make check`, adrlint, pre-commit, CI), and the daemon + loopback control protocol, Wafer model/validation, capability discovery, dry-run DAG resolution, Honker integration, step execution (shell, singer-tap, singer-target, mcp-call), triggers/webhooks (http_webhook, standard_webhook, manual), varlock integration, SKILL.md, run inspection, packaging/release, the Singer integration, the MCP integration, and the declared integrations config (ADR-0018) are built. The daemon owns a WAL SQLite file with the Honker extension loaded; the transactional atom ({result, dedupe, downstream, claim_ack} in one commit) is a tested primitive, and for Singer steps the bookmark is part of that same commit; the worker loop runs steps as subprocesses with env filtering and dedupe; inbound webhooks (Standard Webhooks + generic HMAC) and manual triggers are served with event persistence; the runner self-heals under `varlock run` (exec'd with `--inject vars`) so it boots with resolved secrets, which are filtered per step into subprocess environments; a `SKILL.md` teaches agents the discover-author-dry-run-PR workflow; the full CLI command set (plus `mcp`/`tap`/`target`) is implemented; `make release` drives the release flow (ADR-0012, ADR-0013, ADR-0014); Singer taps/targets run as subprocesses with bookmark state persisted in the same transaction as each step's result (ADR-0016); and MCP servers are declared in a local `servitor.integrations.yaml` and probed at refresh (ADR-0018). Not yet functional: the provider-specific-webhook receivers for Grist and Atomic, and the curated helpers (send side of email included). See "Outstanding work" below. The runner has no workflow registry consulted by the worker for control flow; runs are built from a Wafer into a dependency DAG with dependency-counter fan-out (ADR-0023), and the trigger receiver matches against the stored registered workflows.
+Current state: the Go project is scaffolded, the enforcement gates are wired (`make check`, adrlint, pre-commit, CI), and the daemon + loopback control protocol, Wafer model/validation, capability discovery, dry-run DAG resolution, Honker integration, node execution (shell, singer-tap, singer-target, mcp-call), triggers/webhooks (http_webhook, standard_webhook, manual), varlock integration, SKILL.md, run inspection, packaging/release, the Singer integration, the MCP integration, and the declared integrations config (ADR-0018) are built. The daemon owns a WAL SQLite file with the Honker extension loaded; the transactional atom ({result, dedupe, downstream, claim_ack} in one commit) is a tested primitive, and for Singer nodes the bookmark is part of that same commit; the worker loop runs nodes as subprocesses with env filtering and dedupe; inbound webhooks (Standard Webhooks + generic HMAC) and manual triggers are served with event persistence; the runner self-heals under `varlock run` (exec'd with `--inject vars`) so it boots with resolved secrets, which are filtered per node into subprocess environments; a `SKILL.md` teaches agents the discover-author-dry-run-PR workflow; the full CLI command set (plus `mcp`/`tap`/`target`) is implemented; `make release` drives the release flow (ADR-0012, ADR-0013, ADR-0014); Singer taps/targets run as subprocesses with bookmark state persisted in the same transaction as each node's result (ADR-0016); and MCP servers are declared in a local `servitor.integrations.yaml` and probed at refresh (ADR-0018). Not yet functional: the provider-specific-webhook receivers for Grist and Atomic, and the curated helpers (send side of email included). See "Outstanding work" below. The runner has no workflow registry consulted by the worker for control flow; runs are built from a Wafer into a dependency DAG with dependency-counter fan-out (ADR-0023), and the trigger receiver matches against the stored registered workflows.
 
 ## Phase 1: Daemon and control protocol (foundation)
 
@@ -19,9 +19,9 @@ Everything else runs inside the daemon and is reached through the control protoc
 
 The artifact. Everything else reads, validates, and executes Wafers.
 
-- [x] A Go representation of the Wafer (name, `on:` triggers, `steps:`).
-- [x] The JSON Schema for the Wafer format, and per-step and per-trigger JSON Schemas (generated from the registry; surfaced to agents by `capabilities` in Phase 3).
-- [x] Structured validation: errors returned with `path` (JSON Pointer), stable `code`, and `suggestion`; multiple errors at once; `warnings` for things like a side-effecting step missing `dedupe_key` (SPEC: Structured validation errors).
+- [x] A Go representation of the Wafer (name, `on:` triggers, `nodes:`).
+- [x] The JSON Schema for the Wafer format, and per-node and per-trigger JSON Schemas (generated from the registry; surfaced to agents by `capabilities` in Phase 3).
+- [x] Structured validation: errors returned with `path` (JSON Pointer), stable `code`, and `suggestion`; multiple errors at once; `warnings` for things like a side-effecting node missing `dedupe_key` (SPEC: Structured validation errors).
 
 **Done when:** a malformed Wafer produces the structured error shape from the SPEC, and `servitor dry-run` can validate a Wafer against the schema. (`dry-run` currently validates locally; full resolution through the daemon is Phase 4.)
 
@@ -29,13 +29,13 @@ The artifact. Everything else reads, validates, and executes Wafers.
 
 How an agent learns what the server supports and how to use it (SPEC: How an agent discovers integrations). Capabilities are per-server: the set is what the runner has compiled in. The schema and example generator and the file writer are built here; reporting declared secrets (varlock) and available Singer taps belongs to the phases that build those integrations.
 
-- [x] A step-type and trigger-type registry, each entry with its JSON Schema, grouped by mechanism with a `core` group for Servitor's own types.
+- [x] A capability registry, each entry with its JSON Schema, grouped by mechanism with a `core` group for Servitor's own types.
 - [x] The schema-to-example generator: render a Wafer fragment from a schema (skeleton from the schema, sample values from each property's `examples`).
-- [x] `servitor capabilities [dir]` writes, per step type, the schema and its derived example to files, grouped by mechanism (`core`, `webhook`, `singer`, `mcp`, `helper`, `websocket`; ADR-0017), plus an index. A pipeline can commit the output so remote agents read it from the repo.
+- [x] `servitor capabilities [dir]` writes, per capability, the schema and its derived example to files, grouped by mechanism (`core`, `webhook`, `singer`, `mcp`, `helper`, `websocket`; ADR-0017), plus an index. A pipeline can commit the output so remote agents read it from the repo.
 - [x] Report declared secrets (names and presence, not values) in `capabilities` (a `secrets.yaml` from the varlock schema).
 - [x] Report available Singer taps in `capabilities` (names of installed taps and their schemas). Done with the Singer integration; see Phase 11.
 
-**Done when:** an agent runs `servitor capabilities`, reads a step's schema and a valid example Wafer fragment, and can author a Wafer without guessing.
+**Done when:** an agent runs `servitor capabilities`, reads a capability's schema and a valid example Wafer fragment, and can author a Wafer without guessing.
 
 ## Phase 4: dry-run
 
@@ -44,7 +44,7 @@ The pre-deploy gate. It belongs in the pipeline (ADR-0009).
 - [x] `servitor dry-run <wafer>` validates and resolves the workflow's dependency DAG (run order, dependencies, cycle and unknown-reference detection) and returns it as structured output, without running anything, contacting anything, or persisting anything.
 - [x] Declared secrets resolved and shown as `<redacted:secret_name>` in dry-run (names only, never values), with a `missing_secret` warning when one is absent from the environment.
 
-**Done when:** an agent can verify structure and step config before a PR. (Secret availability checking is deferred to the varlock phase.)
+**Done when:** an agent can verify structure and node config before a PR. (Secret availability checking is deferred to the varlock phase.)
 
 ## Phase 5: Honker integration (durable queue)
 
@@ -55,17 +55,17 @@ The durability layer. Requires the cgo `mattn/go-sqlite3` driver to load the Hon
 - [x] The transactional atom: a `CommitStepAtom` primitive that writes {result, dedupe_record, downstream_enqueues, claim_ack} as one SQLite transaction, never split (SPEC: Execution model step 8). The dedupe table and lookup are in place.
 - [x] Workflow run queue worker loop (claim, execute, ack; visibility timeout and dead-letter on repeated failure) and the Honker scheduler runs. Cron trigger *registration* from Wafers is not yet wired; see Phase 7.
 
-**Done when:** a step's completion commits result + dedupe + downstream enqueues + claim ack in one transaction (this phase), and a crashed worker's claim is re-issued on visibility timeout (Phase 6).
+**Done when:** a node's completion commits result + dedupe + downstream enqueues + claim ack in one transaction (this phase), and a crashed worker's claim is re-issued on visibility timeout (Phase 6).
 
-## Phase 6: Step execution
+## Phase 6: Node execution
 
-Every step runs as a subprocess; there is no in-process mode (ADR-0008).
+Every node runs as a subprocess; there is no in-process mode (ADR-0008).
 
-- [x] Step executors spawn a subprocess per job with a filtered environment containing only the secrets the step declared.
+- [x] Node executors spawn a subprocess per job with a filtered environment containing only the secrets the node declared.
 - [x] The subprocess writes structured JSON to stdout and exits; the parent reads it and commits the fan-out transaction.
 - [x] The `dedupe_key` contract: skip on a prior successful run, proceed on a prior failed run, retention window.
 
-**Done when:** the `shell` step runs as a subprocess with env filtering and dedupe, the fan-out transaction commits atomically, and a crash mid-job re-runs safely per the `dedupe_key` contract. (The worker machinery is built; `foreach` and the integration handlers dispatch through the same subprocess machinery in later phases.)
+**Done when:** the `shell` node runs as a subprocess with env filtering and dedupe, the fan-out transaction commits atomically, and a crash mid-job re-runs safely per the `dedupe_key` contract. (The worker machinery is built; `foreach` and the integration handlers dispatch through the same subprocess machinery in later phases.)
 
 ## Phase 7: Triggers and webhooks
 
@@ -83,10 +83,10 @@ Inbound events.
 Secrets.
 
 - [x] Self-healing launch: `servitor` execs itself under `varlock run --inject vars -- servitor run` if `__VARLOCK_RUN` is absent, and warns (booting without secret resolution) if varlock is not installed.
-- [x] Per-step secret filtering at subprocess spawn (only the step's declared secrets).
+- [x] Per-node secret filtering at subprocess spawn (only the node's declared secrets).
 - [x] Webhook signing secrets read from the runner's environment.
 
-**Done when:** the runner always boots with secrets resolved, and no step subprocess sees a secret it did not declare.
+**Done when:** the runner always boots with secrets resolved, and no node subprocess sees a secret it did not declare.
 
 ## Phase 9: SKILL.md
 
@@ -106,10 +106,10 @@ How an agent uses Servitor (SPEC: Consuming Servitor as a skill, ADR-0009).
 
 ## Phase 11: Singer integration
 
-The record-stream integration layer (SPEC: Singer, data movement integrations). The `singer-tap` / `singer-target` step types are registered but have no executor; this phase builds the subprocess execution pattern that `mcp-call` (Phase 12) is modeled on. Invocation contract is ADR-0016: the runner writes config (and state/catalog) to temp files and invokes the tap with `--config`/`--state`/`--catalog`, reading records and the next bookmark from stdout; a target gets `--config` and the records on stdin.
+The record-stream integration layer (SPEC: Singer, data movement integrations). The `singer-tap` / `singer-target` capabilities are registered but have no executor; this phase builds the subprocess execution pattern that `mcp-call` (Phase 12) is modeled on. Invocation contract is ADR-0016: the runner writes config (and state/catalog) to temp files and invokes the tap with `--config`/`--state`/`--catalog`, reading records and the next bookmark from stdout; a target gets `--config` and the records on stdin.
 
-- [x] `singer-tap` step type executor: write the tap's config (and prior state and the authored `catalog`) to temp files, spawn the named tap as a subprocess with a filtered secret env, pass `--config`/`--state`/`--catalog`, capture the JSON records and next bookmark from stdout, and exit (run-and-read executor).
-- [x] `singer-target` step type executor: write the target's config to a temp file and pass `--config`, then spawn the named target as a subprocess and feed it the records on stdin.
+- [x] `singer-tap` executor: write the tap's config (and prior state and the authored `catalog`) to temp files, spawn the named tap as a subprocess with a filtered secret env, pass `--config`/`--state`/`--catalog`, capture the JSON records and next bookmark from stdout, and exit (run-and-read executor).
+- [x] `singer-target` executor: write the target's config to a temp file and pass `--config`, then spawn the named target as a subprocess and feed it the records on stdin.
 - [x] State management: each tap's incremental sync state (the bookmark) stored in Honker and passed back into the next tap invocation (SPEC: State persistence). The bookmark commits in the same transaction as the step result (SPEC: Execution model step 8).
 - [x] Schema discovery: call the tap's `--about` and `--discover` once during a capabilities refresh and cache the config schema, available streams, and record schemas. The report emits the catalog in the same shape the Wafer's `catalog` field accepts, so an agent copies it verbatim; the executor never re-discovers.
 - [x] Report available Singer taps in `capabilities` (this is the open half of the Phase 3 capabilities item above).
@@ -120,13 +120,13 @@ The record-stream integration layer (SPEC: Singer, data movement integrations). 
 
 A standards-based integration path alongside the curated helpers (ADR-0015). The curated helpers remain; `mcp-call` reaches the long tail of self-hostable MCP servers.
 
-- [x] `mcp-call` step type: spawn the named MCP server as a subprocess with a filtered secret env, send one `tools/call` over stdio, read the structured JSON response, and exit (client-mode executor, distinct from the singer run-and-read executor built in Phase 11). The `mode` the server speaks (`classic`/`stateless`) is authored into the Wafer so a step never re-probes.
+- [x] `mcp-call` node type: spawn the named MCP server as a subprocess with a filtered secret env, send one `tools/call` over stdio, read the structured JSON response, and exit (client-mode executor, distinct from the singer run-and-read executor built in Phase 11). The `mode` the server speaks (`classic`/`stateless`) is authored into the Wafer so a node never re-probes.
 - [x] Support both MCP protocol versions: probe once at discovery, cache the detected mode, speak the old `initialize` handshake or the new stateless `_meta`-carrying protocol accordingly.
 - [x] Map MCP tool results (the `isError` flag and content blocks) onto Servitor's structured validation error format (`path`, `code`, `message`, `suggestion`).
 - [x] Capability discovery: probe declared `mcp-*` servers during a capabilities refresh and report their tools and protocol mode in `mcp/servers.yaml` (sourced from the declared integrations config per ADR-0018).
 - [x] Pin server package versions. Handled by the declared-config model: the operator's `command` is the pin (for example `npx -y atomic-server@1.2.3` or a fixed path to an installed binary), the same way opencode and other harnesses express it. No separate version field is needed.
 
-**Done when:** an agent can discover an MCP server's tools via `servitor capabilities`, author an `mcp-call` step, and run it as a subprocess with filtered secrets and correct error mapping, against both old- and new-spec servers.
+**Done when:** an agent can discover an MCP server's tools via `servitor capabilities`, author an `mcp-call` node, and run it as a subprocess with filtered secrets and correct error mapping, against both old- and new-spec servers.
 
 **v1 consumers:** Atomic via `mcp-call`; Grist, Slack, GitHub, email on curated helpers.
 
@@ -135,7 +135,7 @@ A standards-based integration path alongside the curated helpers (ADR-0015). The
 - [x] Each CLI command implemented per the SPEC's command set and its mapping to daemon operations.
 - [x] Exit codes carry the signal (0 ok, 1 operation failed, 2 usage error, 3 daemon not running).
 - [x] The control plane stays gated and loopback-only throughout (ADR-0009); the deploy path is CI/CD-gated and operator-owned/documented (ADR-0019).
-- [ ] Agent authoring reference: committed examples of the Wafer format for every step type (core, singer, mcp-call, curated helpers, webhooks), so an agent sees a valid example without running `capabilities`. The generator is already generic, so this is deferred until the type set stabilizes; until then each new type's registry fields should carry `examples`, and `servitor capabilities` renders them on demand.
+- [ ] Agent authoring reference: committed examples of the Wafer format for every capability (core, singer, mcp-call, curated helpers, webhooks), so an agent sees a valid example without running `capabilities`. The generator is already generic, so this is deferred until the type set stabilizes; until then each new type's registry fields should carry `examples`, and `servitor capabilities` renders them on demand.
 - [x] Declared integrations config (ADR-0018): replace PATH-prefix discovery with a single declared config (`servitor.integrations.yaml`, per-mechanism sections for MCP servers and Singer taps/targets, each with exact command and env) as the source of what `capabilities` reports, plus a management CLI (`servitor mcp`/`tap`/`target` add/list/remove) that writes entries and delegates the actual software install to the ecosystem's package managers.
 
 ## Outstanding work
@@ -149,8 +149,8 @@ Everything still to do, consolidated from the review of SPEC/ADRs vs the code.
 ### Not yet built (registered as types, no executor/receiver)
 
 - [x] **`transform` step executor.** Runs as a subprocess of the servitor binary's hidden `__transform` command (ADR-0008), evaluating a JSONata expression (ADR-0020) against the step's `{event, steps}` input threaded forward with the job (ADR-0021). Tested per component (the CLI `__transform` command, the `commandFor` wiring, and the input threading separately); the full spawn-the-binary path is not yet covered by an integration test.
-- [x] **`switch` step executor.** Routes to one named branch based on a value; non-chosen branches are skipped and cascade to a rejoin (ADR-0022, ADR-0023).
-- [x] **`foreach` step executor.** Fans a named body step out over a list; results collect into an array under the foreach step's name at the rejoin (ADR-0024).
+- [x] **`switch` node executor.** Routes to one named branch based on a value; non-chosen branches are skipped and cascade to a rejoin (ADR-0022, ADR-0023).
+- [x] **`foreach` node executor.** Fans a named body node out over a list; results collect into an array under the foreach node's name at the rejoin (ADR-0024).
 - [x] **Provider-specific webhook receivers (GitHub, Slack).** `github_webhook` verifies HMAC-SHA256 in `X-Hub-Signature-256`; `slack_event` verifies HMAC-SHA256 over `v0:<timestamp>:<body>` in `X-Slack-Signature` with a replay-bounding timestamp window, and answers Slack's `url_verification` handshake.
 - [ ] **Provider-specific webhook receivers (Grist, Atomic).** `grist_webhook` and `atomic_event` are registered as types but `isWebhookType` does not serve them, so they cannot match inbound events yet. Note: Grist's current webhooks authenticate with a static `Authorization` header, not an HMAC, so its receiver needs the scheme clarified before building.
 - [x] **`email_received` trigger (Google Workspace).** Polls a mailbox via a gmail helper subprocess (ADR-0027): the trigger carries `host`/`username`/`secret`/`poll`, a scheduled poll runs the hidden `__email_poll` command, and the daemon fans out one run per new email with the parsed email as the event. Uses pinned emersion/go-imap v1. Future providers are new helpers.
@@ -161,11 +161,11 @@ Everything still to do, consolidated from the review of SPEC/ADRs vs the code.
 - [ ] **`grist`** helper (read, write, list, query).
 - [ ] **`slack`** helper (post messages, read events).
 - [ ] **`github`** helper (issues, PRs, releases).
-- [ ] **`email` send step (SMTP).** The outbound half of email: a generic SMTP step that sends a message. It carries its own `host`/`username`/`secret` config (mirroring `email_received`) and may point at a different account than the one received on; send and receive are independent. Only if many accounts are used would a named-account registry be worth introducing; not needed now.
+- [ ] **`email` send node (SMTP).** The outbound half of email: a generic SMTP node that sends a message. It carries its own `host`/`username`/`secret` config (mirroring `email_received`) and may point at a different account than the one received on; send and receive are independent. Only if many accounts are used would a named-account registry be worth introducing; not needed now.
 
 ### Deferred / open decisions
 
-- [ ] **Agent authoring reference.** Committed examples of the Wafer format for every step type, so an agent sees a valid example without running `capabilities`. Deferred until the type set stabilizes; each new type's registry fields should carry `examples` meanwhile.
+- [ ] **Agent authoring reference.** Committed examples of the Wafer format for every capability, so an agent sees a valid example without running `capabilities`. Deferred until the type set stabilizes; each new type's registry fields should carry `examples` meanwhile.
 - [ ] **Worker concurrency limits.** Runs execute as a dependency DAG with fan-out (ADR-0023), but branches run sequentially rather than in parallel.
 - [x] **`dedupe_key` expression language.** JSONata via `internal/expression` (ADR-0020), evaluated at execution time against the step's `{event, steps}` input (ADR-0021) and stringified into the key.
 - [x] **`transform` expression language.** Settled: JSONata via gnata behind `internal/expression` (ADR-0020). Runs as a subprocess, so no host access; evaluation is bounded.

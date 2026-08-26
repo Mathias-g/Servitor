@@ -38,7 +38,7 @@ type TapRequest struct {
 	// Env is the filtered environment for the tap (only declared secrets plus
 	// PATH), built with exec.FilteredEnv.
 	Env []string
-	// Config is the step's `config` object.
+	// Config is the node's `config` object.
 	Config map[string]any
 	// Catalog is the selected-stream catalog authored into the Wafer from
 	// capabilities. When nil, the tap syncs all its streams and no `--catalog`

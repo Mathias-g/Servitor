@@ -42,9 +42,9 @@ Most workflow tools were designed for humans clicking through a builder, with an
 Designing for agents first changes specific decisions:
 
 - **The artifact is the Wafer, not a database row.** Agents read, write, diff, and version-control the same file a human would. There is no "form state" living somewhere the agent can't see.
-- **Capability discovery is a first-class operation.** `servitor capabilities` returns every step type (with its role and delivery), every declared secret, and every Singer tap available, each with its JSON Schema and an example rendered from that schema. An agent never has to guess what fields a step takes.
-- **Validation errors are structured, not stringified.** Errors are returned as JSON with paths, codes, and suggestions. An agent that submits a workflow with `type: slak` gets back an `unknown_step_type` error with `suggestion: slack`, the way an IDE would flag the typo. (See the Structured validation errors section for the full shape.)
-- **Dry-run is a real primitive.** `servitor dry-run` resolves the entire workflow and returns the DAG the runner *would* execute. No steps run, no external services are contacted, nothing is persisted. It reports the workflow's declared secret names (redacted, never values) and warns with a `missing_secret` code when one is not present in the environment, so an agent can verify structure, secret availability, and step configuration before committing.
+- **Capability discovery is a first-class operation.** `servitor capabilities` returns every capability (trigger, action node, or flow node, with its role and delivery), every declared secret, and every Singer tap available, each with its JSON Schema and an example rendered from that schema. An agent never has to guess what fields a node takes.
+- **Validation errors are structured, not stringified.** Errors are returned as JSON with paths, codes, and suggestions. An agent that submits a workflow with `type: slak` gets back an `unknown_node_type` error with `suggestion: slack`, the way an IDE would flag the typo. (See the Structured validation errors section for the full shape.)
+- **Dry-run is a real primitive.** `servitor dry-run` resolves the entire workflow and returns the DAG the runner *would* execute. No nodes run, no external services are contacted, nothing is persisted. It reports the workflow's declared secret names (redacted, never values) and warns with a `missing_secret` code when one is not present in the environment, so an agent can verify structure, secret availability, and node configuration before committing.
 - **The same CLI serves humans and agents.** No private API the agent doesn't have access to. If a future UI exists, it talks to the same control plane.
 
 These are not nice-to-haves bolted on after the fact; they are why this project exists as a separate thing rather than as a fork of an existing runner.
@@ -56,9 +56,9 @@ These are not nice-to-haves bolted on after the fact; they are why this project 
 A workflow is a YAML file (a Wafer) declaring:
 
 1. **Triggers.** What events cause the workflow to run (webhooks, cron, manual invocation, internal events).
-2. **Steps.** What the workflow does, expressed as a sequence (or DAG) of typed step invocations.
+2. **Nodes.** What the workflow does, expressed as a DAG of typed node invocations. A node is either an action node (does work) or a flow node (routes or fans out).
 
-The runner reads the Wafer, validates it, registers any triggers it declares, and waits for events. When an event arrives, the runner enqueues a workflow run, workers claim jobs and execute steps, results are persisted, and downstream steps fire as their dependencies complete.
+The runner reads the Wafer, validates it, registers any triggers it declares, and waits for events. When an event arrives, the runner enqueues a workflow run, workers claim jobs and execute nodes, results are persisted, and downstream nodes fire as their dependencies complete.
 
 Example Wafer:
 
@@ -68,7 +68,7 @@ on:
   grist_webhook:
     table: Leads
     event: row_added
-steps:
+nodes:
   - name: post_to_slack
     type: slack
     action: post_message
@@ -85,31 +85,31 @@ That's it. Submit it via CLI, enable it, and the next time a row is added to you
 Read this once and the rest of the document fills in the details. The split: steps 1, 2, 6, and 8 are the runner's job (receive, verify, persist, execute). Steps 3, 4, 5, and 7 are the author's job, human or agent (decide what to build, write it, submit it, react to results). The runner never decides what a workflow should do; that is always the author, because the author has the context.
 
 1. **Start the runner.** `servitor run` boots the daemon under varlock, which resolves secrets into its environment. One process owns the SQLite file.
-2. **Discover what's possible.** `servitor capabilities` lists step types (with roles and delivery), secrets, and Singer taps with schemas. An agent reads this instead of guessing.
-3. **Write a Wafer.** A human edits a YAML file, or an agent generates one from the capabilities schema. The Wafer declares triggers and steps.
+2. **Discover what's possible.** `servitor capabilities` lists capabilities (triggers, action nodes, and flow nodes, with roles and delivery), secrets, and Singer taps with schemas. An agent reads this instead of guessing.
+3. **Write a Wafer.** A human edits a YAML file, or an agent generates one from the capabilities schema. The Wafer declares triggers and nodes.
 4. **Dry-run it.** `servitor dry-run ./wf.yml` validates and resolves the workflow without running anything, so the author sees the DAG and the declared secrets (redacted, with a `missing_secret` warning when one is absent).
 5. **Deploy via the pipeline.** The agent (or human) opens a pull request for the Wafer; the pipeline dry-runs it and applies it on the box with `servitor submit`, then `servitor enable <name>` registers its triggers (ADR-0009).
-6. **Run.** A webhook arrives, a cron fires, or `servitor trigger <name>` runs it manually. Workers execute steps durably; downstream steps fire as dependencies complete.
-7. **Inspect and react.** `servitor runs` / `servitor run <id>` shows history and outcomes. The author fixes a Wafer or a step and resubmits.
+6. **Run.** A webhook arrives, a cron fires, or `servitor trigger <name>` runs it manually. Workers execute nodes durably; downstream nodes fire as dependencies complete.
+7. **Inspect and react.** `servitor runs` / `servitor run <id>` shows history and outcomes. The author fixes a Wafer or a node and resubmits.
 8. **Stop.** `servitor stop` drains and shuts the daemon down. Crashes are recovered by the queue on restart.
 
 ---
 
 ## Architecture
 
-The system is composed of well-defined open-source pieces, each doing its narrow job. Small interfaces compose well. The runner is written in Go (ADR-0004): a single binary that spawns a subprocess per step and owns a SQLite file.
+The system is composed of well-defined open-source pieces, each doing its narrow job. Small interfaces compose well. The runner is written in Go (ADR-0004): a single binary that spawns a subprocess per node and owns a SQLite file.
 
-The runner is a single OS process that owns the SQLite file and its single write connection. Inside that process is a pool of step executors. When a step executor claims a job, it runs the step as a subprocess (see Step execution modes). There is exactly one execution mode; every step, including pure-computation steps, runs as a subprocess.
+The runner is a single OS process that owns the SQLite file and its single write connection. Inside that process is a pool of node executors. When a node executor claims a job, it runs the node as a subprocess (see Node execution modes). There is exactly one execution mode; every node, including pure-computation nodes, runs as a subprocess.
 
-How a step runs:
+How a node runs:
 
-- The subprocess is launched with a filtered environment containing only the secrets the step's YAML declared it needs. This is real OS-level isolation, not "we promise not to read the variable."
+- The subprocess is launched with a filtered environment containing only the secrets the node's YAML declared it needs. This is real OS-level isolation, not "we promise not to read the variable."
 - The subprocess writes its result to stdout (structured JSON) and exits.
-- The parent runner process reads the result and commits it to SQLite, along with the enqueue of downstream steps, in one transaction.
+- The parent runner process reads the result and commits it to SQLite, along with the enqueue of downstream nodes, in one transaction.
 
 This means SQLite writes are serialized through the parent process, which is the only thing holding a write connection. SQLite's single-writer rule is honored by design, not worked around.
 
-Go keeps subprocess startup fast (roughly a millisecond), which is why every step runs as a subprocess rather than in-process (ADR-0008). Read concurrency is fine: workers reading their own claim, the control plane reading workflow state, and the trigger receivers reading config can all happen against WAL-mode SQLite without blocking the writer.
+Go keeps subprocess startup fast (roughly a millisecond), which is why every node runs as a subprocess rather than in-process (ADR-0008). Read concurrency is fine: workers reading their own claim, the control plane reading workflow state, and the trigger receivers reading config can all happen against WAL-mode SQLite without blocking the writer.
 
 ### Dependencies and standards (reference)
 
@@ -123,10 +123,10 @@ The extension is a native loadable library (`libhonker_ext.so`) the runner loads
 
 What we use it for:
 
-- **Workflow run queue.** Each step is a job. Workers claim, execute, and ack.
+- **Workflow run queue.** Each node is a job. Workers claim, execute, and ack.
 - **Crash safety.** If a worker dies mid-job, the claim expires after a visibility timeout and another worker reclaims. After max attempts the job lands in a dead-letter table.
-- **State persistence.** Every workflow's run history, step outcomes, Singer state bookmarks, and pending events live in the same SQLite file.
-- **Transactional commits.** A step's completion writes commit as a single atomic SQLite transaction rather than as separate operations. This is the mechanism behind the transactional fan-out guarantee; see step 8 of the Execution model for what the transaction contains and why it must never be split.
+- **State persistence.** Every workflow's run history, node outcomes, Singer state bookmarks, and pending events live in the same SQLite file.
+- **Transactional commits.** A node's completion writes commit as a single atomic SQLite transaction rather than as separate operations. This is the mechanism behind the transactional fan-out guarantee; see step 8 of the Execution model for what the transaction contains and why it must never be split.
 - **Scheduler primitive.** Cron-style triggers use Honker's built-in scheduler.
 
 #### Varlock, secret management (runtime dependency)
@@ -136,11 +136,11 @@ What we use it for:
 What we use it for:
 
 - **Secret resolution at process start.** The operator just runs `servitor`. The process checks whether it is already running under varlock; if not, it execs itself as `varlock run --inject vars -- servitor run`. Varlock resolves secrets from their backing store, validates them against the schema, and injects them as individual env vars before any of the runner's real code executes. The `--inject vars` form injects only the individual resolved vars and omits varlock's `__VARLOCK_ENV` graph blob, so the full secret set is not carried in one environment variable on the daemon.
-- **Per-step secret filtering at subprocess spawn.** When the runner spawns a step subprocess, it constructs the subprocess's env from scratch and includes *only* the secrets the step declared. Webhook secrets, runner-internal secrets, and other steps' secrets never appear in the subprocess env. Because every step runs as a subprocess (ADR-0008), no step ever runs in the runner's process where it could reach the resolved-secret cache.
+- **Per-node secret filtering at subprocess spawn.** When the runner spawns a node subprocess, it constructs the subprocess's env from scratch and includes *only* the secrets the node declared. Webhook secrets, runner-internal secrets, and other nodes' secrets never appear in the subprocess env. Because every node runs as a subprocess (ADR-0008), no node ever runs in the runner's process where it could reach the resolved-secret cache.
 - **Webhook signature secrets.** Each integrated service's webhook signing key is declared in the varlock schema. The receiver reads them from the process environment at verification time, in the runner process only.
-- **Step output redaction.** A step's captured stdout and stderr are scrubbed of any secret value the step was granted before the result is returned or persisted. A step that echoes a secret back cannot carry it into the runner's stored state or logs.
+- **Node output redaction.** A node's captured stdout and stderr are scrubbed of any secret value the node was granted before the result is returned or persisted. A node that echoes a secret back cannot carry it into the runner's stored state or logs.
 
-**Self-healing launch.** The danger with exposing the inner `servitor run` target is that someone reads `--help`, types `servitor run` directly, and boots the runner with no secrets in its environment, which is the one startup mistake that matters. This is prevented by a sentinel rather than by hiding the command. Varlock always sets `__VARLOCK_RUN=1` in the environment of the process it launches. So on startup the runner checks for `__VARLOCK_RUN`: if it is present, the process is already wrapped and boots normally; if it is absent, the process execs itself as `varlock run --inject vars -- servitor run` and lets varlock populate the environment first. Both `servitor` and a directly typed `servitor run` therefore converge on the same wrapped path. The re-exec is idempotent: the inner invocation runs with `__VARLOCK_RUN` set, so it boots rather than wrapping itself again. The handoff is a true exec, so the process the operator launched becomes varlock, which becomes the runner's parent; there is no lingering wrapper above varlock. If varlock is not installed, the runner boots anyway and warns that secret resolution is off; steps that declare secrets will then fail, which is the visible signal that varlock is missing.
+**Self-healing launch.** The danger with exposing the inner `servitor run` target is that someone reads `--help`, types `servitor run` directly, and boots the runner with no secrets in its environment, which is the one startup mistake that matters. This is prevented by a sentinel rather than by hiding the command. Varlock always sets `__VARLOCK_RUN=1` in the environment of the process it launches. So on startup the runner checks for `__VARLOCK_RUN`: if it is present, the process is already wrapped and boots normally; if it is absent, the process execs itself as `varlock run --inject vars -- servitor run` and lets varlock populate the environment first. Both `servitor` and a directly typed `servitor run` therefore converge on the same wrapped path. The re-exec is idempotent: the inner invocation runs with `__VARLOCK_RUN` set, so it boots rather than wrapping itself again. The handoff is a true exec, so the process the operator launched becomes varlock, which becomes the runner's parent; there is no lingering wrapper above varlock. If varlock is not installed, the runner boots anyway and warns that secret resolution is off; nodes that declare secrets will then fail, which is the visible signal that varlock is missing.
 
 #### Singer, data movement integrations (standard)
 
@@ -150,12 +150,12 @@ Singer is the record-stream integration layer of the runner: schemas, streams of
 
 What we use it for:
 
-- **`singer-tap` step type.** Drop in `tap-stripe`, `tap-github`, `tap-hubspot`, etc. with config, and records flow into the workflow. The runner writes the tap's config (and prior bookmark, and a selected-stream catalog, when present) to temp files and invokes it with `--config`/`--state`/`--catalog`; the tap emits Singer protocol messages (SCHEMA, RECORD, STATE) on stdout, and the runner returns the records and the last STATE value as the next bookmark (ADR-0016). Stream selection is a `catalog` field copied verbatim from `servitor capabilities`; discovery runs once at refresh, never per step.
-- **`singer-target` step type.** Built-in targets include `target-grist`, `target-atomic`, plus any community target. A target receives its config via `--config <file>` and the records to consume on stdin.
+- **`singer-tap` capability.** Drop in `tap-stripe`, `tap-github`, `tap-hubspot`, etc. with config, and records flow into the workflow. The runner writes the tap's config (and prior bookmark, and a selected-stream catalog, when present) to temp files and invokes it with `--config`/`--state`/`--catalog`; the tap emits Singer protocol messages (SCHEMA, RECORD, STATE) on stdout, and the runner returns the records and the last STATE value as the next bookmark (ADR-0016). Stream selection is a `catalog` field copied verbatim from `servitor capabilities`; discovery runs once at refresh, never per node.
+- **`singer-target` capability.** Built-in targets include `target-grist`, `target-atomic`, plus any community target. A target receives its config via `--config <file>` and the records to consume on stdin.
 - **State management.** Each tap's incremental sync state (the bookmark of last synced position) is stored in Honker and passed back into the next tap invocation.
 - **Self-describing schemas.** Each tap publishes its config schema, available streams, and record schemas via `--about` and `--discover`. The control plane exposes this for agents to introspect.
 
-Singer steps and curated helpers can both perform actions against the same external service (a `target-grist` and the `grist` helper's `write_row` both write to Grist), so the distinction isn't action vs not-action; it's the *shape* of the step. Singer steps consume or emit streams of typed records with bookmark state. Helpers make discrete calls with discrete inputs and outputs.
+Singer nodes and curated helpers can both perform actions against the same external service (a `target-grist` and the `grist` helper's `write_row` both write to Grist), so the distinction isn't action vs not-action; it's the *shape* of the node. Singer nodes consume or emit streams of typed records with bookmark state. Helpers make discrete calls with discrete inputs and outputs.
 
 #### Standard Webhooks, modern webhook reception (standard)
 
@@ -168,11 +168,11 @@ What we use it for:
 
 For non-compliant services (Grist, GitHub, Stripe, Slack, etc.), provider-specific trigger types handle their bespoke signing schemes.
 
-### Step execution
+### Node execution
 
-Every step runs as a subprocess. There is no in-process mode (ADR-0008). When a step executor claims a job, it launches a subprocess with a filtered environment containing only the secrets that step declared, the subprocess writes its result as structured JSON to stdout and exits, and the parent commits the result.
+Every node runs as a subprocess. There is no in-process mode (ADR-0008). When a node executor claims a job, it launches a subprocess with a filtered environment containing only the secrets that node declared, the subprocess writes its result as structured JSON to stdout and exits, and the parent commits the result.
 
-The subprocess is the isolation boundary. Because nothing runs inside the runner's own process, there is no "not a sandbox" surface: code that might be untrusted or buggy is contained by OS process isolation, and since a step cannot see secrets it did not declare, its environment contains nothing worth stealing. This is why Go's cheap subprocess startup makes a uniform subprocess model the simplest and safest choice.
+The subprocess is the isolation boundary. Because nothing runs inside the runner's own process, there is no "not a sandbox" surface: code that might be untrusted or buggy is contained by OS process isolation, and since a node cannot see secrets it did not declare, its environment contains nothing worth stealing. This is why Go's cheap subprocess startup makes a uniform subprocess model the simplest and safest choice.
 
 ### Graceful shutdown
 
@@ -181,8 +181,8 @@ Crash safety (covered in the execution model section) handles the runner dying u
 On `SIGTERM`, the runner drains with a deadline:
 
 1. **Stop claiming.** The runner immediately stops claiming new jobs. New triggers still persist their events to Honker (so nothing is lost), but no new runs begin execution.
-2. **Let in-flight steps finish.** Steps already running are given up to a configurable drain timeout to complete. Each that finishes commits its normal fan-out transaction (result, dedupe record, downstream enqueues, claim ack, all four in one commit), exactly as in steady state.
-3. **Hard-stop stragglers at the deadline.** Any step still running when the drain timeout expires is terminated. The runner does not commit a result for these; it leaves their claims to expire. They then become ordinary crash-recovery cases: the visibility timeout re-issues the claim, and the `dedupe_key` contract governs whether re-running is side-effect-safe.
+2. **Let in-flight nodes finish.** Nodes already running are given up to a configurable drain timeout to complete. Each that finishes commits its normal fan-out transaction (result, dedupe record, downstream enqueues, claim ack, all four in one commit), exactly as in steady state.
+3. **Hard-stop stragglers at the deadline.** Any node still running when the drain timeout expires is terminated. The runner does not commit a result for these; it leaves their claims to expire. They then become ordinary crash-recovery cases: the visibility timeout re-issues the claim, and the `dedupe_key` contract governs whether re-running is side-effect-safe.
 4. **Release the write connection.** Once draining ends, the runner closes its SQLite write connection cleanly so the next instance can acquire it without waiting on a stale lock.
 
 A second `SIGTERM`, or a `SIGKILL`, skips draining and stops immediately; everything in flight becomes a crash-recovery case.
@@ -199,7 +199,7 @@ The command set, grouped by what you're doing. These are the contract humans and
 
 ```
 servitor run                        # boot the runner daemon (under varlock)
-servitor capabilities               # write step/trigger/secret/tap schemas + derived examples to files
+servitor capabilities               # write capability/trigger/secret/tap schemas + derived examples to files
 servitor dry-run <wafer>            # validate and resolve without executing (--json for structured)
 servitor submit <wafer>             # validate and register a workflow
 servitor update <wafer>             # replace a workflow's definition
@@ -235,22 +235,23 @@ Agents learn the CLI from a shipped `SKILL.md`, the command reference that teach
 
 ## The Wafer
 
-A Wafer declares a workflow's triggers and steps. These are not two different
-kinds of thing: every capability is a **step type** (one primitive that runs as
-a subprocess, ADR-0008), and "trigger" and "action" are *roles* describing where
-a step type is used (ADR-0028). A **trigger** is a step type that starts a run,
-written under `on:`; an **action** is a step type that does work mid-run, written
-under `steps:`. A step type may be valid as a trigger, an action, or both, and
-trigger-role step types carry a `delivery` tag (instant, polling, scheduled,
-event, manual) describing how they start a run. Both lists are representative,
-not exhaustive; `servitor capabilities` returns the authoritative live set, each
-entry with its JSON Schema, role, and delivery.
+A Wafer declares a workflow's triggers and nodes. A **trigger** (under `on:`)
+starts the run; it is not a node. The **nodes** (under `nodes:`) are what the
+workflow does, all part of the run's DAG. Every capability is one of three
+things: a trigger, an action node, or a flow node. An **action node** (for
+example `http`, `shell`, `transform`) does work mid-run. A **flow node** (for
+example `switch`, `foreach`) routes or fans out, and does no external work
+itself. Every capability, whatever its role, runs as a subprocess (ADR-0008).
+Triggers carry a `delivery` tag (instant, polling, scheduled, event, manual)
+describing how they start a run. Both lists are representative, not exhaustive;
+`servitor capabilities` returns the authoritative live set, each entry with its
+JSON Schema, role, and delivery.
 
 ### How an agent discovers integrations
 
-Before writing a Wafer, an agent needs to know what the *target* server supports and how to use it. `servitor capabilities` answers both, and it is a per-server query: the authoritative set is what that runner has compiled in (step types), what its varlock schema declares (secrets, present or not), and which integrations the operator has declared (Singer taps, MCP servers; ADR-0018). The agent asks the server rather than trusting a doc, because the answer differs per deployment.
+Before writing a Wafer, an agent needs to know what the *target* server supports and how to use it. `servitor capabilities` answers both, and it is a per-server query: the authoritative set is what that runner has compiled in (its capabilities), what its varlock schema declares (secrets, present or not), and which integrations the operator has declared (Singer taps, MCP servers; ADR-0018). The agent asks the server rather than trusting a doc, because the answer differs per deployment.
 
-For each step type, `capabilities` returns:
+For each capability, `capabilities` returns:
 
 - its **JSON Schema** (fields, required, types, constraints), and
 - an **example Wafer fragment** rendered from that schema.
@@ -259,7 +260,7 @@ The example is **derived from the schema, not written by hand**: the structural 
 
 This is how "what integrations exist and how do I use them" is answered: the agent runs `capabilities`, reads the schemas and their derived examples, and generates a valid Wafer. The pipeline then re-validates the Wafer against the live server's capabilities on deploy (ADR-0009).
 
-`servitor capabilities [dir]` writes files rather than printing, so the schemas never sit in the agent's context: one file per step type (its JSON Schema, role, and delivery, plus a derived example), grouped by **mechanism** into top-level directories, plus a `secrets.yaml` reporting the declared secret names and whether each is present (never the values) and an `index.yaml` listing the mechanisms. The mechanisms (ADR-0017) are how Servitor interacts with a service: `core` (universal primitives and scheduling), `webhook` (inbound HTTP reception), `singer` (record streaming), `mcp` (tool invocation), `helper` (compiled-in wrappers), and `websocket` (inbound streaming, future). A service reached by several mechanisms appears in several groups; the type name carries the service (`grist_webhook`, `slack_event`, `tap-grist`). The declared integrations sit with their mechanism: `singer/taps.yaml` lists the declared Singer taps, and `mcp/servers.yaml` lists the declared MCP servers (ADR-0018), so an agent sees both a step type and what is installed to run against it. The distinction between a standard envelope and a bespoke one (for example `standard_webhook` vs `http_webhook` vs `grist_webhook`) is a per-type detail within a mechanism, not a separate group (SPEC: What counts as an integration).
+`servitor capabilities [dir]` writes files rather than printing, so the schemas never sit in the agent's context: one file per capability (its JSON Schema, role, and delivery, plus a derived example), grouped by **mechanism** into top-level directories, plus a `secrets.yaml` reporting the declared secret names and whether each is present (never the values) and an `index.yaml` listing the mechanisms. The mechanisms (ADR-0017) are how Servitor interacts with a service: `core` (universal primitives and scheduling), `webhook` (inbound HTTP reception), `singer` (record streaming), `mcp` (tool invocation), `helper` (compiled-in wrappers), and `websocket` (inbound streaming, future). A service reached by several mechanisms appears in several groups; the type name carries the service (`grist_webhook`, `slack_event`, `tap-grist`). The declared integrations sit with their mechanism: `singer/taps.yaml` lists the declared Singer taps, and `mcp/servers.yaml` lists the declared MCP servers (ADR-0018), so an agent sees both a capability and what is installed to run against it. The distinction between a standard envelope and a bespoke one (for example `standard_webhook` vs `http_webhook` vs `grist_webhook`) is a per-type detail within a mechanism, not a separate group (SPEC: What counts as an integration).
 
 For a **remote agent**, capabilities reach it the same way Wafers do: the pipeline (which already runs the CLI on the box) runs `servitor capabilities` and commits the generated directory into the git repo, and the agent reads the files from the repo on demand. Capabilities are still per-server because the directory is generated from that box's compiled-in set; committing it is a materialized snapshot, not a hand-written doc, so it cannot drift. A local agent (on the box, or the pipeline's own runner) can also run `capabilities` directly into a scratch directory.
 
@@ -326,28 +327,25 @@ Polling marks messages as read, so each email fires once. The first provider is
 Google Workspace over IMAP; a future provider is a different `host`/auth on the
 trigger, handled by its own helper (ADR-0027).
 
-### Steps
+### Nodes
 
-Step types come in three kinds, roughly from most general to most specific:
+The body of a Wafer is its nodes. There are two kinds: **action nodes**, which do
+work mid-run, and **flow nodes**, which route or fan out. All nodes are part of
+the run's DAG and run as subprocesses (ADR-0008).
 
-#### Universal primitives
+#### Action nodes
+
+Action nodes do work: they call an external service, execute a command, or
+compute over the run's data.
 
 - `http`. Make an HTTP request, capture response.
 - `shell`. Execute a command.
-- `transform`. Reshape, extract, or compute over previous steps' JSON output, returning new JSON. Its `expression` field is JSONata (ADR-0020), evaluated against the step's `{event, steps}` input (ADR-0021). It runs as a subprocess of the servitor binary's hidden `__transform` command (ADR-0008).
-- `switch`. Route to one named branch based on a value. It has an `expression` (JSONata over the step's `{event, steps}` input), a `cases` map of value to the name of a top-level step to route to, and an optional `default`. The chosen branch runs; non-chosen branches are skipped (ADR-0022, ADR-0023). If/else is a two-case switch.
-- `foreach`. Fan a step out over a list. It has an `over` expression (JSONata over the step's `{event, steps}` input yielding the list), an `as` loop-variable name (exposed in each iteration's input, default `item`), and a `body` (the name of a top-level step to run once per element). A downstream step that `depends_on` the body collects the per-iteration results as an array under the foreach step's name in its `{event, steps}` input (ADR-0024).
-
-#### Singer integration
-
+- `transform`. Reshape, extract, or compute over previous nodes' JSON output, returning new JSON. Its `expression` field is JSONata (ADR-0020), evaluated against the node's `{event, steps}` input (ADR-0021). It runs as a subprocess of the servitor binary's hidden `__transform` command (ADR-0008).
 - `singer-tap`. Run a Singer tap with config, capture records and state.
 - `singer-target`. Run a Singer target consuming records.
-
-#### MCP integration
-
 - `mcp-call`. Invoke one named tool on one named MCP server as a subprocess
   (ADR-0015). An MCP server is a subprocess that exposes named tools, each with
-  a JSON Schema for its input, over stdio. The step runs the server with a
+  a JSON Schema for its input, over stdio. The node runs the server with a
   filtered secret env, sends a single `tools/call` request on stdin, reads the
   structured JSON response on stdout, and exits. Fields: `server` (which MCP
   server to run), `tool` (which named tool), `input` (the tool arguments), and
@@ -362,13 +360,21 @@ Step types come in three kinds, roughly from most general to most specific:
   version and capabilities inline in a `_meta` field, detecting which a server
   expects at discovery time and caching it. Tool schemas are discovered from the
   server once during a `capabilities` refresh and cached, not queried on every
-  step execution. MCP tool results (an `isError` flag plus content blocks) map
+  node execution. MCP tool results (an `isError` flag plus content blocks) map
   onto Servitor's structured validation error format. Installed servers are
   those declared in the integrations config (ADR-0018).
 
-  MCP is an integration mechanism for this step type, unrelated to the
+  MCP is an integration mechanism for this node type, unrelated to the
   control-plane question of whether Servitor's own daemon interface is ever
   exposed over MCP, which stays out of scope (ADR-0005).
+
+#### Flow nodes
+
+Flow nodes do no external work; they route or fan out, and they are how the
+run's DAG branches and loops.
+
+- `switch`. Route to one named branch based on a value. It has an `expression` (JSONata over the node's `{event, steps}` input), a `cases` map of value to the name of a top-level node to route to, and an optional `default`. The chosen branch runs; non-chosen branches are skipped (ADR-0022, ADR-0023). If/else is a two-case switch.
+- `foreach`. Fan a node out over a list. It has an `over` expression (JSONata over the node's `{event, steps}` input yielding the list), an `as` loop-variable name (exposed in each iteration's input, default `item`), and a `body` (the name of a top-level node to run once per element). A downstream node that `depends_on` the body collects the per-iteration results as an array under the foreach node's name in its `{event, steps}` input (ADR-0024).
 
 #### Curated integration helpers
 
@@ -381,7 +387,7 @@ Initial set (subject to your stack's priorities):
 - `github`. Issues, PRs, releases.
 - `email`. Send, parse incoming.
 
-(Atomic is reached via the `mcp-call` step type against its native MCP server
+(Atomic is reached via the `mcp-call` node type against its native MCP server
 rather than a hand-written helper, since it is low-frequency and the server is
 self-hostable alongside the runner.)
 
@@ -398,26 +404,26 @@ actions/triggers via `servitor capabilities`.
 2. **Event is persisted.** The raw event is written to Honker before any matching happens. Failed events, orphan events, and crash-survival all benefit from this.
 3. **Signature verification.** The receiver verifies the signature against the relevant secret from varlock, in the parent process.
 4. **Workflow matching.** The runner finds workflows whose `on:` block matches the event.
-5. **Run enqueued.** A workflow run is created in Honker with the event payload as input. The run's initial step(s) are enqueued in the same transaction.
-6. **Workers claim and execute.** A step executor in the parent process claims a job and checks the step's `dedupe_key` against the dedupe table. It spawns a subprocess with a filtered env containing only the secrets the step declared (every step runs as a subprocess; ADR-0008).
-7. **Step runs.** Step types dispatch to handlers: HTTP, shell, transform, Singer tap, Singer target, integration helpers, and the scheduler steps `switch` (route to one branch) and `foreach` (fan a body out over a list). A step writes its result as structured JSON to stdout and exits. A `switch` and `foreach` resolve their decision in a subprocess and then route: the worker fans out the chosen branch / body iterations through the dependency counters (ADR-0022, ADR-0024).
-8. **Result committed transactionally.** When a step completes, its writes happen as a single atomic SQLite transaction: the step's result is persisted, the `dedupe_key` record is written (if any), all downstream steps whose dependencies are now satisfied are enqueued, and the step's own claim is acked, all in one commit. Runs are built as a dependency DAG (ADR-0023): each step carries a count of unsatisfied dependencies, and the completing step decrements each dependent's count and enqueues it only when the count reaches zero (fan-in). A `switch` step enqueues its chosen branch and marks the others skipped; a `foreach` step enqueues one body job per element. The input a downstream step receives is `{event, steps}`, where `steps` is prior results keyed by step name, threaded forward and committed with the result (ADR-0021). (For Singer steps, the updated bookmark is part of the same commit.) There is no separate scheduler process watching for completions; the worker that just finished the step performs these writes itself. This is non-negotiable because each possible split produces a distinct silent failure: result-without-enqueue stalls the workflow (a step is "done" but successors never run); enqueue-without-ack re-issues the claim on visibility timeout and re-runs the step, fanning out *again* and doubling every downstream side effect; dedupe-without-result causes future retries to skip the step without ever returning a value. The transactional atom is therefore **{result, dedupe_record, downstream_enqueues, claim_ack}**, all in one commit. If implementation pressure ever tempts splitting this transaction, the answer is no; redesign the data model instead.
-9. **Crashes are safe, with a caveat.** If a subprocess dies, the parent records the failure and the executor reclaims through normal retry. If the parent dies mid-job, Honker's visibility timeout re-issues the claim to another runner instance (or to itself on restart). **Crash safety against double-firing of side effects only applies to steps that declare a `dedupe_key`.** Steps without one inherit Honker's at-least-once contract: a step whose side effect completes before the result is persisted may be re-issued and the side effect re-performed. The validator warns when a side-effecting step omits `dedupe_key` precisely to make this contract visible to authors.
-10. **Run completes when no work is pending.** Each run tracks a count of in-flight jobs, adjusted in the same atomic commit as each step's completion (a claimed step's ack removes one, each enqueued dependent adds one). A run is marked completed when that count reaches zero. This is the dependency-based completion signal (ADR-0023): it correctly waits for a `foreach`'s body iterations and a fan-in rejoin, and for a linear chain it is the degenerate case. A skipped branch (non-chosen by a `switch`) records itself as skipped and cascades, so a run is never left waiting on a branch that did not run.
+5. **Run enqueued.** A workflow run is created in Honker with the event payload as input. The run's initial node(s) are enqueued in the same transaction.
+6. **Workers claim and execute.** A node executor in the parent process claims a job and checks the node's `dedupe_key` against the dedupe table. It spawns a subprocess with a filtered env containing only the secrets the node declared (every node runs as a subprocess; ADR-0008).
+7. **Node runs.** Node types dispatch to handlers: HTTP, shell, transform, Singer tap, Singer target, integration helpers, and the flow nodes `switch` (route to one branch) and `foreach` (fan a body out over a list). A node writes its result as structured JSON to stdout and exits. A `switch` and `foreach` resolve their decision in a subprocess and then route: the worker fans out the chosen branch / body iterations through the dependency counters (ADR-0022, ADR-0024).
+8. **Result committed transactionally.** When a node completes, its writes happen as a single atomic SQLite transaction: the node's result is persisted, the `dedupe_key` record is written (if any), all downstream nodes whose dependencies are now satisfied are enqueued, and the node's own claim is acked, all in one commit. Runs are built as a dependency DAG (ADR-0023): each node carries a count of unsatisfied dependencies, and the completing node decrements each dependent's count and enqueues it only when the count reaches zero (fan-in). A `switch` node enqueues its chosen branch and marks the others skipped; a `foreach` node enqueues one body job per element. The input a downstream node receives is `{event, steps}`, where `steps` is prior results keyed by node name, threaded forward and committed with the result (ADR-0021). (For Singer nodes, the updated bookmark is part of the same commit.) There is no separate scheduler process watching for completions; the worker that just finished the node performs these writes itself. This is non-negotiable because each possible split produces a distinct silent failure: result-without-enqueue stalls the workflow (a node is "done" but successors never run); enqueue-without-ack re-issues the claim on visibility timeout and re-runs the node, fanning out *again* and doubling every downstream side effect; dedupe-without-result causes future retries to skip the node without ever returning a value. The transactional atom is therefore **{result, dedupe_record, downstream_enqueues, claim_ack}**, all in one commit. If implementation pressure ever tempts splitting this transaction, the answer is no; redesign the data model instead.
+9. **Crashes are safe, with a caveat.** If a subprocess dies, the parent records the failure and the executor reclaims through normal retry. If the parent dies mid-job, Honker's visibility timeout re-issues the claim to another runner instance (or to itself on restart). **Crash safety against double-firing of side effects only applies to nodes that declare a `dedupe_key`.** Nodes without one inherit Honker's at-least-once contract: a node whose side effect completes before the result is persisted may be re-issued and the side effect re-performed. The validator warns when a side-effecting node omits `dedupe_key` precisely to make this contract visible to authors.
+10. **Run completes when no work is pending.** Each run tracks a count of in-flight jobs, adjusted in the same atomic commit as each node's completion (a claimed node's ack removes one, each enqueued dependent adds one). A run is marked completed when that count reaches zero. This is the dependency-based completion signal (ADR-0023): it correctly waits for a `foreach`'s body iterations and a fan-in rejoin, and for a linear chain it is the degenerate case. A skipped branch (non-chosen by a `switch`) records itself as skipped and cascades, so a run is never left waiting on a branch that did not run.
 
 ---
 
 ## Idempotency and deduplication
 
-Honker's at-least-once delivery means a step can run more than once: a worker can complete a side effect, crash before acking, and have its claim re-issued to another worker. The naive answer is "steps must be idempotent or use a deduplication key," but that is load-bearing enough to deserve a real primitive, not a footnote.
+Honker's at-least-once delivery means a node can run more than once: a worker can complete a side effect, crash before acking, and have its claim re-issued to another worker. The naive answer is "nodes must be idempotent or use a deduplication key," but that is load-bearing enough to deserve a real primitive, not a footnote.
 
 The runner provides:
 
-- **`dedupe_key` field on every step.** A JSONata expression (ADR-0020) evaluated at execution time against the step's `{event, steps}` input (ADR-0021) (often the trigger event ID, a row ID, or a hash); the result is stringified to form the key. Before the step executes, the parent checks a `step_dedupe` table keyed by `(workflow_id, step_name, dedupe_key)`. If the key is present and the prior run succeeded, the step is skipped and the prior result is returned. If the key is present and the prior run failed, the step proceeds.
-- **A short retention window on dedupe keys** (default 72h, configurable per step) so the table doesn't grow unboundedly.
-- **Default off, but loudly recommended.** Validation emits a warning when a step performs an externally-visible side effect (sending a message, creating a row, calling a non-idempotent HTTP method) and has no `dedupe_key`. Agents see this warning as a structured error of severity `warn` and can decide whether to suppress.
+- **`dedupe_key` field on every node.** A JSONata expression (ADR-0020) evaluated at execution time against the node's `{event, steps}` input (ADR-0021) (often the trigger event ID, a row ID, or a hash); the result is stringified to form the key. Before the node executes, the parent checks a `node_dedupe` table keyed by `(workflow_id, node_name, dedupe_key)`. If the key is present and the prior run succeeded, the node is skipped and the prior result is returned. If the key is present and the prior run failed, the node proceeds.
+- **A short retention window on dedupe keys** (default 72h, configurable per node) so the table doesn't grow unboundedly.
+- **Default off, but loudly recommended.** Validation emits a warning when a node performs an externally-visible side effect (sending a message, creating a row, calling a non-idempotent HTTP method) and has no `dedupe_key`. Agents see this warning as a structured error of severity `warn` and can decide whether to suppress.
 
-For Singer taps specifically: a tap that completes records and crashes before its bookmark is persisted will re-emit those records on the next run. Targets should handle this with their own dedupe (most warehouse targets do via primary keys); for action-shaped uses downstream of a tap, set `dedupe_key` on the action step.
+For Singer taps specifically: a tap that completes records and crashes before its bookmark is persisted will re-emit those records on the next run. Targets should handle this with their own dedupe (most warehouse targets do via primary keys); for action-shaped uses downstream of a tap, set `dedupe_key` on the action node.
 
 ---
 
@@ -429,31 +435,31 @@ Because agents are first-class authors, the shape of validation errors is part o
 {
   "errors": [
     {
-      "path": "/steps/2/channel",
+      "path": "/nodes/2/channel",
       "code": "missing_required_field",
-      "message": "field 'channel' is required for step type 'slack' action 'post_message'",
+      "message": "field 'channel' is required for node type 'slack'",
       "expected": "string"
     },
     {
-      "path": "/steps/3/type",
-      "code": "unknown_step_type",
-      "message": "unknown step type 'slak'",
+      "path": "/nodes/3/type",
+      "code": "unknown_node_type",
+      "message": "unknown node type 'slak'",
       "suggestion": "slack"
     }
   ],
   "warnings": [
     {
-      "path": "/steps/2",
+      "path": "/nodes/2",
       "code": "missing_dedupe_key",
-      "message": "step performs an external side effect and has no dedupe_key; this step may run more than once on retry"
+      "message": "node 'slack' performs an external side effect and has no dedupe_key; this node may run more than once on retry"
     }
   ]
 }
 ```
 
-Codes are stable identifiers (`unknown_step_type`, `missing_required_field`, `type_mismatch`, `missing_secret`, `circular_dependency`, `missing_dedupe_key`, etc.). Paths are JSON Pointers into the submitted YAML. Multiple errors are returned at once, not one-at-a-time, so an agent fixing a malformed workflow makes one round trip per fix-batch rather than one per fix. A `missing_secret` warning is emitted by `dry-run` when a step declares a secret that is not present in the environment; the workflow's declared secret names are shown redacted (`<redacted:secret_name>`), never their values.
+Codes are stable identifiers (`unknown_node_type`, `missing_required_field`, `type_mismatch`, `missing_secret`, `circular_dependency`, `missing_dedupe_key`, etc.). Paths are JSON Pointers into the submitted YAML. Multiple errors are returned at once, not one-at-a-time, so an agent fixing a malformed workflow makes one round trip per fix-batch rather than one per fix. A `missing_secret` warning is emitted by `dry-run` when a node declares a secret that is not present in the environment; the workflow's declared secret names are shown redacted (`<redacted:secret_name>`), never their values.
 
-The full workflow JSON Schema and every step type's config schema are also retrievable through `servitor capabilities`, so agents can validate locally before submitting.
+The full workflow JSON Schema and every capability's config schema are also retrievable through `servitor capabilities`, so agents can validate locally before submitting.
 
 ---
 
@@ -492,20 +498,20 @@ Getting onto the box is the operator's existing access (SSH or VPN), not a Servi
 
 Operational and security invariants that are easy to miss or re-litigate.
 
-- **The subprocess env is the security boundary, not how a step's input is
-  shaped.** A step can only see what its subprocess environment contains
+- **The subprocess env is the security boundary, not how a node's input is
+  shaped.** A node can only see what its subprocess environment contains
   (ADR-0008): only the secrets it declared. Whether the worker threads prior
-  results into the job or reads them back does not change what a step can
+  results into the job or reads them back does not change what a node can
   reach. Do not add an input-scoping mechanism on security grounds; the
   isolation is the filtered subprocess env.
-- **A step's input is committed atomically with the result it depends on.** The
-  `{event, steps}` input a downstream step receives is written into the job's
-  payload inside the same `CommitStepAtom` transaction as the prior step's
-  result (SPEC: Execution model step 8, ADR-0021). A step's input can therefore
+- **A node's input is committed atomically with the result it depends on.** The
+  `{event, steps}` input a downstream node receives is written into the job's
+  payload inside the same `CommitStepAtom` transaction as the prior node's
+  result (SPEC: Execution model step 8, ADR-0021). A node's input can therefore
   never disagree with the committed results it was built from; keep it that way.
 - **`dedupe_key` has two independent axes: the language and when it is
   evaluated.** The language is JSONata (ADR-0020). When it is evaluated (now, at
-  step execution, alongside `transform`) is a separate decision (ADR-0021).
+  node execution, alongside `transform`) is a separate decision (ADR-0021).
   Do not conflate them when revisiting either.
 
 ---
@@ -523,7 +529,7 @@ Things deliberately out of scope for v1, kept here so the design doesn't quietly
 
 ## Status
 
-Early development. The daemon lifecycle, loopback control protocol, Wafer model and structured validation, capability discovery (including a `secrets.yaml` reporting declared secret names and presence, a `singer/taps.yaml` reporting declared Singer taps, and a `mcp/servers.yaml` reporting declared MCP servers; grouped by mechanism per ADR-0017, sourced from the declared integrations config per ADR-0018), dry-run DAG resolution (including redacted secret names and a `missing_secret` warning), the Honker durability store (with the transactional atom), step execution (the worker loop, subprocess isolation with env filtering, and the dedupe contract), the Singer integration (the `singer-tap` and `singer-target` executors, bookmark state committed with each tap step's result, and schema discovery; ADR-0016), the MCP integration (the `mcp-call` step type with a client-mode executor, both classic and stateless protocol support, and structured error mapping; ADR-0015), inbound triggers (a webhook receiver for Standard Webhooks, generic HMAC, and the GitHub and Slack provider-specific schemes, plus cron and manual), the varlock integration (self-healing launch and per-step secret filtering), the shipped `SKILL.md` agent reference, run inspection (`servitor runs`, `servitor run <id>`, `servitor cancel`), and the release flow (`make release`) are built (`servitor run`, `stop`, `dry-run`, `capabilities`, `submit`, `update`, `enable`, `disable`, `trigger`, `runs`, `run`, `cancel`), the `transform` step handler and `dedupe_key` evaluation (JSONata via gnata, ADR-0020; `{event, steps}` threaded input, ADR-0021), and the `switch` and `foreach` step handlers with dependency-counter fan-out (ADR-0022, ADR-0023, ADR-0024). Provider-specific webhook receivers for Grist and Atomic, and the curated helpers (grist, slack, github, email send) are not yet built. Open questions, to be resolved as implementation progresses and tracked in ADRs in the `docs/adr/` directory:
+Early development. The daemon lifecycle, loopback control protocol, Wafer model and structured validation, capability discovery (including a `secrets.yaml` reporting declared secret names and presence, a `singer/taps.yaml` reporting declared Singer taps, and a `mcp/servers.yaml` reporting declared MCP servers; grouped by mechanism per ADR-0017, sourced from the declared integrations config per ADR-0018), dry-run DAG resolution (including redacted secret names and a `missing_secret` warning), the Honker durability store (with the transactional atom), node execution (the worker loop, subprocess isolation with env filtering, and the dedupe contract), the Singer integration (the `singer-tap` and `singer-target` executors, bookmark state committed with each tap node's result, and schema discovery; ADR-0016), the MCP integration (the `mcp-call` node type with a client-mode executor, both classic and stateless protocol support, and structured error mapping; ADR-0015), inbound triggers (a webhook receiver for Standard Webhooks, generic HMAC, and the GitHub and Slack provider-specific schemes, plus cron and manual), the varlock integration (self-healing launch and per-node secret filtering), the shipped `SKILL.md` agent reference, run inspection (`servitor runs`, `servitor run <id>`, `servitor cancel`), and the release flow (`make release`) are built (`servitor run`, `stop`, `dry-run`, `capabilities`, `submit`, `update`, `enable`, `disable`, `trigger`, `runs`, `run`, `cancel`), the `transform` node handler and `dedupe_key` evaluation (JSONata via gnata, ADR-0020; `{event, steps}` threaded input, ADR-0021), and the `switch` and `foreach` node handlers with dependency-counter fan-out (ADR-0022, ADR-0023, ADR-0024). Provider-specific webhook receivers for Grist and Atomic, and the curated helpers (grist, slack, github, email send) are not yet built. Open questions, to be resolved as implementation progresses and tracked in ADRs in the `docs/adr/` directory:
 
 - Worker concurrency limits; runs execute as a dependency DAG with fan-out (ADR-0023), but branches run sequentially rather than in parallel.
 - The trigger receiver's framing of the remaining bespoke per-provider signing schemes (Grist and Atomic).

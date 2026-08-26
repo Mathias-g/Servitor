@@ -40,7 +40,7 @@ name: demo
 on:
   - type: cron
     schedule: "@every 1s"
-steps:
+nodes:
   - type: shell
     name: a
     command: "printf '{\"ok\":1}'"
@@ -62,8 +62,8 @@ func TestFromWaferBuildsChain(t *testing.T) {
 	if head == nil {
 		t.Fatal("expected a head job")
 	}
-	if head.StepID != "a" || head.WorkflowID != "demo" {
-		t.Fatalf("head = %q/%q, want a/demo", head.StepID, head.WorkflowID)
+	if head.NodeID != "a" || head.WorkflowID != "demo" {
+		t.Fatalf("head = %q/%q, want a/demo", head.NodeID, head.WorkflowID)
 	}
 	if head.Input["event"].(map[string]any)["trigger"] != "cron" {
 		t.Fatalf("head input event = %v, want cron event", head.Input)
@@ -72,11 +72,11 @@ func TestFromWaferBuildsChain(t *testing.T) {
 		t.Fatalf("head downstream = %d, want 1 (b)", len(head.Downstream))
 	}
 	next := head.Downstream[0]
-	if next.StepID != "b" {
-		t.Fatalf("next step = %q, want b", next.StepID)
+	if next.NodeID != "b" {
+		t.Fatalf("next node = %q, want b", next.NodeID)
 	}
 	if len(next.Command) == 0 || next.Command[0] != "/bin/sh" {
-		t.Fatalf("step b command = %v, want a shell command", next.Command)
+		t.Fatalf("node b command = %v, want a shell command", next.Command)
 	}
 }
 
@@ -84,7 +84,7 @@ func TestFromWaferRejectsUnsupportedType(t *testing.T) {
 	w, err := wafer.Parse([]byte(`
 name: demo
 on: []
-steps:
+nodes:
   - type: branch
     when: "x"
 `))
@@ -92,7 +92,7 @@ steps:
 		t.Fatalf("parse: %v", err)
 	}
 	if _, err := FromWafer(w, nil); err == nil {
-		t.Fatal("expected an error for a step type with no handler yet")
+		t.Fatal("expected an error for a node type with no handler yet")
 	}
 }
 
@@ -100,7 +100,7 @@ func TestFromWaferCarriesDeclaredSecrets(t *testing.T) {
 	w, err := wafer.Parse([]byte(`
 name: demo
 on: []
-steps:
+nodes:
   - type: shell
     name: a
     secrets: [TOKEN, OTHER]
@@ -120,7 +120,7 @@ steps:
 
 func TestStartRunEnqueuesHead(t *testing.T) {
 	store := openStore(t)
-	q := store.Queue("steps", 30, 3)
+	q := store.Queue("nodes", 30, 3)
 	w, err := wafer.Parse([]byte(shellYAML))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -136,18 +136,18 @@ func TestStartRunEnqueuesHead(t *testing.T) {
 	if err != nil || job == nil {
 		t.Fatalf("head not claimable: %v", err)
 	}
-	var head worker.StepJob
+	var head worker.NodeJob
 	if err := job.UnmarshalPayload(&head); err != nil {
 		t.Fatalf("head payload: %v", err)
 	}
-	if head.RunID != "run-1" || head.StepID != "a" {
-		t.Fatalf("head = %q/%q, want run-1/a", head.RunID, head.StepID)
+	if head.RunID != "run-1" || head.NodeID != "a" {
+		t.Fatalf("head = %q/%q, want run-1/a", head.RunID, head.NodeID)
 	}
 }
 
 func TestRegisterCronFiresIntoQueue(t *testing.T) {
 	store := openStore(t)
-	q := store.Queue("steps", 30, 3)
+	q := store.Queue("nodes", 30, 3)
 	w, err := wafer.Parse([]byte(shellYAML))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -164,7 +164,7 @@ func TestRegisterCronFiresIntoQueue(t *testing.T) {
 	}
 
 	// Fire the scheduler; the task's next fire is on the next second boundary,
-	// so wait past it. A cron fire enqueues the head step job.
+	// so wait past it. A cron fire enqueues the head node job.
 	soonest, err := store.Scheduler().Soonest()
 	if err != nil || soonest <= 0 {
 		t.Fatalf("expected a scheduled next fire, got %d (err %v)", soonest, err)
@@ -182,12 +182,12 @@ func TestRegisterCronFiresIntoQueue(t *testing.T) {
 	if err != nil || job == nil {
 		t.Fatalf("cron-enqueued head not claimable: %v", err)
 	}
-	var head worker.StepJob
+	var head worker.NodeJob
 	if err := job.UnmarshalPayload(&head); err != nil {
 		t.Fatalf("head payload: %v", err)
 	}
-	if head.StepID != "a" || head.RunID != "cron-run" {
-		t.Fatalf("head = %q/%q, want a/cron-run", head.StepID, head.RunID)
+	if head.NodeID != "a" || head.RunID != "cron-run" {
+		t.Fatalf("head = %q/%q, want a/cron-run", head.NodeID, head.RunID)
 	}
 }
 
@@ -195,7 +195,7 @@ func TestTransformCommandWiresSelfInvocation(t *testing.T) {
 	w, err := wafer.Parse([]byte(`
 name: demo
 on: []
-steps:
+nodes:
   - type: transform
     name: t
     expression: "steps.fetch.amount"
@@ -224,7 +224,7 @@ func TestFromWaferCarriesDedupeKeyExpression(t *testing.T) {
 	w, err := wafer.Parse([]byte(`
 name: demo
 on: []
-steps:
+nodes:
   - type: shell
     name: a
     dedupe_key: "event.id"
@@ -246,7 +246,7 @@ func TestFromWaferBuildsSwitchDAG(t *testing.T) {
 	w, err := wafer.Parse([]byte(`
 name: demo
 on: []
-steps:
+nodes:
   - type: transform
     name: check
     expression: "if (event.amount > 1000) then 'high' else 'low'"
@@ -277,32 +277,32 @@ steps:
 	if err != nil {
 		t.Fatalf("FromWafer: %v", err)
 	}
-	if head.StepID != "check" {
-		t.Fatalf("head = %q, want check", head.StepID)
+	if head.NodeID != "check" {
+		t.Fatalf("head = %q, want check", head.NodeID)
 	}
-	// Find the switch step's job and check it carries both branch heads.
-	route := findStep(t, head, "route")
+	// Find the switch node's job and check it carries both branch heads.
+	route := findNode(t, head, "route")
 	if route == nil {
-		t.Fatal("no route step in DAG")
+		t.Fatal("no route node in DAG")
 	}
 	if len(route.Dependents) != 2 {
 		t.Fatalf("route dependents = %v, want [notify_finance log_and_done]", route.Dependents)
 	}
-	if !stepDependsOn(t, route, "notify_finance", "log_and_done") {
+	if !nodeDependsOn(t, route, "notify_finance", "log_and_done") {
 		t.Fatal("route should feed both branch heads")
 	}
 }
 
-func findStep(t *testing.T, head *worker.StepJob, id string) *worker.StepJob {
+func findNode(t *testing.T, head *worker.NodeJob, id string) *worker.NodeJob {
 	t.Helper()
-	seen := map[*worker.StepJob]bool{}
-	var walk func(j *worker.StepJob) *worker.StepJob
-	walk = func(j *worker.StepJob) *worker.StepJob {
+	seen := map[*worker.NodeJob]bool{}
+	var walk func(j *worker.NodeJob) *worker.NodeJob
+	walk = func(j *worker.NodeJob) *worker.NodeJob {
 		if j == nil || seen[j] {
 			return nil
 		}
 		seen[j] = true
-		if j.StepID == id {
+		if j.NodeID == id {
 			return j
 		}
 		for i := range j.Downstream {
@@ -315,7 +315,7 @@ func findStep(t *testing.T, head *worker.StepJob, id string) *worker.StepJob {
 	return walk(head)
 }
 
-func stepDependsOn(t *testing.T, route *worker.StepJob, deps ...string) bool {
+func nodeDependsOn(t *testing.T, route *worker.NodeJob, deps ...string) bool {
 	t.Helper()
 	set := map[string]bool{}
 	for _, d := range route.Dependents {
@@ -333,7 +333,7 @@ func TestFromWaferBuildsForeachDAG(t *testing.T) {
 	w, err := wafer.Parse([]byte(`
 name: demo
 on: []
-steps:
+nodes:
   - type: transform
     name: fetch_ids
     expression: "[1, 2, 3]"
@@ -359,11 +359,11 @@ steps:
 	if err != nil {
 		t.Fatalf("FromWafer: %v", err)
 	}
-	fan := findStep(t, head, "fan")
+	fan := findNode(t, head, "fan")
 	if fan == nil {
-		t.Fatal("no fan step in DAG")
+		t.Fatal("no fan node in DAG")
 	}
-	if fan.Body == nil || fan.Body.StepID != "process_one" {
+	if fan.Body == nil || fan.Body.NodeID != "process_one" {
 		t.Fatalf("fan body = %v, want process_one", fan.Body)
 	}
 	if fan.BodyAs != "item" {
@@ -373,7 +373,7 @@ steps:
 		t.Fatalf("fan Rejoins = %v, want [summarize]", fan.Rejoins)
 	}
 	// The rejoin is marked to collect.
-	sum := findStep(t, head, "summarize")
+	sum := findNode(t, head, "summarize")
 	if sum == nil || sum.CollectFrom != "process_one" || sum.CollectName != "fan" {
 		t.Fatalf("summarize collect = %+v, want CollectFrom=process_one CollectName=fan", sum)
 	}

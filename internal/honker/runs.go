@@ -7,7 +7,7 @@ import (
 )
 
 // Run statuses. A run is created as running, becomes completed or failed when
-// its last step finishes, and cancelled when the operator stops it.
+// its last node finishes, and cancelled when the operator stops it.
 const (
 	RunRunning   = "running"
 	RunCompleted = "completed"
@@ -24,15 +24,15 @@ type Run struct {
 	CreatedAt    string
 }
 
-// StepOutcome is one step's recorded result within a run.
-type StepOutcome struct {
-	StepID string
+// NodeOutcome is one node's recorded result within a run.
+type NodeOutcome struct {
+	NodeID string
 	Result string // JSON
 }
 
-// CreateRun records a new run as running. It is called when a run's head step
-// is enqueued, so a run always has a row even before any step finishes. pending
-// is initialized to 1 (the head step about to run) so the run's completion is
+// CreateRun records a new run as running. It is called when a run's head node
+// is enqueued, so a run always has a row even before any node finishes. pending
+// is initialized to 1 (the head node about to run) so the run's completion is
 // tracked by in-flight jobs reaching zero (ADR-0023).
 func (s *Store) CreateRun(id, workflowName string) error {
 	if id == "" {
@@ -63,7 +63,7 @@ func (s *Store) RunPending(id string) (int, error) {
 }
 
 // AdjustPending changes a run's pending job count by delta inside the given
-// transaction. It is how the worker tracks in-flight work: a step's completion
+// transaction. It is how the worker tracks in-flight work: a node's completion
 // decrements pending by its own ack and increments it by the dependents it
 // enqueues, in the same atomic commit as the result (ADR-0023).
 func (t *Tx) AdjustPending(runID string, delta int) error {
@@ -133,19 +133,19 @@ func (s *Store) ListRuns() ([]Run, error) {
 	return out, rows.Err()
 }
 
-// RunSteps returns a run's step outcomes.
-func (s *Store) RunSteps(id string) ([]StepOutcome, error) {
+// RunNodes returns a run's node outcomes.
+func (s *Store) RunNodes(id string) ([]NodeOutcome, error) {
 	rows, err := s.db.Raw().Query(
-		`SELECT step_id, result FROM step_results WHERE run_id = ?`, id,
+		`SELECT node_id, result FROM node_results WHERE run_id = ?`, id,
 	)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-	var out []StepOutcome
+	var out []NodeOutcome
 	for rows.Next() {
-		var so StepOutcome
-		if err := rows.Scan(&so.StepID, &so.Result); err != nil {
+		var so NodeOutcome
+		if err := rows.Scan(&so.NodeID, &so.Result); err != nil {
 			return nil, err
 		}
 		out = append(out, so)
@@ -154,7 +154,7 @@ func (s *Store) RunSteps(id string) ([]StepOutcome, error) {
 }
 
 // CancelRun stops an in-flight run: it marks the run cancelled and drops any
-// jobs still pending in the queue for that run. A step already claimed and
+// jobs still pending in the queue for that run. A node already claimed and
 // running is stopped by the worker's cancel check rather than here.
 func (s *Store) CancelRun(id string) error {
 	if err := s.SetRunStatus(id, RunCancelled); err != nil {

@@ -34,45 +34,45 @@ func newWorker(t *testing.T, visS, maxAttempts int, secrets map[string]string) (
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	q := store.Queue("steps", visS, maxAttempts)
+	q := store.Queue("nodes", visS, maxAttempts)
 	w := New(store, q, "worker-1", Config{Secrets: secrets})
 	return w, store, q
 }
 
 func shellCmd(script string) []string { return []string{"/bin/sh", "-c", script} }
 
-// claimResultJSON returns the decoded step result for a run/step, decoding
+// claimResultJSON returns the decoded node result for a run/node, decoding
 // "" as nil.
-func claimResultJSON(t *testing.T, store *honker.Store, runID, stepID string) any {
+func claimResultJSON(t *testing.T, store *honker.Store, runID, nodeID string) any {
 	t.Helper()
-	raw, err := store.ResultJSON(runID, stepID)
+	raw, err := store.ResultJSON(runID, nodeID)
 	if err != nil {
-		t.Fatalf("result %s/%s: %v", runID, stepID, err)
+		t.Fatalf("result %s/%s: %v", runID, nodeID, err)
 	}
 	if raw == "" {
 		return nil
 	}
 	var v any
 	if err := json.Unmarshal([]byte(raw), &v); err != nil {
-		t.Fatalf("decode result %s/%s: %v", runID, stepID, err)
+		t.Fatalf("decode result %s/%s: %v", runID, nodeID, err)
 	}
 	return v
 }
 
-func TestExecuteShellStepCommitsFanOut(t *testing.T) {
+func TestExecuteShellNodeCommitsFanOut(t *testing.T) {
 	w, store, q := newWorker(t, 30, 3, nil)
 
-	id, err := q.Enqueue(StepJob{
+	id, err := q.Enqueue(NodeJob{
 		RunID:      "run-1",
 		WorkflowID: "wf",
-		StepID:     "a",
-		StepName:   "a",
-		StepType:   "shell",
+		NodeID:     "a",
+		NodeName:   "a",
+		NodeType:   "shell",
 		Input:      map[string]any{"x": 1},
 		Command:    shellCmd(`printf '{"ok":true}'`),
-		Downstream: []StepJob{{
-			RunID: "run-1", WorkflowID: "wf", StepID: "b", StepName: "b",
-			StepType: "shell", Command: shellCmd(`printf '{"ok":true}'`),
+		Downstream: []NodeJob{{
+			RunID: "run-1", WorkflowID: "wf", NodeID: "b", NodeName: "b",
+			NodeType: "shell", Command: shellCmd(`printf '{"ok":true}'`),
 		}},
 	})
 	if err != nil {
@@ -88,11 +88,11 @@ func TestExecuteShellStepCommitsFanOut(t *testing.T) {
 
 	// Result row written.
 	if res := claimResultJSON(t, store, "run-1", "a"); res == nil {
-		t.Fatal("no result written for step a")
+		t.Fatal("no result written for node a")
 	}
 
 	// The parent claim was acked (id 1); the next claimable job is the
-	// downstream (id 2, step b). If the parent were still claimable, FIFO
+	// downstream ((id 2, node b)). If the parent were still claimable, FIFO
 	// would return it first.
 	down, err := q.ClaimOne("worker-1")
 	if err != nil || down == nil {
@@ -101,12 +101,12 @@ func TestExecuteShellStepCommitsFanOut(t *testing.T) {
 	if down.ID == id {
 		t.Fatalf("parent job %d was not acked; it was re-claimed", id)
 	}
-	var d StepJob
+	var d NodeJob
 	if err := down.UnmarshalPayload(&d); err != nil {
 		t.Fatalf("downstream payload: %v", err)
 	}
-	if d.StepID != "b" {
-		t.Fatalf("downstream step = %q, want b", d.StepID)
+	if d.NodeID != "b" {
+		t.Fatalf("downstream node = %q, want b", d.NodeID)
 	}
 }
 
@@ -114,19 +114,19 @@ func TestDedupeSkipReturnsPriorResult(t *testing.T) {
 	w, store, q := newWorker(t, 30, 3, nil)
 
 	// Seed a prior successful dedupe record.
-	err := store.CommitStepAtom(honker.StepAtom{
-		RunID: "run-1", StepID: "a",
+	err := store.CommitNodeAtom(honker.NodeAtom{
+		RunID: "run-1", NodeID: "a",
 		Result: map[string]any{"ok": true, "from": "prior"},
-		Dedupe: &honker.DedupeRecord{WorkflowID: "wf", StepName: "a", Key: "k1", Succeeded: true, Result: map[string]any{"ok": true, "from": "prior"}},
+		Dedupe: &honker.DedupeRecord{WorkflowID: "wf", NodeName: "a", Key: "k1", Succeeded: true, Result: map[string]any{"ok": true, "from": "prior"}},
 	})
 	if err != nil {
 		t.Fatalf("seed dedupe: %v", err)
 	}
 
-	// A step with the same key; its subprocess would produce a different value.
-	if _, err := q.Enqueue(StepJob{
-		RunID: "run-2", WorkflowID: "wf", StepID: "a", StepName: "a",
-		StepType: "shell", DedupeKey: "\"k1\"",
+	// A node with the same key; its subprocess would produce a different value.
+	if _, err := q.Enqueue(NodeJob{
+		RunID: "run-2", WorkflowID: "wf", NodeID: "a", NodeName: "a",
+		NodeType: "shell", DedupeKey: "\"k1\"",
 		Command: shellCmd(`printf '{"ok":true,"from":"rerun"}'`),
 	}); err != nil {
 		t.Fatalf("enqueue: %v", err)
@@ -144,7 +144,7 @@ func TestDedupeSkipReturnsPriorResult(t *testing.T) {
 		t.Fatalf("result = %#v, want object", claimResultJSON(t, store, "run-2", "a"))
 	}
 	if res["from"] != "prior" {
-		t.Fatalf("result = %v, want prior result (step skipped)", res)
+		t.Fatalf("result = %v, want prior result (node skipped)", res)
 	}
 
 	// Job acked despite the skip.
@@ -156,18 +156,18 @@ func TestDedupeSkipReturnsPriorResult(t *testing.T) {
 func TestDedupeProceedsOnPriorFailure(t *testing.T) {
 	w, store, q := newWorker(t, 30, 3, nil)
 
-	err := store.CommitStepAtom(honker.StepAtom{
-		RunID: "run-1", StepID: "a",
+	err := store.CommitNodeAtom(honker.NodeAtom{
+		RunID: "run-1", NodeID: "a",
 		Result: map[string]any{"ok": false, "error": "boom"},
-		Dedupe: &honker.DedupeRecord{WorkflowID: "wf", StepName: "a", Key: "k1", Succeeded: false, Result: map[string]any{"ok": false}},
+		Dedupe: &honker.DedupeRecord{WorkflowID: "wf", NodeName: "a", Key: "k1", Succeeded: false, Result: map[string]any{"ok": false}},
 	})
 	if err != nil {
 		t.Fatalf("seed failed dedupe: %v", err)
 	}
 
-	if _, err := q.Enqueue(StepJob{
-		RunID: "run-2", WorkflowID: "wf", StepID: "a", StepName: "a",
-		StepType: "shell", DedupeKey: "\"k1\"",
+	if _, err := q.Enqueue(NodeJob{
+		RunID: "run-2", WorkflowID: "wf", NodeID: "a", NodeName: "a",
+		NodeType: "shell", DedupeKey: "\"k1\"",
 		Command: shellCmd(`printf '{"ok":true,"from":"rerun"}'`),
 	}); err != nil {
 		t.Fatalf("enqueue: %v", err)
@@ -186,12 +186,12 @@ func TestDedupeProceedsOnPriorFailure(t *testing.T) {
 	}
 }
 
-func TestStepFailureRetriesAndRecordsFailure(t *testing.T) {
+func TestNodeFailureRetriesAndRecordsFailure(t *testing.T) {
 	w, store, q := newWorker(t, 30, 3, nil)
 
-	if _, err := q.Enqueue(StepJob{
-		RunID: "run-1", WorkflowID: "wf", StepID: "a", StepName: "a",
-		StepType: "shell", DedupeKey: "\"k1\"",
+	if _, err := q.Enqueue(NodeJob{
+		RunID: "run-1", WorkflowID: "wf", NodeID: "a", NodeName: "a",
+		NodeType: "shell", DedupeKey: "\"k1\"",
 		Command: shellCmd(`echo boom >&2; exit 1`),
 	}); err != nil {
 		t.Fatalf("enqueue: %v", err)
@@ -201,7 +201,7 @@ func TestStepFailureRetriesAndRecordsFailure(t *testing.T) {
 		t.Fatalf("claim: %v", err)
 	}
 	if err := w.handle(context.Background(), job); err == nil {
-		t.Fatal("expected handle to return an error for a failing step")
+		t.Fatal("expected handle to return an error for a failing node")
 	}
 
 	// Failed result and failed dedupe recorded.
@@ -219,17 +219,23 @@ func TestStepFailureRetriesAndRecordsFailure(t *testing.T) {
 
 	// The claim was retried, not acked: it is claimable again (max attempts 3).
 	if again, err := q.ClaimOne("worker-1"); err != nil || again == nil {
-		t.Fatalf("failed step should be re-issued for retry, got %v", err)
+		t.Fatalf("failed node should be re-issued for retry, got %v", err)
 	}
 }
 
 func TestEnvFilteringToDeclaredSecrets(t *testing.T) {
 	w, store, q := newWorker(t, 30, 3, map[string]string{"TOKEN": "abc", "LEAK": "bad"})
 
-	script := `printf '{"TOKEN":"%s","LEAK":"%s"}' "$TOKEN" "${LEAK:-unset}"`
-	if _, err := q.Enqueue(StepJob{
-		RunID: "run-1", WorkflowID: "wf", StepID: "a", StepName: "a",
-		StepType: "shell", Secrets: []string{"TOKEN"},
+	// The script reports whether TOKEN is set and non-empty, and echoes LEAK's
+	// fallback. It does not echo TOKEN's value back: node output redaction
+	// (SPEC: Varlock) scrubs any granted secret value from stdout, so the exact
+	// value can never be observed through the result. What this test pins is
+	// that the declared secret reaches the subprocess env and the undeclared
+	// one does not.
+	script := `printf '{"TOKEN_SET":"%s","LEAK":"%s"}' "${TOKEN:+yes}" "${LEAK:-unset}"`
+	if _, err := q.Enqueue(NodeJob{
+		RunID: "run-1", WorkflowID: "wf", NodeID: "a", NodeName: "a",
+		NodeType: "shell", Secrets: []string{"TOKEN"},
 		Command: shellCmd(script),
 	}); err != nil {
 		t.Fatalf("enqueue: %v", err)
@@ -243,19 +249,19 @@ func TestEnvFilteringToDeclaredSecrets(t *testing.T) {
 	}
 
 	res := claimResultJSON(t, store, "run-1", "a").(map[string]any)
-	if res["TOKEN"] != "abc" {
-		t.Fatalf("TOKEN = %v, want abc", res["TOKEN"])
+	if res["TOKEN_SET"] != "yes" {
+		t.Fatalf("TOKEN_SET = %v, want yes (declared secret must reach the subprocess)", res["TOKEN_SET"])
 	}
 	if res["LEAK"] != "unset" {
 		t.Fatalf("LEAK = %v, want unset (undeclared secret must not reach the subprocess)", res["LEAK"])
 	}
 }
 
-func TestMissingDeclaredSecretFailsStep(t *testing.T) {
+func TestMissingDeclaredSecretFailsNode(t *testing.T) {
 	w, _, q := newWorker(t, 30, 3, map[string]string{})
-	if _, err := q.Enqueue(StepJob{
-		RunID: "run-1", WorkflowID: "wf", StepID: "a", StepName: "a",
-		StepType: "shell", Secrets: []string{"NOPE"},
+	if _, err := q.Enqueue(NodeJob{
+		RunID: "run-1", WorkflowID: "wf", NodeID: "a", NodeName: "a",
+		NodeType: "shell", Secrets: []string{"NOPE"},
 		Command: shellCmd(`printf '{"ok":true}'`),
 	}); err != nil {
 		t.Fatalf("enqueue: %v", err)
@@ -275,9 +281,9 @@ func TestVisibilityTimeoutReclaimsUnackedClaim(t *testing.T) {
 	// step 9).
 	_, _, q := newWorker(t, 1, 3, nil)
 
-	if _, err := q.Enqueue(StepJob{
-		RunID: "run-1", WorkflowID: "wf", StepID: "a", StepName: "a",
-		StepType: "shell", Command: shellCmd(`printf '{"ok":true}'`),
+	if _, err := q.Enqueue(NodeJob{
+		RunID: "run-1", WorkflowID: "wf", NodeID: "a", NodeName: "a",
+		NodeType: "shell", Command: shellCmd(`printf '{"ok":true}'`),
 	}); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
@@ -306,9 +312,9 @@ func TestCancelledRunIsSkippedByWorker(t *testing.T) {
 		t.Fatalf("CancelRun: %v", err)
 	}
 
-	if _, err := q.Enqueue(StepJob{
-		RunID: "run-cancel", WorkflowID: "wf", StepID: "a", StepName: "a",
-		StepType: "shell", Command: shellCmd(`printf '{"ok":true}'`),
+	if _, err := q.Enqueue(NodeJob{
+		RunID: "run-cancel", WorkflowID: "wf", NodeID: "a", NodeName: "a",
+		NodeType: "shell", Command: shellCmd(`printf '{"ok":true}'`),
 	}); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
@@ -320,7 +326,7 @@ func TestCancelledRunIsSkippedByWorker(t *testing.T) {
 		t.Fatalf("handle: %v", err)
 	}
 
-	// The step must not have run: no result written, and the job acked.
+	// The node must not have run: no result written, and the job acked.
 	if res := claimResultJSON(t, store, "run-cancel", "a"); res != nil {
 		t.Fatalf("cancelled run wrote a result: %v", res)
 	}
@@ -329,17 +335,17 @@ func TestCancelledRunIsSkippedByWorker(t *testing.T) {
 	}
 }
 
-func TestRunMarkedCompletedAfterLastStep(t *testing.T) {
+func TestRunMarkedCompletedAfterLastNode(t *testing.T) {
 	w, store, q := newWorker(t, 30, 3, nil)
 	if err := store.CreateRun("run-done", "wf"); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
 
-	// A single-step run: the only step has no downstream, so completing it
+	// A single-node run: the only node has no downstream, so completing it
 	// marks the run completed.
-	if _, err := q.Enqueue(StepJob{
-		RunID: "run-done", WorkflowID: "wf", StepID: "a", StepName: "a",
-		StepType: "shell", Command: shellCmd(`printf '{"ok":true}'`),
+	if _, err := q.Enqueue(NodeJob{
+		RunID: "run-done", WorkflowID: "wf", NodeID: "a", NodeName: "a",
+		NodeType: "shell", Command: shellCmd(`printf '{"ok":true}'`),
 	}); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
@@ -364,9 +370,9 @@ func TestEmailPollHandsEmailsToCallback(t *testing.T) {
 		map[string]any{"from": "a@b.com", "to": []any{"x@y.com"}, "subject": "Hi", "body": "yo"},
 	}}
 
-	if _, err := q.Enqueue(StepJob{
-		RunID: "poll", WorkflowID: "wf", StepID: "poll", StepName: "poll",
-		StepType: "poll", Command: []string{"ignored"},
+	if _, err := q.Enqueue(NodeJob{
+		RunID: "poll", WorkflowID: "wf", NodeID: "poll", NodeName: "poll",
+		NodeType: "poll", Command: []string{"ignored"},
 		Secrets: []string{"PASS"},
 		Config:  map[string]any{"kind": "email"},
 		Input:   map[string]any{"host": "imap.example.com", "username": "u", "secret": "PASS"},
@@ -401,7 +407,7 @@ func TestOnRunCompleteFiresWhenRunFinishes(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	q := store.Queue("steps", 30, 3)
+	q := store.Queue("nodes", 30, 3)
 	w := New(store, q, "worker-1", Config{
 		OnRunComplete: func(workflowID, runID string) {
 			gotWorkflow = workflowID
@@ -411,9 +417,9 @@ func TestOnRunCompleteFiresWhenRunFinishes(t *testing.T) {
 	if err := store.CreateRun("run-1", "wf"); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
-	if _, err := q.Enqueue(StepJob{
-		RunID: "run-1", WorkflowID: "wf", StepID: "a", StepName: "a",
-		StepType: "shell", Command: shellCmd(`printf '{"ok":true}'`),
+	if _, err := q.Enqueue(NodeJob{
+		RunID: "run-1", WorkflowID: "wf", NodeID: "a", NodeName: "a",
+		NodeType: "shell", Command: shellCmd(`printf '{"ok":true}'`),
 	}); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
@@ -438,16 +444,16 @@ func TestOnRunCompleteNotFiredForIncompleteRun(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	q := store.Queue("steps", 30, 3)
+	q := store.Queue("nodes", 30, 3)
 	w := New(store, q, "worker-1", Config{OnRunComplete: func(_, _ string) { called = true }})
 	if err := store.CreateRun("run-1", "wf"); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
-	// Two steps: a -> b. Running a leaves b pending, so the run is not complete.
-	b := StepJob{RunID: "run-1", WorkflowID: "wf", StepID: "b", StepName: "b",
-		StepType: "shell", Command: shellCmd(`true`)}
-	a := StepJob{RunID: "run-1", WorkflowID: "wf", StepID: "a", StepName: "a",
-		StepType: "shell", Command: shellCmd(`printf '{"ok":true}'`), Downstream: []StepJob{b}}
+	// Two nodes: a -> b. Running a leaves b pending, so the run is not complete.
+	b := NodeJob{RunID: "run-1", WorkflowID: "wf", NodeID: "b", NodeName: "b",
+		NodeType: "shell", Command: shellCmd(`true`)}
+	a := NodeJob{RunID: "run-1", WorkflowID: "wf", NodeID: "a", NodeName: "a",
+		NodeType: "shell", Command: shellCmd(`printf '{"ok":true}'`), Downstream: []NodeJob{b}}
 	if _, err := q.Enqueue(a); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
@@ -492,9 +498,9 @@ printf '%s\n' '{"type":"STATE","value":{"bookmark":"v1"}}'
 
 	runTap := func(runID string) any {
 		t.Helper()
-		if _, err := q.Enqueue(StepJob{
-			RunID: runID, WorkflowID: "wf", StepID: "t", StepName: "t",
-			StepType: "singer-tap",
+		if _, err := q.Enqueue(NodeJob{
+			RunID: runID, WorkflowID: "wf", NodeID: "t", NodeName: "t",
+			NodeType: "singer-tap",
 			Config:   map[string]any{"tap": "tap-fake", "config": map[string]any{"client_id": "abc"}},
 			Command:  []string{tap},
 			Secrets:  []string{"OUT"},
@@ -517,7 +523,7 @@ printf '%s\n' '{"type":"STATE","value":{"bookmark":"v1"}}'
 		t.Fatalf("first run result = %v, want records", res1)
 	}
 
-	// Second run of the same workflow/step: the prior bookmark must have been
+	// Second run of the same workflow/node: the prior bookmark must have been
 	// passed as a --state file (visible in $OUT).
 	runTap("run-2")
 	b, err := os.ReadFile(w.secrets["OUT"])
@@ -543,21 +549,21 @@ func (s stubMCP) Call(_ context.Context, req mcp.CallRequest) (mcp.CallResult, e
 	return s.result, s.err
 }
 
-func TestMCPStepDispatchesAndMapsError(t *testing.T) {
+func TestMCPNodeDispatchesAndMapsError(t *testing.T) {
 	ext := extPath(t)
 	store, err := honker.Open(filepath.Join(t.TempDir(), "test.db"), ext)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	q := store.Queue("steps", 30, 3)
+	q := store.Queue("nodes", 30, 3)
 	w := New(store, q, "worker-1", Config{MCP: stubMCP{
 		result: mcp.CallResult{IsError: true, Content: "boom"},
 	}})
 
-	if _, err := q.Enqueue(StepJob{
-		RunID: "run-mcp", WorkflowID: "wf", StepID: "m", StepName: "m",
-		StepType: "mcp-call",
+	if _, err := q.Enqueue(NodeJob{
+		RunID: "run-mcp", WorkflowID: "wf", NodeID: "m", NodeName: "m",
+		NodeType: "mcp-call",
 		Config:   map[string]any{"server": "srv", "tool": "search", "input": map[string]any{"query": "x"}, "mode": "stateless"},
 		Command:  []string{"srv"},
 	}); err != nil {
@@ -576,7 +582,7 @@ func TestMCPStepDispatchesAndMapsError(t *testing.T) {
 	}
 }
 
-// stubRunner is a StepRunner that returns a fixed result without spawning a
+// stubRunner is a NodeRunner that returns a fixed result without spawning a
 // subprocess, so threading of the {event, steps} input can be asserted.
 type stubRunner struct {
 	out any
@@ -592,13 +598,13 @@ func TestDownstreamInputIsThreaded(t *testing.T) {
 	w.runner = stubRunner{out: map[string]any{"ok": true}}
 
 	headInput := map[string]any{"event": map[string]any{"id": "e1"}, "steps": map[string]any{}}
-	if _, err := q.Enqueue(StepJob{
-		RunID: "run-1", WorkflowID: "wf", StepID: "a", StepName: "a",
-		StepType: "shell", Input: headInput,
+	if _, err := q.Enqueue(NodeJob{
+		RunID: "run-1", WorkflowID: "wf", NodeID: "a", NodeName: "a",
+		NodeType: "shell", Input: headInput,
 		Command: []string{"ignored"},
-		Downstream: []StepJob{{
-			RunID: "run-1", WorkflowID: "wf", StepID: "b", StepName: "b",
-			StepType: "shell", Command: []string{"ignored"},
+		Downstream: []NodeJob{{
+			RunID: "run-1", WorkflowID: "wf", NodeID: "b", NodeName: "b",
+			NodeType: "shell", Command: []string{"ignored"},
 		}},
 	}); err != nil {
 		t.Fatalf("enqueue: %v", err)
@@ -615,11 +621,11 @@ func TestDownstreamInputIsThreaded(t *testing.T) {
 	if err != nil || down == nil {
 		t.Fatalf("downstream not claimable: %v", err)
 	}
-	var d StepJob
+	var d NodeJob
 	if err := down.UnmarshalPayload(&d); err != nil {
 		t.Fatalf("downstream payload: %v", err)
 	}
-	// The downstream's input must carry the event and step a's result under its name.
+	// The downstream's input must carry the event and node a's result under its name.
 	ev, _ := d.Input["event"].(map[string]any)
 	if ev["id"] != "e1" {
 		t.Fatalf("downstream event = %v, want e1", ev)
@@ -638,19 +644,19 @@ func TestDedupeKeyEvaluatedAtExecution(t *testing.T) {
 	w, store, q := newWorker(t, 30, 3, nil)
 
 	// Seed a prior successful dedupe for key derived from event.id = "e-7".
-	err := store.CommitStepAtom(honker.StepAtom{
-		RunID: "run-1", StepID: "a",
+	err := store.CommitNodeAtom(honker.NodeAtom{
+		RunID: "run-1", NodeID: "a",
 		Result: map[string]any{"ok": true, "from": "prior"},
-		Dedupe: &honker.DedupeRecord{WorkflowID: "wf", StepName: "a", Key: "e-7", Succeeded: true, Result: map[string]any{"ok": true, "from": "prior"}},
+		Dedupe: &honker.DedupeRecord{WorkflowID: "wf", NodeName: "a", Key: "e-7", Succeeded: true, Result: map[string]any{"ok": true, "from": "prior"}},
 	})
 	if err != nil {
 		t.Fatalf("seed dedupe: %v", err)
 	}
 
-	// The step's dedupe_key is the expression event.id, evaluated against input.
-	if _, err := q.Enqueue(StepJob{
-		RunID: "run-2", WorkflowID: "wf", StepID: "a", StepName: "a",
-		StepType: "shell", DedupeKey: "event.id",
+	// The node's dedupe_key is the expression event.id, evaluated against input.
+	if _, err := q.Enqueue(NodeJob{
+		RunID: "run-2", WorkflowID: "wf", NodeID: "a", NodeName: "a",
+		NodeType: "shell", DedupeKey: "event.id",
 		Input:   map[string]any{"event": map[string]any{"id": "e-7"}, "steps": map[string]any{}},
 		Command: shellCmd(`printf '{"ok":true,"from":"rerun"}'`),
 	}); err != nil {
@@ -673,8 +679,8 @@ func TestDedupeKeyEvaluatedAtExecution(t *testing.T) {
 	}
 }
 
-// switchStubRunner is a StepRunner that answers a switch step with a fixed
-// chosen branch and returns a fixed result for other steps, without spawning
+// switchStubRunner is a NodeRunner that answers a switch node with a fixed
+// chosen branch and returns a fixed result for other nodes, without spawning
 // subprocesses.
 type switchStubRunner struct {
 	chosen string
@@ -682,7 +688,7 @@ type switchStubRunner struct {
 }
 
 func (s *switchStubRunner) Run(_ context.Context, req exec.Request) (exec.Result, error) {
-	// Only the switch step returns the branch name; body steps return a map.
+	// Only the switch node returns the branch name; body nodes return a map.
 	for _, c := range req.Command {
 		if c == "__switch" {
 			return exec.Result{Output: s.chosen}, nil
@@ -693,24 +699,24 @@ func (s *switchStubRunner) Run(_ context.Context, req exec.Request) (exec.Result
 
 // TestSwitchRoutesChosenBranchAndSkipsOthers pins switch routing (ADR-0022):
 // the chosen branch runs, the skipped branch is recorded skipped, and a rejoin
-// step depending on both runs once all deps are satisfied (ADR-0023).
+// node depending on both runs once all deps are satisfied (ADR-0023).
 func TestSwitchRoutesChosenBranchAndSkipsOthers(t *testing.T) {
 	w, store, q := newWorker(t, 30, 3, nil)
 	stub := &switchStubRunner{chosen: "notify_finance", ran: map[string]bool{}}
 	w.runner = stub
 
-	// Build the switch workflow as a StepJob tree: route -> [notify_finance,
+	// Build the switch workflow as a NodeJob tree: route -> [notify_finance,
 	// log_and_done] -> record.
-	record := StepJob{RunID: "run-1", WorkflowID: "wf", StepID: "record", StepName: "record", StepType: "shell", Command: []string{"ignored"}}
-	nf := StepJob{RunID: "run-1", WorkflowID: "wf", StepID: "notify_finance", StepName: "notify_finance", StepType: "shell", Command: []string{"ignored"},
-		Dependents: []string{"record"}, Downstream: []StepJob{record}}
-	ld := StepJob{RunID: "run-1", WorkflowID: "wf", StepID: "log_and_done", StepName: "log_and_done", StepType: "shell", Command: []string{"ignored"},
-		Dependents: []string{"record"}, Downstream: []StepJob{record}}
-	route := StepJob{RunID: "run-1", WorkflowID: "wf", StepID: "route", StepName: "route", StepType: "switch",
+	record := NodeJob{RunID: "run-1", WorkflowID: "wf", NodeID: "record", NodeName: "record", NodeType: "shell", Command: []string{"ignored"}}
+	nf := NodeJob{RunID: "run-1", WorkflowID: "wf", NodeID: "notify_finance", NodeName: "notify_finance", NodeType: "shell", Command: []string{"ignored"},
+		Dependents: []string{"record"}, Downstream: []NodeJob{record}}
+	ld := NodeJob{RunID: "run-1", WorkflowID: "wf", NodeID: "log_and_done", NodeName: "log_and_done", NodeType: "shell", Command: []string{"ignored"},
+		Dependents: []string{"record"}, Downstream: []NodeJob{record}}
+	route := NodeJob{RunID: "run-1", WorkflowID: "wf", NodeID: "route", NodeName: "route", NodeType: "switch",
 		Config:     map[string]any{"cases": map[string]any{"high": "notify_finance", "low": "log_and_done"}},
 		Command:    []string{"servitor", "__switch", "steps.check"},
 		Dependents: []string{"notify_finance", "log_and_done"},
-		Downstream: []StepJob{nf, ld},
+		Downstream: []NodeJob{nf, ld},
 	}
 
 	// Init run deps: route depends on nothing; nf, ld depend on route; record
@@ -767,7 +773,7 @@ func runLoop(t *testing.T, w *Worker, q *honker.Queue) {
 	}
 }
 
-// foreachStubRunner answers a foreach step with the list and each body
+// foreachStubRunner answers a foreach node with the list and each body
 // iteration with a result derived from its `item` input.
 type foreachStubRunner struct{}
 
@@ -777,35 +783,35 @@ func (foreachStubRunner) Run(_ context.Context, req exec.Request) (exec.Result, 
 	if _, isBody := in["item"]; isBody {
 		return exec.Result{Output: map[string]any{"item": in["item"]}}, nil
 	}
-	// A rejoin step has the collected array under the foreach step's name in its
+	// A rejoin node has the collected array under the foreach node's name in its
 	// input; return it so the test can verify the collect.
 	if steps, ok := in["steps"].(map[string]any); ok {
 		if fan, ok := steps["fan"]; ok {
 			return exec.Result{Output: fan}, nil
 		}
 	}
-	// The foreach step itself returns the iteration list.
+	// The foreach node itself returns the iteration list.
 	return exec.Result{Output: []any{"a", "b", "c"}}, nil
 }
 
 // TestForeachFansOutAndCollectsAtRejoin pins foreach (ADR-0024): the body runs
-// once per element, results collect into an array under the foreach step's name
+// once per element, results collect into an array under the foreach node's name
 // at the rejoin, in input order.
 func TestForeachFansOutAndCollectsAtRejoin(t *testing.T) {
 	w, store, q := newWorker(t, 30, 3, nil)
 	w.runner = foreachStubRunner{}
 
 	// foreach fan -> body process_one (fanned N times) -> rejoin summarize.
-	summarize := StepJob{RunID: "run-1", WorkflowID: "wf", StepID: "summarize", StepName: "summarize",
-		StepType: "transform", Command: []string{"ignored"},
+	summarize := NodeJob{RunID: "run-1", WorkflowID: "wf", NodeID: "summarize", NodeName: "summarize",
+		NodeType: "transform", Command: []string{"ignored"},
 		CollectFrom: "process_one", CollectAs: "item", CollectCount: 3, CollectName: "fan"}
-	processOne := StepJob{RunID: "run-1", WorkflowID: "wf", StepID: "process_one", StepName: "process_one",
-		StepType: "shell", Command: []string{"ignored"},
-		Dependents: []string{"summarize"}, Downstream: []StepJob{summarize}}
-	fan := StepJob{RunID: "run-1", WorkflowID: "wf", StepID: "fan", StepName: "fan",
-		StepType: "foreach", Command: []string{"servitor", "__foreach", "steps.ids"},
+	processOne := NodeJob{RunID: "run-1", WorkflowID: "wf", NodeID: "process_one", NodeName: "process_one",
+		NodeType: "shell", Command: []string{"ignored"},
+		Dependents: []string{"summarize"}, Downstream: []NodeJob{summarize}}
+	fan := NodeJob{RunID: "run-1", WorkflowID: "wf", NodeID: "fan", NodeName: "fan",
+		NodeType: "foreach", Command: []string{"servitor", "__foreach", "steps.ids"},
 		Body: &processOne, BodyAs: "item", Rejoins: []string{"summarize"},
-		Downstream: []StepJob{summarize}}
+		Downstream: []NodeJob{summarize}}
 
 	if err := store.CreateRun("run-1", "wf"); err != nil {
 		t.Fatalf("CreateRun: %v", err)

@@ -17,7 +17,9 @@ reviewed pull request.
 ## The artifact: a Wafer
 
 A Wafer is a YAML file with two parts: **triggers** (`on:`) that start the
-workflow, and **steps** (`steps:`) that run once it does. The file is the only
+workflow, and **nodes** (`nodes:`) that run once it does. A node is either an
+**action node** (does work: http, shell, slack) or a **flow node** (routes or
+fans out: switch, foreach). The file is the only
 place workflow state lives; there is no UI or database row to edit.
 
 ```yaml
@@ -25,7 +27,7 @@ name: notify_on_new_lead
 on:
   - type: grist_webhook
     path: /hooks/leads
-steps:
+nodes:
   - type: shell
     name: notify
     secrets: [SLACK_TOKEN]
@@ -33,13 +35,13 @@ steps:
 ```
 
 - `name` is required and unique.
-- Each step has a `type` (for example `shell`, `http`, `transform`, `branch`,
-  `foreach`). A step may have a `name` for referencing from other steps and
-  `depends_on` to order it after other steps.
-- `secrets` lists the secret names this step needs; the runner passes *only*
-  those to the step's subprocess (OS-level isolation).
-- `dedupe_key` makes a side-effecting step run at most once per value. Add it to
-  any step with external side effects; the validator warns if you omit it.
+- Each node has a `type` (for example `shell`, `http`, `transform`, `switch`,
+  `foreach`). A node may have a `name` for referencing from other nodes and
+  `depends_on` to order it after other nodes.
+- `secrets` lists the secret names this node needs; the runner passes *only*
+  those to the node's subprocess (OS-level isolation).
+- `dedupe_key` makes a side-effecting node run at most once per value. Add it to
+  any node with external side effects; the validator warns if you omit it.
 
 ## The CLI
 
@@ -48,7 +50,7 @@ codes: `0` ok, `1` operation failed, `2` usage error, `3` daemon not running.
 
 | Command | Purpose |
 |---|---|
-| `servitor capabilities [dir]` | Write step/trigger schemas + examples to files |
+| `servitor capabilities [dir]` | Write capability/trigger schemas + examples to files |
 | `servitor dry-run <wafer>` | Validate and resolve without running anything (`--json` for structured) |
 | `servitor submit <wafer>` | Validate and register a workflow |
 | `servitor update <wafer>` | Replace a registered workflow's definition |
@@ -57,7 +59,7 @@ codes: `0` ok, `1` operation failed, `2` usage error, `3` daemon not running.
 | `servitor run` | Boot the runner daemon (self-heals under varlock) |
 | `servitor stop` | Drain and shut the daemon down |
 | `servitor runs` | List run history |
-| `servitor run <id>` | Inspect one run and its step outcomes |
+| `servitor run <id>` | Inspect one run and its node outcomes |
 | `servitor cancel <id>` | Stop an in-flight run |
 | `servitor mcp add/list/remove` | Declare/remove an MCP server (ADR-0018) |
 | `servitor tap add/list/remove` | Declare/remove a Singer tap (ADR-0018) |
@@ -70,27 +72,27 @@ errors, pointing you to submit).
 
 ### 1. Discover what the runner supports
 
-Do not guess what a step type takes or where it can be used. Materialize the
+Do not guess what a capability takes or where it can be used. Materialize the
 capability set and read the schemas:
 
 ```
 servitor capabilities ./capabilities
 ```
 
-This writes, per mechanism, one file per step type containing its JSON Schema,
-role (trigger or action), and delivery, plus a derived example fragment, and an
-`index.yaml` listing the mechanisms. Read `./capabilities/index.yaml` to see
-what exists, then read the schema for the specific type you need (for example
+This writes, per mechanism, one file per capability containing its JSON Schema,
+role (trigger, action, or flow), and delivery, plus a derived example fragment,
+and an `index.yaml` listing the mechanisms. Read `./capabilities/index.yaml` to
+see what exists, then read the schema for the specific type you need (for example
 `./capabilities/core/shell.yaml`) to learn its required fields and a valid
 example. The declared integrations sit with their mechanism (`singer/taps.yaml`,
-`mcp/servers.yaml`), so you can see what is available to run against a step
+`mcp/servers.yaml`), so you can see what is available to run against a node
 type. The example is generated from the schema, so it cannot drift from it.
 
 Available MCP servers and Singer taps/targets are declared in a local
 `servitor.integrations.yaml` (ADR-0018), not auto-discovered from PATH. Manage
 them with `servitor mcp`/`tap`/`target` add/remove; the actual software install
 is delegated to the ecosystem's package managers (npx, pipx, uv, Meltano). If a
-step names a server/tap that is not declared, it will not appear here.
+node names a server/tap that is not declared, it will not appear here.
 
 > A committed `capabilities/` directory is a materialized snapshot you can read
 > from the repo without a running daemon (ADR-0009). If a runner is reachable,
@@ -115,7 +117,7 @@ The readable form shows the workflow, triggers, and the resolved run order (the
 DAG). The `--json` form returns structured validation: `errors`, `warnings`
 (each with a JSON Pointer `path` and a stable `code`), and the `dag`. Fix any
 blocking errors; treat warnings (for example `missing_dedupe_key`) as things to
-resolve for side-effecting steps. Nothing runs and nothing is persisted.
+resolve for side-effecting nodes. Nothing runs and nothing is persisted.
 
 ### 4. Ship through a reviewed pull request
 
@@ -132,7 +134,7 @@ Where the runner is local to you, `submit` registers it: `servitor submit
 ## Secret handling
 
 Secrets live in varlock, resolved into the runner's environment at boot (the
-runner re-execs itself under `varlock run`). A step sees only what it declares in
+runner re-execs itself under `varlock run`). A node sees only what it declares in
 `secrets:`. Never put a real secret value in a Wafer or in this conversation; if
-you need to check a step's env, the step itself reads it from its declared
+you need to check a node's env, the node itself reads it from its declared
 secrets.

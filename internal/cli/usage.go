@@ -21,7 +21,7 @@ Commands:
   version          print the version
   help             show this help
   run              boot the runner daemon (under varlock)
-  capabilities     write step/trigger/secret/tap schemas to files
+  capabilities     write node/trigger/secret/tap schemas to files
   dry-run <wafer>  validate and resolve without executing (--json for structured)
   submit <wafer>   validate and register a workflow
   update <wafer>   replace a workflow's definition

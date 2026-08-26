@@ -18,7 +18,7 @@ type DiscoveredServer struct {
 
 // DiscoverServers probes each declared server (name to command) for its
 // protocol mode and tools via tools/list. It is invoked once during a
-// capabilities refresh, not per step execution (SPEC: Capability discovery).
+// capabilities refresh, not per node execution (SPEC: Capability discovery).
 // The declared set comes from the integrations config (ADR-0018); there is no
 // PATH scan.
 func DiscoverServers(declared map[string][]string, env []string) []DiscoveredServer {

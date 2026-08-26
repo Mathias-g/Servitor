@@ -1,6 +1,6 @@
 // Package capabilities materializes the per-server capability set (SPEC: How
 // an agent discovers integrations) as files an agent can read on demand. For
-// each step and trigger type it writes the JSON Schema and a derived example
+// each capability it writes the JSON Schema and a derived example
 // fragment, grouped by mechanism (core, webhook, singer, mcp, helper,
 // websocket; ADR-0017). Discovered executables sit with their mechanism
 // (singer/taps.yaml, mcp/servers.yaml). A pipeline can commit the output
@@ -27,7 +27,7 @@ import (
 // DefaultDir is where capabilities writes when no directory is given.
 const DefaultDir = ".servitor/capabilities"
 
-// entry is the on-disk shape for one step type: its role, delivery, schema, and
+// entry is the on-disk shape for one capability: its kind, role, delivery, schema, and
 // a derived example fragment.
 type entry struct {
 	Kind        string         `yaml:"kind"`
@@ -40,10 +40,10 @@ type entry struct {
 	Example     map[string]any `yaml:"example"`
 }
 
-// mechanism is one group in the index: its steps and triggers.
+// mechanism is one group in the index: its nodes and triggers.
 type mechanism struct {
 	Name     string   `yaml:"name"`
-	Steps    []string `yaml:"steps"`
+	Nodes    []string `yaml:"nodes"`
 	Triggers []string `yaml:"triggers"`
 }
 
@@ -90,7 +90,7 @@ type tapsReport struct {
 
 // writeTaps writes a taps.yaml under the singer/ group reporting the declared
 // Singer taps and their discovered schemas (SPEC: How an agent discovers
-// integrations, ADR-0018). It sits beside the singer-tap step type so an agent
+// integrations, ADR-0018). It sits beside the singer-tap node so an agent
 // sees both the type and what is declared to run against it (ADR-0017).
 func writeTaps(dir string) error {
 	report := tapsReport{Generated: true}
@@ -128,7 +128,7 @@ type serversReport struct {
 
 // writeServers writes a servers.yaml under the mcp/ group reporting the
 // declared MCP servers (ADR-0017, ADR-0018): each declared server, its protocol
-// mode, and its tool schemas. It sits beside the mcp-call step type so an agent
+// mode, and its tool schemas. It sits beside the mcp-call node so an agent
 // sees both the type and what is declared. If a server cannot be probed, the
 // report records its error rather than failing.
 func writeServers(dir string) error {
@@ -228,15 +228,15 @@ func declaredSecrets() (entries []secretEntry, note string, err error) {
 }
 
 func writeTypes(dir string) error {
-	for _, st := range registry.StepTypes() {
+	for _, st := range registry.Nodes() {
 		e := entry{
-			Kind:        "step",
+			Kind:        "node",
 			Type:        st.Name,
 			Group:       st.Group,
-			Role:        "action",
+			Role:        string(st.Role),
 			Description: st.Desc,
 			Schema:      st.JSONSchema(),
-			Example:     st.StepExample(),
+			Example:     st.NodeExample(),
 		}
 		if err := writeEntry(dir, e); err != nil {
 			return err
@@ -244,7 +244,7 @@ func writeTypes(dir string) error {
 	}
 	for _, tt := range registry.TriggerTypes() {
 		e := entry{
-			Kind:        "step",
+			Kind:        "trigger",
 			Type:        tt.Name,
 			Group:       tt.Group,
 			Role:        "trigger",
@@ -285,9 +285,9 @@ func writeIndex(dir string) error {
 			groupNames = append(groupNames, group)
 		}
 	}
-	for _, st := range registry.StepTypes() {
+	for _, st := range registry.Nodes() {
 		add(st.Group)
-		groups[st.Group].Steps = append(groups[st.Group].Steps, st.Name)
+		groups[st.Group].Nodes = append(groups[st.Group].Nodes, st.Name)
 	}
 	for _, tt := range registry.TriggerTypes() {
 		add(tt.Group)
@@ -297,7 +297,7 @@ func writeIndex(dir string) error {
 	idx := index{Generated: true}
 	for _, name := range groupNames {
 		mech := groups[name]
-		sort.Strings(mech.Steps)
+		sort.Strings(mech.Nodes)
 		sort.Strings(mech.Triggers)
 		idx.Mechanisms = append(idx.Mechanisms, *mech)
 	}

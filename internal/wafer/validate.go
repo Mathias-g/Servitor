@@ -37,10 +37,10 @@ func (r Result) Valid() bool { return len(r.Errors) == 0 }
 const (
 	codeMissingRequired = "missing_required_field"
 	codeTypeMismatch    = "type_mismatch"
-	codeUnknownStep     = "unknown_step_type"
+	codeUnknownNode     = "unknown_node_type"
 	codeUnknownTrigger  = "unknown_trigger_type"
 	codeMissingName     = "missing_name"
-	codeMissingSteps    = "missing_steps"
+	codeMissingNodes    = "missing_nodes"
 	codeMissingDedupe   = "missing_dedupe_key"
 	codeMissingSecret   = "missing_secret"
 )
@@ -92,18 +92,18 @@ func validateValue(raw any) Result {
 		res.validateTriggers(on)
 	}
 
-	// steps (required, non-empty).
-	steps, ok := root["steps"].([]any)
+	// nodes (required, non-empty).
+	nodes, ok := root["nodes"].([]any)
 	if !ok {
-		res.Errors = append(res.Errors, Issue{Path: "/steps", Code: codeMissingSteps, Message: "field 'steps' is required and must be a list", Expected: "array"})
+		res.Errors = append(res.Errors, Issue{Path: "/nodes", Code: codeMissingNodes, Message: "field 'nodes' is required and must be a list", Expected: "array"})
 		return res
 	}
-	if len(steps) == 0 {
-		res.Errors = append(res.Errors, Issue{Path: "/steps", Code: codeMissingSteps, Message: "field 'steps' must contain at least one step", Expected: "non-empty array"})
+	if len(nodes) == 0 {
+		res.Errors = append(res.Errors, Issue{Path: "/nodes", Code: codeMissingNodes, Message: "field 'nodes' must contain at least one node", Expected: "non-empty array"})
 		return res
 	}
-	for i, s := range steps {
-		res.validateStep(ptr("/steps", strconv.Itoa(i)), s)
+	for i, s := range nodes {
+		res.validateNode(ptr("/nodes", strconv.Itoa(i)), s)
 	}
 
 	return res
@@ -136,23 +136,23 @@ func (res *Result) validateTriggers(on any) {
 	}
 }
 
-func (res *Result) validateStep(p string, s any) {
+func (res *Result) validateNode(p string, s any) {
 	m, ok := s.(map[string]any)
 	if !ok {
-		res.Errors = append(res.Errors, Issue{Path: p, Code: codeTypeMismatch, Message: "step must be an object", Expected: "object"})
+		res.Errors = append(res.Errors, Issue{Path: p, Code: codeTypeMismatch, Message: "node must be an object", Expected: "object"})
 		return
 	}
 	typ, ok := m["type"].(string)
 	if !ok {
-		res.Errors = append(res.Errors, Issue{Path: ptr(p, "type"), Code: codeMissingRequired, Message: "step must declare a 'type'", Expected: "string"})
+		res.Errors = append(res.Errors, Issue{Path: ptr(p, "type"), Code: codeMissingRequired, Message: "node must declare a 'type'", Expected: "string"})
 		return
 	}
-	st := registry.LookupStep(typ)
+	st := registry.LookupNode(typ)
 	if st == nil {
-		res.Errors = append(res.Errors, Issue{Path: ptr(p, "type"), Code: codeUnknownStep, Message: fmt.Sprintf("unknown step type %q", typ), Suggestion: nearestStep(typ)})
+		res.Errors = append(res.Errors, Issue{Path: ptr(p, "type"), Code: codeUnknownNode, Message: fmt.Sprintf("unknown node type %q", typ), Suggestion: nearestNode(typ)})
 		return
 	}
-	validateConfig(res, st.Name, st.Fields, p, m, "step")
+	validateConfig(res, st.Name, st.Fields, p, m, "node")
 
 	if st.SideEffect {
 		_, hasKey := m["dedupe_key"]
@@ -160,13 +160,13 @@ func (res *Result) validateStep(p string, s any) {
 			res.Warnings = append(res.Warnings, Issue{
 				Path:    p,
 				Code:    codeMissingDedupe,
-				Message: fmt.Sprintf("step type %q performs an external side effect and has no dedupe_key; this step may run more than once on retry", st.Name),
+				Message: fmt.Sprintf("Node %q performs an external side effect and has no dedupe_key; this node may run more than once on retry", st.Name),
 			})
 		}
 	}
 }
 
-// validateConfig checks a step/trigger's type-specific fields against its
+// validateConfig checks a node/trigger's type-specific fields against its
 // schema, reporting missing-required and type-mismatch issues. objPath is the
 // JSON pointer to the config object itself.
 func validateConfig(res *Result, typeName string, fields map[string]*registry.Field, objPath string, m map[string]any, kind string) {
@@ -243,12 +243,12 @@ func yamlKind(v any) string {
 	return "unknown"
 }
 
-// nearestStep returns the closest registered step type name to an unknown one,
+// nearestNode returns the closest registered node name to an unknown one,
 // for a suggestion (for example "slak" -> "slack").
-func nearestStep(unknown string) string {
+func nearestNode(unknown string) string {
 	return nearest(unknown, func() []string {
 		names := []string{}
-		for _, st := range registry.StepTypes() {
+		for _, st := range registry.Nodes() {
 			names = append(names, st.Name)
 		}
 		return names

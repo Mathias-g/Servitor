@@ -5,7 +5,7 @@
 // The self-healing launch makes that the default: when the daemon is started
 // without the varlock sentinel set, it re-executes itself under `varlock run`
 // so it always boots with secrets resolved. Resolved secrets are then exposed
-// to the daemon as the process environment, and per-step filtering (exec
+// to the daemon as the process environment, and per-node filtering (exec
 // package) decides which of them a subprocess may actually see.
 package varlock
 
@@ -68,8 +68,8 @@ func SelfHeal() (bool, error) {
 
 // ResolvedSecrets returns the current process environment as a name-to-value
 // map. Under varlock this is the resolved secret set (plus the runner's own
-// environment); the per-step filtering in the exec package exposes only the
-// names a step declares, so exposing the whole map is safe.
+// environment); the per-node filtering in the exec package exposes only the
+// names a node declares, so exposing the whole map is safe.
 func ResolvedSecrets() map[string]string {
 	return environMap()
 }

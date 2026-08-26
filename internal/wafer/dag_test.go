@@ -8,7 +8,7 @@ import (
 func TestResolveDAGRunOrder(t *testing.T) {
 	doc := []byte(`
 name: w
-steps:
+nodes:
   - type: transform
     name: b
     depends_on: [a]
@@ -31,14 +31,14 @@ steps:
 	}
 	// a must come before b, and b before c.
 	pos := map[string]int{}
-	for i, s := range dag.Steps {
+	for i, s := range dag.Nodes {
 		pos[s.Name] = i
 	}
 	if pos["a"] > pos["b"] || pos["b"] > pos["c"] {
-		t.Fatalf("run order violates dependencies: %+v", dag.Steps)
+		t.Fatalf("run order violates dependencies: %+v", dag.Nodes)
 	}
 	// c depends on a and b.
-	for _, s := range dag.Steps {
+	for _, s := range dag.Nodes {
 		if s.Name == "c" {
 			if len(s.DependsOn) != 2 {
 				t.Fatalf("c DependsOn = %v, want [a b]", s.DependsOn)
@@ -50,7 +50,7 @@ steps:
 func TestResolveDAGUnknownReference(t *testing.T) {
 	doc := []byte(`
 name: w
-steps:
+nodes:
   - type: transform
     name: a
     depends_on: [missing]
@@ -61,15 +61,15 @@ steps:
 		t.Fatalf("parse: %v", err)
 	}
 	_, issues := ResolveDAG(w)
-	if len(issues) != 1 || issues[0].Code != "unknown_step_reference" {
-		t.Fatalf("expected unknown_step_reference, got %+v", issues)
+	if len(issues) != 1 || issues[0].Code != "unknown_node_reference" {
+		t.Fatalf("expected unknown_node_reference, got %+v", issues)
 	}
 }
 
 func TestResolveDAGCycle(t *testing.T) {
 	doc := []byte(`
 name: w
-steps:
+nodes:
   - type: transform
     name: a
     depends_on: [b]
@@ -92,7 +92,7 @@ steps:
 func TestDryRunProducesDAG(t *testing.T) {
 	doc := []byte(`
 name: w
-steps:
+nodes:
   - type: http
     name: fetch
     url: x
@@ -110,13 +110,13 @@ steps:
 	if out.DAG == nil {
 		t.Fatal("expected a resolved DAG")
 	}
-	if len(out.DAG.Steps) != 2 {
-		t.Fatalf("expected 2 steps, got %d", len(out.DAG.Steps))
+	if len(out.DAG.Nodes) != 2 {
+		t.Fatalf("expected 2 nodes, got %d", len(out.DAG.Nodes))
 	}
 }
 
 func TestDryRunNoDAGOnError(t *testing.T) {
-	out := DryRun([]byte("name:\nsteps:\n  - type: nope\n"))
+	out := DryRun([]byte("name:\nnodes:\n  - type: nope\n"))
 	if out.DAG != nil {
 		t.Fatal("expected no DAG when validation fails")
 	}
@@ -130,7 +130,7 @@ func TestDryRunReportsRedactedSecretsAndMissingWarnings(t *testing.T) {
 	t.Setenv("MISSING_SECRET", "")
 	doc := []byte(`
 name: w
-steps:
+nodes:
   - type: shell
     name: a
     secrets: [PRESENT_SECRET, MISSING_SECRET]
@@ -144,7 +144,7 @@ steps:
 		t.Fatalf("secrets = %v, want [PRESENT_SECRET MISSING_SECRET]", out.Secrets)
 	}
 	// Only the missing one warns (there may also be a missing_dedupe_key
-	// warning from the shell step).
+	// warning from the shell node).
 	var missing []Issue
 	for _, warn := range out.Result.Warnings {
 		if warn.Code == "missing_secret" {
@@ -157,7 +157,7 @@ steps:
 }
 
 func TestDryRunNoSecretsNoWarnings(t *testing.T) {
-	out := DryRun([]byte("name: w\nsteps:\n  - type: shell\n    name: a\n    command: echo hi\n"))
+	out := DryRun([]byte("name: w\nnodes:\n  - type: shell\n    name: a\n    command: echo hi\n"))
 	if len(out.Secrets) != 0 {
 		t.Fatalf("secrets = %v, want none", out.Secrets)
 	}

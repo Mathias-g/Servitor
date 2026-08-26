@@ -1,7 +1,7 @@
 // Package wafer is the Go representation of a Wafer, the workflow artifact
 // (SPEC: The Wafer). A Wafer is a YAML file declaring triggers (`on:`) and
-// steps (`steps:`). The YAML file is the artifact and the only place workflow
-// state lives; this package parses it and validates it.
+// nodes (`nodes:`). The YAML file is the artifact and the only place
+// workflow state lives; this package parses it and validates it.
 package wafer
 
 import (
@@ -16,8 +16,8 @@ type Wafer struct {
 	Name string
 	// On are the triggers that start the workflow.
 	On []Trigger
-	// Steps are the steps the workflow runs, in dependency order.
-	Steps []Step
+	// Nodes are the nodes the workflow runs, in dependency order.
+	Nodes []Node
 }
 
 // Trigger is one trigger config.
@@ -28,20 +28,22 @@ type Trigger struct {
 	Config map[string]any
 }
 
-// Step is one step config.
-type Step struct {
-	// Type is the step type (for example `http` or `transform`).
+// Node is one node config: an action node that does work (for example `http`
+// or `transform`) or a flow node that routes or fans out (for example `switch`
+// or `foreach`).
+type Node struct {
+	// Type is the node type (for example `http` or `transform`).
 	Type string
-	// Name is an optional name for referencing this step.
+	// Name is an optional name for referencing this node.
 	Name string
-	// DedupeKey is an expression making the step run at most once per value.
+	// DedupeKey is an expression making the node run at most once per value.
 	DedupeKey string
-	// DependsOn lists step names this step depends on.
+	// DependsOn lists node names this node depends on.
 	DependsOn []string
-	// Secrets lists the names of the secrets this step declares. The
+	// Secrets lists the names of the secrets this node declares. The
 	// subprocess environment is filtered to exactly these (SPEC: Varlock).
 	Secrets []string
-	// Config holds the step's type-specific fields.
+	// Config holds the node's type-specific fields.
 	Config map[string]any
 }
 
@@ -78,13 +80,13 @@ func fromRaw(raw map[string]any) (*Wafer, error) {
 			w.On = append(w.On, tr)
 		}
 	}
-	if steps, ok := raw["steps"].([]any); ok {
-		for _, s := range steps {
+	if nodes, ok := raw["nodes"].([]any); ok {
+		for _, s := range nodes {
 			m, ok := s.(map[string]any)
 			if !ok {
 				continue
 			}
-			st := Step{}
+			st := Node{}
 			if typ, ok := m["type"].(string); ok {
 				st.Type = typ
 			}
@@ -109,7 +111,7 @@ func fromRaw(raw map[string]any) (*Wafer, error) {
 				}
 			}
 			st.Config = copyMap(m, "type", "name", "dedupe_key", "depends_on", "secrets")
-			w.Steps = append(w.Steps, st)
+			w.Nodes = append(w.Nodes, st)
 		}
 	}
 	return w, nil

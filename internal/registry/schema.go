@@ -14,10 +14,10 @@ func jsonType(t string) string {
 	}
 }
 
-// JSONSchema returns the JSON Schema (draft 2020-12) for this step type's
+// JSONSchema returns the JSON Schema (draft 2020-12) for this capability's
 // config. It is derived from the same field metadata validation uses, so the
 // schema an agent reads cannot drift from what the validator enforces.
-func (t *StepType) JSONSchema() map[string]any {
+func (t *Capability) JSONSchema() map[string]any {
 	return typeSchema(t.Name, t.Desc, t.Fields)
 }
 
@@ -68,26 +68,26 @@ func sortedFieldNames(fields map[string]*Field) []string {
 }
 
 // WaferSchema returns the JSON Schema for the whole Wafer document, composed
-// from the step and trigger type schemas. Used by `servitor capabilities` to
-// hand agents a schema they can validate Wafers against locally.
+// from the node and trigger capability schemas. Used by `servitor capabilities`
+// to hand agents a schema they can validate Wafers against locally.
 func WaferSchema() map[string]any {
-	stepNames := []any{}
-	for _, st := range StepTypes() {
-		stepNames = append(stepNames, st.Name)
+	nodeNames := []any{}
+	for _, st := range Nodes() {
+		nodeNames = append(nodeNames, st.Name)
 	}
 	triggerNames := []any{}
 	for _, tt := range TriggerTypes() {
 		triggerNames = append(triggerNames, tt.Name)
 	}
 
-	step := map[string]any{
+	node := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"type":       map[string]any{"type": "string", "enum": stepNames, "description": "The step type."},
-			"name":       map[string]any{"type": "string", "description": "A name for this step, for referencing from other steps."},
-			"dedupe_key": map[string]any{"type": "string", "description": "A key making the step run at most once per value (SPEC: Idempotency)."},
-			"depends_on": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Step names this step depends on."},
-			"secrets":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Secret names this step declares; only these are passed to its subprocess (SPEC: Varlock)."},
+			"type":       map[string]any{"type": "string", "enum": nodeNames, "description": "The node type."},
+			"name":       map[string]any{"type": "string", "description": "A name for this node, for referencing from other nodes."},
+			"dedupe_key": map[string]any{"type": "string", "description": "A key making the node run at most once per value (SPEC: Idempotency)."},
+			"depends_on": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Node names this node depends on."},
+			"secrets":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Secret names this node declares; only these are passed to its subprocess (SPEC: Varlock)."},
 		},
 		"required":             []any{"type"},
 		"additionalProperties": true,
@@ -109,9 +109,9 @@ func WaferSchema() map[string]any {
 		"properties": map[string]any{
 			"name":  map[string]any{"type": "string", "description": "The workflow name."},
 			"on":    map[string]any{"type": "array", "items": trigger, "description": "Triggers that start the workflow."},
-			"steps": map[string]any{"type": "array", "items": step, "minItems": 1, "description": "The steps the workflow runs."},
+			"nodes": map[string]any{"type": "array", "items": node, "minItems": 1, "description": "The nodes the workflow runs."},
 		},
-		"required":             []any{"name", "steps"},
+		"required":             []any{"name", "nodes"},
 		"additionalProperties": false,
 	}
 }

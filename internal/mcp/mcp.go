@@ -1,7 +1,7 @@
-// Package mcp implements the `mcp-call` step type (ADR-0015): invoking one
+// Package mcp implements the `mcp-call` node type (ADR-0015): invoking one
 // named tool on one named MCP server over stdio. An MCP server is a subprocess
 // that exposes named tools, each with a JSON Schema for its input, over
-// newline delimited JSON-RPC 2.0. The step runs the server with a filtered
+// newline delimited JSON-RPC 2.0. The node runs the server with a filtered
 // secret env, sends a single `tools/call`, reads the structured JSON response,
 // and exits (client-mode executor, distinct from the singer run-and-read
 // executor).
@@ -11,7 +11,7 @@
 // request and the `initialize`/`initialized` handshake was removed. Adoption is
 // uneven, so a server may still expect the original handshake. This package
 // supports both and detects which a server expects once at discovery; the
-// detected mode is carried into the Wafer so a step execution never re-probes.
+// detected mode is carried into the Wafer so a node execution never re-probes.
 package mcp
 
 import (
@@ -46,7 +46,7 @@ type Tool struct {
 	InputSchema map[string]any `json:"inputSchema"`
 }
 
-// ServerRequest is what a step needs to run or discover a server.
+// ServerRequest is what a node needs to run or discover a server.
 type ServerRequest struct {
 	// Command is the server's argv, for example ["atomic-server"]. It must be
 	// non-empty.
@@ -261,7 +261,7 @@ func (c *client) listTools(ctx context.Context, mode Mode) ([]Tool, error) {
 }
 
 // Discover probes a server's mode and lists its tools. It is the once-at-refresh
-// capability discovery; the returned mode is what a `mcp-call` step authors so
+// capability discovery; the returned mode is what a `mcp-call` node authors so
 // execution does not re-probe (ADR-0015).
 func Discover(ctx context.Context, req ServerRequest) (Discovery, error) {
 	c, err := start(ctx, req)
@@ -284,7 +284,7 @@ func Discover(ctx context.Context, req ServerRequest) (Discovery, error) {
 // Call invokes one tool on a server and returns its structured result. When
 // req.Server.Mode is empty, it probes the mode first (used for a first run
 // before discovery); the clean path authors the mode into the Wafer so no probe
-// happens per step.
+// happens per node.
 func Call(ctx context.Context, req CallRequest) (CallResult, error) {
 	mode := req.Server.Mode
 	c, err := start(ctx, req.Server)

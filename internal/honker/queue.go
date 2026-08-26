@@ -62,7 +62,7 @@ func (j *Job) Ack() (bool, error) {
 
 // Retry returns the claim to pending with a delay, or moves it to the
 // dead-letter table when attempts have reached the queue's max. It is how a
-// failed step is re-issued; Honker counts attempts and dead-letters on
+// failed node is re-issued; Honker counts attempts and dead-letters on
 // repeated failure (SPEC: Execution model step 9).
 func (j *Job) Retry(delaySec int64, errMsg string) (bool, error) {
 	return j.job.Retry(delaySec, errMsg)

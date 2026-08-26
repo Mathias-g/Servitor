@@ -7,25 +7,25 @@ import (
 )
 
 // SingerState is a tap's bookmark (SPEC: Singer, State persistence). It is
-// written as part of a completed tap step's transactional atom and read back
-// before the next invocation of the same step.
+// written as part of a completed tap node's transactional atom and read back
+// before the next invocation of the same node.
 type SingerState struct {
-	// WorkflowID and StepName key the bookmark: the same tap step in the same
+	// WorkflowID and NodeName key the bookmark: the same tap node in the same
 	// workflow reuses its own bookmark across runs.
 	WorkflowID string
-	StepName   string
+	NodeName   string
 	// State is the bookmark value (the tap's STATE message), as JSON.
 	State any
 }
 
-// GetSingerState returns the stored bookmark for a tap step, or (nil, nil) when
+// GetSingerState returns the stored bookmark for a tap node, or (nil, nil) when
 // none has been recorded (the first invocation). It is how the worker feeds the
 // prior state into the next tap run (SPEC: Singer, State persistence).
-func (s *Store) GetSingerState(workflowID, stepName string) (any, error) {
+func (s *Store) GetSingerState(workflowID, nodeName string) (any, error) {
 	var raw string
 	err := s.db.Raw().QueryRow(
-		`SELECT state FROM singer_state WHERE workflow_id = ? AND step_name = ?`,
-		workflowID, stepName,
+		`SELECT state FROM singer_state WHERE workflow_id = ? AND node_name = ?`,
+		workflowID, nodeName,
 	).Scan(&raw)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

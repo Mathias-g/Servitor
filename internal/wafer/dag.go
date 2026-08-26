@@ -5,66 +5,66 @@ import (
 	"strings"
 )
 
-// A step's effective identifier. Named steps use their name; unnamed steps are
+// A node's effective identifier. Named nodes use their name; unnamed nodes are
 // identified by their position in the list, which is what dependency references
 // must resolve against.
-func stepID(w *Wafer, i int) string {
-	if w.Steps[i].Name != "" {
-		return w.Steps[i].Name
+func nodeID(w *Wafer, i int) string {
+	if w.Nodes[i].Name != "" {
+		return w.Nodes[i].Name
 	}
 	return strconv.Itoa(i)
 }
 
-// DAGStep is one node in the resolved dependency graph, in run order.
-type DAGStep struct {
-	// Name is the step's effective identifier (its `name` or list position).
+// DAGNode is one node in the resolved dependency graph, in run order.
+type DAGNode struct {
+	// Name is the node's effective identifier (its `name` or list position).
 	Name string
-	// Type is the step type.
+	// Type is the node type.
 	Type string
-	// DependsOn are the step identifiers this step depends on.
+	// DependsOn are the node identifiers this node depends on.
 	DependsOn []string
-	// Index is the step's position in the original `steps:` list.
+	// Index is the node's position in the original `nodes:` list.
 	Index int
 }
 
 // DAG is the workflow's resolved dependency graph in topological (run) order.
 type DAG struct {
-	Steps []DAGStep
+	Nodes []DAGNode
 }
 
 // ResolveDAG builds the dependency graph from a parsed Wafer, returning the
-// steps in run order and any issues (unknown step references and circular
+// nodes in run order and any issues (unknown node references and circular
 // dependencies). It does not execute or contact anything; it is the shape of
 // what the runner would do.
 func ResolveDAG(w *Wafer) (DAG, []Issue) {
 	var issues []Issue
 
-	idByIndex := make([]string, len(w.Steps))
+	idByIndex := make([]string, len(w.Nodes))
 	indexByName := map[string]int{}
-	for i := range w.Steps {
-		id := stepID(w, i)
+	for i := range w.Nodes {
+		id := nodeID(w, i)
 		idByIndex[i] = id
 		// A duplicate name is ambiguous; report it and skip (the first wins).
 		if _, dup := indexByName[id]; dup {
 			issues = append(issues, Issue{
-				Path:    "/steps/" + strconv.Itoa(i) + "/name",
-				Code:    "duplicate_step_name",
-				Message: "step name is used by more than one step",
+				Path:    "/nodes/" + strconv.Itoa(i) + "/name",
+				Code:    "duplicate_node_name",
+				Message: "node name is used by more than one node",
 			})
 			continue
 		}
-		if w.Steps[i].Name != "" {
+		if w.Nodes[i].Name != "" {
 			indexByName[id] = i
 		}
 	}
 
-	deps := make([][]string, len(w.Steps))
-	indegree := make([]int, len(w.Steps))
-	adj := make([][]int, len(w.Steps))
+	deps := make([][]string, len(w.Nodes))
+	indegree := make([]int, len(w.Nodes))
+	adj := make([][]int, len(w.Nodes))
 
-	for i := range w.Steps {
+	for i := range w.Nodes {
 		seen := map[string]bool{}
-		for _, dep := range w.Steps[i].DependsOn {
+		for _, dep := range w.Nodes[i].DependsOn {
 			if seen[dep] {
 				continue
 			}
@@ -72,9 +72,9 @@ func ResolveDAG(w *Wafer) (DAG, []Issue) {
 			depIdx, ok := indexByName[dep]
 			if !ok {
 				issues = append(issues, Issue{
-					Path:       "/steps/" + strconv.Itoa(i) + "/depends_on",
-					Code:       "unknown_step_reference",
-					Message:    "step depends on unknown step " + dep,
+					Path:       "/nodes/" + strconv.Itoa(i) + "/depends_on",
+					Code:       "unknown_node_reference",
+					Message:    "node depends on unknown node " + dep,
 					Suggestion: dep,
 				})
 				continue
@@ -85,7 +85,7 @@ func ResolveDAG(w *Wafer) (DAG, []Issue) {
 		}
 	}
 
-	// Kahn's algorithm: repeatedly take a zero-indegree step, so the result is
+	// Kahn's algorithm: repeatedly take a zero-indegree node, so the result is
 	// a valid run order. Any leftover nodes form a cycle.
 	var order []int
 	queue := []int{}
@@ -106,8 +106,8 @@ func ResolveDAG(w *Wafer) (DAG, []Issue) {
 		}
 	}
 
-	if len(order) != len(w.Steps) {
-		// A cycle exists among the remaining steps.
+	if len(order) != len(w.Nodes) {
+		// A cycle exists among the remaining nodes.
 		cycleNames := []string{}
 		for i := range indegree {
 			if indegree[i] > 0 {
@@ -115,18 +115,18 @@ func ResolveDAG(w *Wafer) (DAG, []Issue) {
 			}
 		}
 		issues = append(issues, Issue{
-			Path:    "/steps",
+			Path:    "/nodes",
 			Code:    "circular_dependency",
-			Message: "circular dependency among steps: " + strings.Join(cycleNames, ", "),
+			Message: "circular dependency among nodes: " + strings.Join(cycleNames, ", "),
 		})
 		return DAG{}, issues
 	}
 
 	dag := DAG{}
 	for _, i := range order {
-		dag.Steps = append(dag.Steps, DAGStep{
+		dag.Nodes = append(dag.Nodes, DAGNode{
 			Name:      idByIndex[i],
-			Type:      w.Steps[i].Type,
+			Type:      w.Nodes[i].Type,
 			DependsOn: deps[i],
 			Index:     i,
 		})

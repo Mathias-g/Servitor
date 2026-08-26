@@ -33,7 +33,7 @@ func TestWriteProducesGroupedFiles(t *testing.T) {
 		t.Fatalf("Write: %v", err)
 	}
 
-	// core group directory exists with the http step.
+	// core group directory exists with the http node.
 	if _, err := os.Stat(filepath.Join(dir, "core", "http.yaml")); err != nil {
 		t.Fatalf("expected core/http.yaml: %v", err)
 	}
@@ -72,13 +72,13 @@ func TestIndexListsMechanisms(t *testing.T) {
 		t.Fatal("index missing core mechanism")
 	}
 	found := false
-	for _, s := range core.Steps {
+	for _, s := range core.Nodes {
 		if s == "http" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("core mechanism should list http step, got %v", core.Steps)
+		t.Fatalf("core mechanism should list http node, got %v", core.Nodes)
 	}
 	webhook, ok := byName["webhook"]
 	if !ok {
@@ -108,7 +108,7 @@ func TestEntryContainsSchemaAndExample(t *testing.T) {
 	if err := yaml.Unmarshal(data, &e); err != nil {
 		t.Fatalf("parse http.yaml: %v", err)
 	}
-	if e.Kind != "step" || e.Type != "http" || e.Group != "core" {
+	if e.Kind != "node" || e.Type != "http" || e.Group != "core" {
 		t.Fatalf("unexpected entry header: %+v", e)
 	}
 	if _, ok := e.Schema["properties"]; !ok {
@@ -124,7 +124,7 @@ func TestEntryEmitsRoleAndDelivery(t *testing.T) {
 	if err := Write(dir); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	// An action-role step carries role=action, no delivery.
+	// An action node carries role=action, no delivery.
 	act := entry{}
 	if data, err := os.ReadFile(filepath.Join(dir, "core", "http.yaml")); err != nil {
 		t.Fatalf("read http.yaml: %v", err)
@@ -134,7 +134,7 @@ func TestEntryEmitsRoleAndDelivery(t *testing.T) {
 	if act.Role != "action" {
 		t.Fatalf("http role = %q, want action", act.Role)
 	}
-	// A trigger-role step carries role=trigger and a delivery tag.
+	// A trigger carries role=trigger and a delivery tag.
 	tr := entry{}
 	if data, err := os.ReadFile(filepath.Join(dir, "helper", "email_received.yaml")); err != nil {
 		t.Fatalf("read email_received.yaml: %v", err)

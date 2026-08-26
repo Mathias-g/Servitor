@@ -2,10 +2,10 @@ package registry
 
 import "testing"
 
-func TestStepExampleFromExamples(t *testing.T) {
+func TestNodeExampleFromExamples(t *testing.T) {
 	// http has examples on url/method/timeout; the example must carry those
 	// sample values so it cannot drift from the schema.
-	ex := LookupStep("http").StepExample()
+	ex := LookupNode("http").NodeExample()
 	if ex["url"] != "https://api.example.com/things" {
 		t.Fatalf("example url = %v, want the schema example", ex["url"])
 	}
@@ -33,12 +33,12 @@ func TestTriggerExample(t *testing.T) {
 func TestExampleCoversRequiredFields(t *testing.T) {
 	// Every required field must appear in the derived example, so the example
 	// validates against the schema.
-	for _, st := range StepTypes() {
-		ex := st.StepExample()
+	for _, st := range Nodes() {
+		ex := st.NodeExample()
 		for name, f := range st.Fields {
 			if f.Required {
 				if _, ok := ex[name]; !ok {
-					t.Fatalf("step %s: required field %q missing from example", st.Name, name)
+					t.Fatalf("node %s: required field %q missing from example", st.Name, name)
 				}
 			}
 		}

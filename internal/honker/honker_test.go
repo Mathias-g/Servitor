@@ -37,7 +37,7 @@ func TestQueueEnqueueClaimAck(t *testing.T) {
 	s := openStore(t)
 	q := s.Queue("jobs", 30, 3)
 
-	id, err := q.Enqueue(map[string]any{"step": "a"})
+	id, err := q.Enqueue(map[string]any{"node": "a"})
 	if err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
@@ -56,8 +56,8 @@ func TestQueueEnqueueClaimAck(t *testing.T) {
 	if err := job.UnmarshalPayload(&p); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if p["step"] != "a" {
-		t.Fatalf("payload = %v, want step a", p)
+	if p["node"] != "a" {
+		t.Fatalf("payload = %v, want node a", p)
 	}
 	acked, err := job.Ack()
 	if err != nil {
@@ -88,24 +88,24 @@ func TestWALMode(t *testing.T) {
 	}
 }
 
-func TestCommitStepAtomIsAtomic(t *testing.T) {
+func TestCommitNodeAtomIsAtomic(t *testing.T) {
 	s := openStore(t)
-	q := s.Queue("steps", 30, 3)
+	q := s.Queue("nodes", 30, 3)
 
 	// A failing atom: the downstream payload can't be JSON-marshaled, so the
 	// enqueue fails after the result and dedupe rows are already written
 	// inside the transaction. Everything must roll back together.
-	err := s.CommitStepAtom(StepAtom{
+	err := s.CommitNodeAtom(NodeAtom{
 		RunID:  "run-1",
-		StepID: "a",
+		NodeID: "a",
 		Result: map[string]any{"ok": true},
-		Dedupe: &DedupeRecord{WorkflowID: "wf", StepName: "a", Key: "k", Succeeded: true, Result: "x"},
+		Dedupe: &DedupeRecord{WorkflowID: "wf", NodeName: "a", Key: "k", Succeeded: true, Result: "x"},
 		Downstream: []Downstream{
-			{Queue: q, Payload: map[string]any{"step": "b", "f": func() {}}},
+			{Queue: q, Payload: map[string]any{"node": "b", "f": func() {}}},
 		},
 	})
 	if err == nil {
-		t.Fatal("expected CommitStepAtom to fail on unmarshalable downstream payload")
+		t.Fatal("expected CommitNodeAtom to fail on unmarshalable downstream payload")
 	}
 
 	// The dedupe record must not exist (rolled back).
@@ -127,12 +127,12 @@ func TestCommitStepAtomIsAtomic(t *testing.T) {
 	}
 }
 
-func TestCommitStepAtomWritesAllParts(t *testing.T) {
+func TestCommitNodeAtomWritesAllParts(t *testing.T) {
 	s := openStore(t)
-	q := s.Queue("steps", 30, 3)
+	q := s.Queue("nodes", 30, 3)
 
 	// Claim a job so we have a claim to ack.
-	if _, err := q.Enqueue(map[string]any{"step": "a"}); err != nil {
+	if _, err := q.Enqueue(map[string]any{"node": "a"}); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
 	job, err := q.ClaimOne("worker-1")
@@ -140,18 +140,18 @@ func TestCommitStepAtomWritesAllParts(t *testing.T) {
 		t.Fatalf("claim: %v", err)
 	}
 
-	err = s.CommitStepAtom(StepAtom{
+	err = s.CommitNodeAtom(NodeAtom{
 		RunID:  "run-1",
-		StepID: "a",
+		NodeID: "a",
 		Result: map[string]any{"ok": true},
-		Dedupe: &DedupeRecord{WorkflowID: "wf", StepName: "a", Key: "k", Succeeded: true, Result: map[string]any{"ok": true}},
+		Dedupe: &DedupeRecord{WorkflowID: "wf", NodeName: "a", Key: "k", Succeeded: true, Result: map[string]any{"ok": true}},
 		Downstream: []Downstream{
-			{Queue: q, Payload: map[string]any{"step": "b"}},
+			{Queue: q, Payload: map[string]any{"node": "b"}},
 		},
 		Job: job,
 	})
 	if err != nil {
-		t.Fatalf("CommitStepAtom: %v", err)
+		t.Fatalf("CommitNodeAtom: %v", err)
 	}
 
 	// Dedupe record persisted and succeeded.
@@ -170,8 +170,8 @@ func TestCommitStepAtomWritesAllParts(t *testing.T) {
 	}
 	var dp map[string]any
 	_ = down.UnmarshalPayload(&dp)
-	if dp["step"] != "b" {
-		t.Fatalf("downstream payload = %v, want step b", dp)
+	if dp["node"] != "b" {
+		t.Fatalf("downstream payload = %v, want node b", dp)
 	}
 
 	// The original job must be acked (not claimable again).
@@ -192,14 +192,14 @@ func TestSingerStateCommitsWithResultAtom(t *testing.T) {
 		t.Fatalf("initial state = %v (err %v), want nil", v, err)
 	}
 
-	// Commit a step result with its singer bookmark in one atom.
-	err := s.CommitStepAtom(StepAtom{
-		RunID: "run-1", StepID: "t",
+	// Commit a node result with its singer bookmark in one atom.
+	err := s.CommitNodeAtom(NodeAtom{
+		RunID: "run-1", NodeID: "t",
 		Result:      map[string]any{"records": []any{}},
-		SingerState: &SingerState{WorkflowID: "wf", StepName: "tap", State: map[string]any{"bookmark": "x"}},
+		SingerState: &SingerState{WorkflowID: "wf", NodeName: "tap", State: map[string]any{"bookmark": "x"}},
 	})
 	if err != nil {
-		t.Fatalf("CommitStepAtom: %v", err)
+		t.Fatalf("CommitNodeAtom: %v", err)
 	}
 
 	got, err := s.GetSingerState("wf", "tap")

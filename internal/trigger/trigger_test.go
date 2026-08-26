@@ -42,7 +42,7 @@ func newReceiver(t *testing.T, secrets map[string]string) (*Receiver, *honker.St
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	q := store.Queue("steps", 30, 3)
+	q := store.Queue("nodes", 30, 3)
 	return NewReceiver(store, q, secrets), store, q
 }
 
@@ -52,7 +52,7 @@ on:
   - type: standard_webhook
     path: /hooks/demo
     secret: WEBHOOK_SECRET
-steps:
+nodes:
   - type: shell
     name: a
     command: "printf '{\"ok\":true}'"
@@ -123,7 +123,7 @@ func TestWebhookPersistsEventAndEnqueuesRun(t *testing.T) {
 		t.Fatalf("events persisted = %d, want 1", evCount)
 	}
 
-	// A run was enqueued (head step claimable).
+	// A run was enqueued (head node claimable).
 	job, err := q.ClaimOne("worker-1")
 	if err != nil || job == nil {
 		t.Fatalf("run not enqueued: %v", err)
@@ -223,7 +223,7 @@ func TestManualTriggersWorkflow(t *testing.T) {
 name: m
 on:
   - type: manual
-steps:
+nodes:
   - type: shell
     name: a
     command: "printf '{\"ok\":true}'"
@@ -237,14 +237,14 @@ steps:
 	}
 	var head struct {
 		RunID  string         `json:"RunID"`
-		StepID string         `json:"StepID"`
+		NodeID string         `json:"NodeID"`
 		Input  map[string]any `json:"Input"`
 	}
 	if err := json.Unmarshal(job.Payload, &head); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if head.StepID != "a" {
-		t.Fatalf("head step = %q, want a", head.StepID)
+	if head.NodeID != "a" {
+		t.Fatalf("head node = %q, want a", head.NodeID)
 	}
 	// Head input is wrapped as {event, steps} (ADR-0021).
 	ev, _ := head.Input["event"].(map[string]any)
@@ -268,7 +268,7 @@ on:
   - type: github_webhook
     path: /hooks/github
     secret: GITHUB_SECRET
-steps:
+nodes:
   - type: shell
     name: a
     command: "true"
@@ -295,7 +295,7 @@ on:
   - type: github_webhook
     path: /hooks/github
     secret: GITHUB_SECRET
-steps:
+nodes:
   - type: shell
     name: a
     command: "true"
@@ -322,7 +322,7 @@ on:
   - type: slack_event
     path: /hooks/slack
     secret: SLACK_SECRET
-steps:
+nodes:
   - type: shell
     name: a
     command: "true"
@@ -351,7 +351,7 @@ on:
   - type: slack_event
     path: /hooks/slack
     secret: SLACK_SECRET
-steps:
+nodes:
   - type: shell
     name: a
     command: "true"
@@ -390,7 +390,7 @@ on:
   - type: slack_event
     path: /hooks/slack
     secret: SLACK_SECRET
-steps:
+nodes:
   - type: shell
     name: a
     command: "true"
@@ -417,7 +417,7 @@ func TestInternalFiresDownstreamWorkflow(t *testing.T) {
 name: upstream
 on:
   - type: manual
-steps:
+nodes:
   - type: shell
     name: a
     command: "true"
@@ -427,7 +427,7 @@ name: downstream
 on:
   - type: internal
     workflow: upstream
-steps:
+nodes:
   - type: shell
     name: a
     command: "true"
@@ -439,7 +439,7 @@ steps:
 	if err != nil || job == nil {
 		t.Fatalf("downstream run not enqueued: %v", err)
 	}
-	var sj worker.StepJob
+	var sj worker.NodeJob
 	if err := job.UnmarshalPayload(&sj); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -459,7 +459,7 @@ name: downstream
 on:
   - type: internal
     workflow: upstream
-steps:
+nodes:
   - type: shell
     name: a
     command: "true"
@@ -479,7 +479,7 @@ name: downstream
 on:
   - type: internal
     workflow: upstream
-steps:
+nodes:
   - type: shell
     name: a
     command: "true"
@@ -504,7 +504,7 @@ on:
     host: imap.gmail.com
     username: me@company.com
     secret: GMAIL_APP_PASSWORD
-steps:
+nodes:
   - type: shell
     name: a
     command: "true"
@@ -523,7 +523,7 @@ steps:
 		if err != nil || job == nil {
 			t.Fatalf("run %d not enqueued: %v", i, err)
 		}
-		var sj worker.StepJob
+		var sj worker.NodeJob
 		if err := job.UnmarshalPayload(&sj); err != nil {
 			t.Fatalf("unmarshal: %v", err)
 		}
@@ -553,7 +553,7 @@ on:
     host: imap.gmail.com
     username: me@company.com
     secret: GMAIL_APP_PASSWORD
-steps:
+nodes:
   - type: shell
     name: a
     command: "true"
@@ -577,7 +577,7 @@ on:
   - type: poll
     kind: rss
     schedule: "*/5 * * * *"
-steps:
+nodes:
   - type: shell
     name: a
     command: "true"
@@ -589,7 +589,7 @@ steps:
 	if err != nil || job == nil {
 		t.Fatalf("run not enqueued: %v", err)
 	}
-	var sj worker.StepJob
+	var sj worker.NodeJob
 	if err := job.UnmarshalPayload(&sj); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}

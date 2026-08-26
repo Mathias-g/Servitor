@@ -36,7 +36,7 @@ func TestRunLifecycle(t *testing.T) {
 	}
 }
 
-func TestListRunsAndRunSteps(t *testing.T) {
+func TestListRunsAndRunNodes(t *testing.T) {
 	s := openStore(t)
 
 	if err := s.CreateRun("run-1", "demo"); err != nil {
@@ -45,9 +45,9 @@ func TestListRunsAndRunSteps(t *testing.T) {
 	if err := s.CreateRun("run-2", "other"); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
-	// Write a step result for run-1.
-	if err := s.CommitStepAtom(StepAtom{RunID: "run-1", StepID: "a", Result: map[string]any{"ok": true}}); err != nil {
-		t.Fatalf("CommitStepAtom: %v", err)
+	// Write a node result for run-1.
+	if err := s.CommitNodeAtom(NodeAtom{RunID: "run-1", NodeID: "a", Result: map[string]any{"ok": true}}); err != nil {
+		t.Fatalf("CommitNodeAtom: %v", err)
 	}
 
 	runs, err := s.ListRuns()
@@ -58,14 +58,14 @@ func TestListRunsAndRunSteps(t *testing.T) {
 		t.Fatalf("runs = %d, want 2", len(runs))
 	}
 
-	steps, err := s.RunSteps("run-1")
+	steps, err := s.RunNodes("run-1")
 	if err != nil {
-		t.Fatalf("RunSteps: %v", err)
+		t.Fatalf("RunNodes: %v", err)
 	}
-	if len(steps) != 1 || steps[0].StepID != "a" {
+	if len(steps) != 1 || steps[0].NodeID != "a" {
 		t.Fatalf("steps = %+v, want [a]", steps)
 	}
-	if steps, _ := s.RunSteps("run-2"); len(steps) != 0 {
+	if steps, _ := s.RunNodes("run-2"); len(steps) != 0 {
 		t.Fatalf("run-2 steps = %+v, want empty", steps)
 	}
 }
@@ -77,8 +77,8 @@ func TestCancelRun(t *testing.T) {
 	}
 
 	// Enqueue a pending job carrying this run id.
-	q := s.Queue("steps", 30, 3)
-	if _, err := q.Enqueue(map[string]any{"RunID": "run-1", "StepID": "a"}); err != nil {
+	q := s.Queue("nodes", 30, 3)
+	if _, err := q.Enqueue(map[string]any{"RunID": "run-1", "NodeID": "a"}); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
 

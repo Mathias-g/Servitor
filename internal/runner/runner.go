@@ -1,11 +1,11 @@
-// Package runner wires triggers to the worker by building a run's initial step
+// Package runner wires triggers to the worker by building a run's initial node
 // job tree and registering cron triggers on the Honker scheduler (SPEC:
 // Triggers, Execution model step 5).
 //
-// A run is built from a Wafer as a single topological-order chain of StepJobs:
-// each step's Downstream is the next step in run order. Because run order
-// respects dependencies, a step always executes after the steps it depends on,
-// and no step is ever enqueued twice. This is deliberately sequential; fanning
+// A run is built from a Wafer as a single topological-order chain of NodeJobs:
+// each node's Downstream is the next node in run order. Because run order
+// respects dependencies, a node always executes after the nodes it depends on,
+// and no node is ever enqueued twice. This is deliberately sequential; fanning
 // out independent branches in parallel is a later refinement (SPEC: Roadmap,
 // worker concurrency).
 package runner
@@ -19,72 +19,72 @@ import (
 	"github.com/Mathias-g/Servitor/internal/worker"
 )
 
-// commandFor maps a step to the argv the worker runs for it. Every step runs as
+// commandFor maps a node to the argv the worker runs for it. Every node runs as
 // a subprocess (ADR-0008); `transform` re-invokes the servitor binary's hidden
-// `__transform` command so even pure-computation steps stay out of the runner's
+// `__transform` command so even pure-computation nodes stay out of the runner's
 // process.
-func commandFor(s wafer.Step) ([]string, error) {
+func commandFor(s wafer.Node) ([]string, error) {
 	switch s.Type {
 	case "shell":
 		cmd, ok := s.Config["command"].(string)
 		if !ok || cmd == "" {
-			return nil, fmt.Errorf("step %q: shell requires a string command", stepName(s))
+			return nil, fmt.Errorf("node %q: shell requires a string command", nodeName(s))
 		}
 		return []string{"/bin/sh", "-c", cmd}, nil
 	case "transform":
 		expr, ok := s.Config["expression"].(string)
 		if !ok || expr == "" {
-			return nil, fmt.Errorf("step %q: transform requires a string expression", stepName(s))
+			return nil, fmt.Errorf("node %q: transform requires a string expression", nodeName(s))
 		}
 		exe, err := os.Executable()
 		if err != nil {
-			return nil, fmt.Errorf("step %q: locate servitor binary: %w", stepName(s), err)
+			return nil, fmt.Errorf("node %q: locate servitor binary: %w", nodeName(s), err)
 		}
 		return []string{exe, "__transform", expr}, nil
 	case "switch":
 		expr, ok := s.Config["expression"].(string)
 		if !ok || expr == "" {
-			return nil, fmt.Errorf("step %q: switch requires a string expression", stepName(s))
+			return nil, fmt.Errorf("node %q: switch requires a string expression", nodeName(s))
 		}
 		exe, err := os.Executable()
 		if err != nil {
-			return nil, fmt.Errorf("step %q: locate servitor binary: %w", stepName(s), err)
+			return nil, fmt.Errorf("node %q: locate servitor binary: %w", nodeName(s), err)
 		}
 		return []string{exe, "__switch", expr}, nil
 	case "foreach":
 		expr, ok := s.Config["over"].(string)
 		if !ok || expr == "" {
-			return nil, fmt.Errorf("step %q: foreach requires a string `over` expression", stepName(s))
+			return nil, fmt.Errorf("node %q: foreach requires a string `over` expression", nodeName(s))
 		}
 		exe, err := os.Executable()
 		if err != nil {
-			return nil, fmt.Errorf("step %q: locate servitor binary: %w", stepName(s), err)
+			return nil, fmt.Errorf("node %q: locate servitor binary: %w", nodeName(s), err)
 		}
 		return []string{exe, "__foreach", expr}, nil
 	case "singer-tap":
 		tap, ok := s.Config["tap"].(string)
 		if !ok || tap == "" {
-			return nil, fmt.Errorf("step %q: singer-tap requires a `tap` name", stepName(s))
+			return nil, fmt.Errorf("node %q: singer-tap requires a `tap` name", nodeName(s))
 		}
 		return []string{tap}, nil
 	case "singer-target":
 		target, ok := s.Config["target"].(string)
 		if !ok || target == "" {
-			return nil, fmt.Errorf("step %q: singer-target requires a `target` name", stepName(s))
+			return nil, fmt.Errorf("node %q: singer-target requires a `target` name", nodeName(s))
 		}
 		return []string{target}, nil
 	case "mcp-call":
 		server, ok := s.Config["server"].(string)
 		if !ok || server == "" {
-			return nil, fmt.Errorf("step %q: mcp-call requires a `server` name", stepName(s))
+			return nil, fmt.Errorf("node %q: mcp-call requires a `server` name", nodeName(s))
 		}
 		return []string{server}, nil
 	default:
-		return nil, fmt.Errorf("step %q: step type %q has no handler built yet (Phase 6 runs shell; the rest come later)", stepName(s), s.Type)
+		return nil, fmt.Errorf("node %q: node type %q has no handler built yet (Phase 6 runs shell; the rest come later)", nodeName(s), s.Type)
 	}
 }
 
-func stepName(s wafer.Step) string {
+func nodeName(s wafer.Node) string {
 	if s.Name != "" {
 		return s.Name
 	}
@@ -102,36 +102,36 @@ func removeStr(xs []string, s string) []string {
 	return out
 }
 
-// FromWafer builds the head StepJob of a run from a validated Wafer and the
+// FromWafer builds the head NodeJob of a run from a validated Wafer and the
 // trigger event that started it. The returned job's Downstream carries the rest
-// of the workflow as a dependency DAG: each step's Dependents/Downstream lists
-// the steps that depend on it (ADR-0023). It returns an error when a step type
+// of the workflow as a dependency DAG: each node's Dependents/Downstream lists
+// the nodes that depend on it (ADR-0023). It returns an error when a node type
 // has no handler yet or the DAG does not resolve.
-func FromWafer(w *wafer.Wafer, event map[string]any) (*worker.StepJob, error) {
+func FromWafer(w *wafer.Wafer, event map[string]any) (*worker.NodeJob, error) {
 	dag, issues := wafer.ResolveDAG(w)
 	if len(issues) > 0 {
 		return nil, fmt.Errorf("run: workflow %q does not resolve: %v", w.Name, issues)
 	}
-	if len(dag.Steps) == 0 {
+	if len(dag.Nodes) == 0 {
 		return nil, nil
 	}
 
-	// Build one StepJob per step, indexed by the step's position in the DAG
-	// run order. Each job carries the steps that depend on it so the worker can
+	// Build one NodeJob per node, indexed by the node's position in the DAG
+	// run order. Each job carries the nodes that depend on it so the worker can
 	// fan out correctly (ADR-0023).
-	jobs := make([]*worker.StepJob, len(dag.Steps))
+	jobs := make([]*worker.NodeJob, len(dag.Nodes))
 	idxByName := map[string]int{}
-	for i, d := range dag.Steps {
-		s := w.Steps[d.Index]
+	for i, d := range dag.Nodes {
+		s := w.Nodes[d.Index]
 		cmd, err := commandFor(s)
 		if err != nil {
 			return nil, err
 		}
-		jobs[i] = &worker.StepJob{
+		jobs[i] = &worker.NodeJob{
 			WorkflowID: w.Name,
-			StepID:     d.Name,
-			StepName:   s.Name,
-			StepType:   s.Type,
+			NodeID:     d.Name,
+			NodeName:   s.Name,
+			NodeType:   s.Type,
 			Config:     s.Config,
 			Command:    cmd,
 			Secrets:    s.Secrets,
@@ -140,23 +140,23 @@ func FromWafer(w *wafer.Wafer, event map[string]any) (*worker.StepJob, error) {
 		idxByName[d.Name] = i
 	}
 
-	// Assign each step's dependents (the steps that list it in their DependsOn).
+	// Assign each node's dependents (the nodes that list it in their DependsOn).
 	// Dependents are assigned fully first, so when a job is later copied into a
 	// parent's Downstream it carries the complete dependents set (the value copy
 	// would otherwise be stale).
-	for _, d := range dag.Steps {
+	for _, d := range dag.Nodes {
 		for _, dep := range d.DependsOn {
 			if j, ok := idxByName[dep]; ok {
 				jobs[j].Dependents = append(jobs[j].Dependents, d.Name)
 			}
 		}
 	}
-	// Handle foreach steps (ADR-0024): a foreach fanned out its body step N
+	// Handle foreach nodes (ADR-0024): a foreach fanned out its body node N
 	// times, so the body is not a normal dependent of the foreach. Instead the
-	// foreach carries the body template, the loop-variable name, and the steps
+	// foreach carries the body template, the loop-variable name, and the nodes
 	// that depend on the body (the rejoins) which collect its results.
 	forEachBody := map[string]bool{}
-	for _, d := range dag.Steps {
+	for _, d := range dag.Nodes {
 		if d.Type != "foreach" {
 			continue
 		}
@@ -198,9 +198,9 @@ func FromWafer(w *wafer.Wafer, event map[string]any) (*worker.StepJob, error) {
 		}
 	}
 
-	// Find the head step(s): those with no dependencies (DependsOn empty).
+	// Find the head node(s): those with no dependencies (DependsOn empty).
 	head := jobs[0]
-	for i, d := range dag.Steps {
+	for i, d := range dag.Nodes {
 		if len(d.DependsOn) == 0 {
 			head = jobs[i]
 			break
@@ -212,7 +212,7 @@ func FromWafer(w *wafer.Wafer, event map[string]any) (*worker.StepJob, error) {
 
 // StartRun builds a run's head job, records the run, initializes the fan-in
 // dependency counts, and enqueues the head. It assigns a fresh run id to every
-// step in the run's DAG. It returns the run id and the head job.
+// node in the run's DAG. It returns the run id and the head job.
 func StartRun(store *honker.Store, queue *honker.Queue, w *wafer.Wafer, event map[string]any, runID string) (string, error) {
 	head, err := FromWafer(w, event)
 	if err != nil {
@@ -229,13 +229,13 @@ func StartRun(store *honker.Store, queue *honker.Queue, w *wafer.Wafer, event ma
 		return "", err
 	}
 	if _, err := queue.Enqueue(head); err != nil {
-		return "", fmt.Errorf("run: enqueue head step: %w", err)
+		return "", fmt.Errorf("run: enqueue head node: %w", err)
 	}
 	return runID, nil
 }
 
 // initDeps initializes the run_deps dependency counts for a run from the Wafer
-// (ADR-0023). Each step's count is the number of steps it depends on.
+// (ADR-0023). Each node's count is the number of nodes it depends on.
 func initDeps(store *honker.Store, w *wafer.Wafer, runID string) error {
 	dag, issues := wafer.ResolveDAG(w)
 	if len(issues) > 0 {
@@ -243,7 +243,7 @@ func initDeps(store *honker.Store, w *wafer.Wafer, runID string) error {
 	}
 	depCount := map[string]int{}
 	order := []string{}
-	for _, d := range dag.Steps {
+	for _, d := range dag.Nodes {
 		depCount[d.Name] = len(d.DependsOn)
 		order = append(order, d.Name)
 	}
@@ -253,10 +253,10 @@ func initDeps(store *honker.Store, w *wafer.Wafer, runID string) error {
 // assignRunID sets the run id on every job in the run's DAG. Because a run can
 // fan out (ADR-0023), it does not walk a linear next pointer; it traverses the
 // full Downstream set from the head.
-func assignRunID(head *worker.StepJob, runID string) {
-	seen := map[*worker.StepJob]bool{}
-	var walk func(j *worker.StepJob)
-	walk = func(j *worker.StepJob) {
+func assignRunID(head *worker.NodeJob, runID string) {
+	seen := map[*worker.NodeJob]bool{}
+	var walk func(j *worker.NodeJob)
+	walk = func(j *worker.NodeJob) {
 		if j == nil || seen[j] {
 			return
 		}
@@ -270,7 +270,7 @@ func assignRunID(head *worker.StepJob, runID string) {
 }
 
 // CronTask registers one cron trigger for a workflow on the Honker scheduler.
-// When the schedule fires, Honker enqueues the run's head step to the queue,
+// When the schedule fires, Honker enqueues the run's head node to the queue,
 // starting a run. Registration is idempotent by name.
 type CronTask struct {
 	// Name uniquely identifies the scheduled task (for example
@@ -343,11 +343,11 @@ func RegisterPoll(store *honker.Store, queue *honker.Queue, task PollTask) error
 	if len(task.Command) == 0 {
 		return fmt.Errorf("poll: %s has no command", task.Name)
 	}
-	pollJob := &worker.StepJob{
+	pollJob := &worker.NodeJob{
 		WorkflowID: task.WorkflowID,
-		StepID:     "poll",
-		StepName:   "poll",
-		StepType:   "poll",
+		NodeID:     "poll",
+		NodeName:   "poll",
+		NodeType:   "poll",
 		Config:     map[string]any{"kind": task.Kind},
 		Command:    task.Command,
 		Secrets:    task.Secrets,

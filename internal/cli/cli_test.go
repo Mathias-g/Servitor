@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -109,7 +110,7 @@ name: demo
 on:
   - type: cron
     schedule: "0 * * * *"
-steps:
+nodes:
   - type: transform
     name: b
     depends_on: [a]
@@ -139,7 +140,7 @@ steps:
 func TestDryRunJSONFlag(t *testing.T) {
 	path := writeTemp(t, `
 name: demo
-steps:
+nodes:
   - type: transform
     name: a
     expression: x
@@ -160,7 +161,7 @@ func TestDryRunUsageError(t *testing.T) {
 	}
 }
 
-func TestTransformStepSubprocess(t *testing.T) {
+func TestTransformNodeSubprocess(t *testing.T) {
 	input := `{"event":{"id":"e1"},"steps":{"fetch":{"items":[{"amount":10,"active":true},{"amount":100,"active":false},{"amount":5,"active":true}]}}}`
 
 	oldStdin := os.Stdin
@@ -186,7 +187,7 @@ func TestTransformStepSubprocess(t *testing.T) {
 	}
 }
 
-func TestTransformStepBadExpression(t *testing.T) {
+func TestTransformNodeBadExpression(t *testing.T) {
 	oldStdin := os.Stdin
 	t.Cleanup(func() { os.Stdin = oldStdin })
 	f, err := os.CreateTemp(t.TempDir(), "stdin-*.json")
@@ -207,7 +208,7 @@ func TestTransformStepBadExpression(t *testing.T) {
 	}
 }
 
-func TestSwitchStepSubprocess(t *testing.T) {
+func TestSwitchNodeSubprocess(t *testing.T) {
 	payload := `{"input":{"event":{"id":"e1"},"steps":{"check":"high"}},"cases":{"high":"notify_finance","low":"log_and_done"},"default":"log_unknown"}`
 
 	oldStdin := os.Stdin
@@ -233,7 +234,7 @@ func TestSwitchStepSubprocess(t *testing.T) {
 	}
 }
 
-func TestSwitchStepDefault(t *testing.T) {
+func TestSwitchNodeDefault(t *testing.T) {
 	payload := `{"input":{"event":{"id":"e1"},"steps":{"check":"medium"}},"cases":{"high":"notify_finance","low":"log_and_done"},"default":"log_unknown"}`
 
 	oldStdin := os.Stdin
@@ -259,7 +260,7 @@ func TestSwitchStepDefault(t *testing.T) {
 	}
 }
 
-func TestSwitchStepNoMatchNoDefaultFails(t *testing.T) {
+func TestSwitchNodeNoMatchNoDefaultFails(t *testing.T) {
 	payload := `{"input":{"event":{"id":"e1"},"steps":{"check":"medium"}},"cases":{"high":"notify_finance","low":"log_and_done"}}`
 
 	oldStdin := os.Stdin
@@ -282,7 +283,7 @@ func TestSwitchStepNoMatchNoDefaultFails(t *testing.T) {
 	}
 }
 
-func TestForeachStepSubprocess(t *testing.T) {
+func TestForeachNodeSubprocess(t *testing.T) {
 	oldStdin := os.Stdin
 	t.Cleanup(func() { os.Stdin = oldStdin })
 	f, err := os.CreateTemp(t.TempDir(), "stdin-*.json")
@@ -303,5 +304,64 @@ func TestForeachStepSubprocess(t *testing.T) {
 	}
 	if strings.TrimSpace(out.String()) != `[1,2,3]` {
 		t.Fatalf("__foreach output = %q, want [1,2,3]", out.String())
+	}
+}
+
+func TestCapabilitiesUsageError(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := Run([]string{"capabilities", "a", "b"}, &out, &errOut); code != exitUsage {
+		t.Fatalf("capabilities with two args exit %d, want %d", code, exitUsage)
+	}
+}
+
+func TestCapabilitiesWritesFiles(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "caps")
+	var out, errOut bytes.Buffer
+	if code := Run([]string{"capabilities", dir}, &out, &errOut); code != exitOK {
+		t.Fatalf("capabilities exit %d, want %d (stderr: %s)", code, exitOK, errOut.String())
+	}
+	if !strings.Contains(out.String(), dir) {
+		t.Fatalf("capabilities output %q should mention the dir", out.String())
+	}
+	// The index and at least one type file should exist.
+	if _, err := os.Stat(filepath.Join(dir, "index.yaml")); err != nil {
+		t.Fatalf("index.yaml not written: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "core", "shell.yaml")); err != nil {
+		t.Fatalf("core/shell.yaml not written: %v", err)
+	}
+}
+
+func TestEmailPollUsageError(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := Run([]string{"__email_poll", "extra"}, &out, &errOut); code != exitUsage {
+		t.Fatalf("__email_poll with arg exit %d, want %d", code, exitUsage)
+	}
+}
+
+func TestEmailPollMissingSecretFails(t *testing.T) {
+	// Valid config but the referenced secret is not in the environment, so it
+	// fails before any network/IMAP attempt.
+	oldStdin := os.Stdin
+	t.Cleanup(func() { os.Stdin = oldStdin })
+	cfg := `{"host":"imap.example.com","username":"me","secret":"NOT_SET_SECRET"}`
+	f, err := os.CreateTemp(t.TempDir(), "stdin-*.json")
+	if err != nil {
+		t.Fatalf("create stdin: %v", err)
+	}
+	if _, err := f.WriteString(cfg); err != nil {
+		t.Fatalf("write stdin: %v", err)
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		t.Fatalf("seek: %v", err)
+	}
+	os.Stdin = f
+
+	var out, errOut bytes.Buffer
+	if code := Run([]string{"__email_poll"}, &out, &errOut); code != exitFailure {
+		t.Fatalf("__email_poll exit %d, want %d", code, exitFailure)
+	}
+	if !strings.Contains(errOut.String(), "not resolved") {
+		t.Fatalf("__email_poll stderr %q should mention the missing secret", errOut.String())
 	}
 }

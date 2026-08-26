@@ -7,7 +7,7 @@ import (
 )
 
 // Stream is one entry of a tap's catalog, in the same shape the `catalog`
-// field of a `singer-tap` step accepts (SPEC: Singer, self-describing
+// field of a `singer-tap` node accepts (SPEC: Singer, self-describing
 // schemas). An agent copies the entries it wants from capabilities into the
 // Wafer, so what it sees is what runs; each entry is marked selected so a
 // pasted entry syncs its stream.
@@ -32,7 +32,7 @@ type DiscoveredTap struct {
 
 // DiscoverTaps probes each declared tap (name to command) for its config
 // schema and streams via --about and --discover. It is invoked during a
-// capabilities refresh, not per step execution (SPEC: Capability discovery).
+// capabilities refresh, not per node execution (SPEC: Capability discovery).
 // The declared set comes from the integrations config (ADR-0018); there is no
 // PATH scan.
 func DiscoverTaps(declared map[string][]string) []DiscoveredTap {
@@ -45,7 +45,7 @@ func DiscoverTaps(declared map[string][]string) []DiscoveredTap {
 }
 
 // discover calls --about and --discover on one tap and returns its schema and
-// streams. Failures are captured per-step rather than returned, so one broken
+// streams. Failures are captured per-node rather than returned, so one broken
 // tap does not hide the rest.
 func discover(name string, command []string) DiscoveredTap {
 	t := DiscoveredTap{Name: name}

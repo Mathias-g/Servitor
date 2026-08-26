@@ -73,7 +73,7 @@ func (c *Client) ListRuns(ctx context.Context) (string, error) {
 	return c.do(ctx, http.MethodGet, PathRuns, nil)
 }
 
-// GetRun returns one run (with its step outcomes) as raw JSON text from the daemon.
+// GetRun returns one run (with its node outcomes) as raw JSON text from the daemon.
 func (c *Client) GetRun(ctx context.Context, id string) (string, error) {
 	return c.do(ctx, http.MethodGet, PathRun+"?id="+url.QueryEscape(id), nil)
 }

@@ -16,15 +16,15 @@ Servitor is an opinionated take: a small, code-first, agent-friendly workflow ru
 
 Most workflow tools were built for humans clicking through a builder, with an API bolted on. An agent using such a tool is a second-class citizen. Servitor is designed for agents first:
 
-- **The artifact is the Wafer, not a database row.** Agents read, write, diff, and version-control the same file a human would.
-- **Capability discovery is a first-class operation.** The CLI returns every step type (with its role and delivery), declared secret, and available Singer tap, with full JSON Schemas. An agent never has to guess.
+- **The artifact is the Wafer, not a database row.** A Wafer is the YAML file that declares a workflow as triggers (`on:`) and nodes (`nodes:`), where every capability is a trigger, an action node (does work), or a flow node (routes or fans out). Agents read, write, diff, and version-control the same file a human would.
+- **Capability discovery is a first-class operation.** The CLI returns every capability (with its role and delivery), declared secret, and available Singer tap, with full JSON Schemas. An agent never has to guess.
 - **Validation errors are structured, not stringified.** Errors come back as JSON with paths, codes, and suggestions.
 - **Dry-run is a real primitive.** It resolves the whole workflow, including secret references, and shows the DAG the runner *would* execute. Nothing runs, nothing is persisted.
 - **The same CLI serves humans and agents.** No private API the agent doesn't have access to.
 
 ## How it works
 
-A workflow is a YAML file (a Wafer) declaring triggers (what causes it to run) and steps (what it does). The runner reads the Wafer, validates it, registers its triggers, and waits. When an event arrives, it enqueues a run, workers execute steps, results are persisted, and downstream steps fire as their dependencies complete.
+A workflow is a YAML file (a Wafer) declaring triggers (what causes it to run) and nodes (what it does). The runner reads the Wafer, validates it, registers its triggers, and waits. When an event arrives, it enqueues a run, workers execute nodes, results are persisted, and downstream nodes fire as their dependencies complete.
 
 ```yaml
 name: notify_on_new_lead
@@ -32,7 +32,7 @@ on:
   grist_webhook:
     table: Leads
     event: row_added
-steps:
+nodes:
   - name: post_to_slack
     type: slack
     action: post_message
@@ -53,7 +53,7 @@ the box:
   driver, so the binary is not fully static (ADR-0004).
 - **Varlock** on `PATH`. The runner execs itself under `varlock run` to resolve
   secrets into its environment. If it is missing, the runner boots anyway but
-  warns that secret resolution is off, and steps that declare secrets fail.
+  warns that secret resolution is off, and nodes that declare secrets fail.
 - **The Honker SQLite extension** (`libhonker_ext.so`). It is not committed to
   the repo; you download a pinned, checksummed build (ADR-0011). See step 3 of
   Getting started.

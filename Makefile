@@ -9,6 +9,7 @@ build:
 	go build -o bin/servitor -ldflags "$(LDFLAGS)" ./cmd/servitor
 
 test:
+	@test -n "$$HONKER_EXTENSION_PATH" || { echo "HONKER_EXTENSION_PATH is not set; the Honker-backed tests (worker, honker, daemon, runner, trigger) would silently skip. Set it to a loadable libhonker_ext.so (see AGENTS.md / ADR-0011) so the real tests run."; exit 1; }
 	go test ./...
 
 fmt:

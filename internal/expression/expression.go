@@ -8,9 +8,9 @@
 // The backend is gnata (github.com/recolabs/gnata), a complete pure-Go JSONata
 // 2.x implementation. Bounded evaluation is a first-class option on gnata
 // (recursion depth, timeout, and a bound on sequence growth), which is what the
-// SPEC requires for step expressions: a single step cannot loop or grow
+// SPEC requires for node expressions: a single node cannot loop or grow
 // unboundedly. Evaluation is CPU-only and never touches the host, matching the
-// subprocess-per-step isolation model (ADR-0008).
+// subprocess-per-node isolation model (ADR-0008).
 //
 // Callers must not rely on gnata-specific behavior beyond the JSONata spec; the
 // tests pin spec behavior so a backend swap that changes results is caught.
@@ -32,7 +32,7 @@ const (
 	// maxSequence bounds how large any single sequence (range, $map, $filter,
 	// wildcard, descendant) may grow during evaluation.
 	maxSequence = 10000
-	// evalTimeout bounds wall-clock evaluation time per step.
+	// evalTimeout bounds wall-clock evaluation time per node.
 	evalTimeout = 2 * time.Second
 )
 
@@ -70,7 +70,7 @@ func (c *Compiler) Eval(input any) (any, error) {
 }
 
 // evalBounded runs the expression through the evaluation timeout. Timeout
-// errors are surfaced so a pathological expression cannot hang a step.
+// errors are surfaced so a pathological expression cannot hang a node.
 func (c *Compiler) evalBounded(ctx context.Context, input any) (any, error) {
 	return c.expr.Eval(ctx, input)
 }

@@ -5,13 +5,13 @@ import (
 )
 
 // TestInitRunDepsAndFanIn pins the dependency-counter fan-out (ADR-0023): a
-// dependent step is enqueued only when its remaining dependency count reaches
+// dependent node is enqueued only when its remaining dependency count reaches
 // zero, and the decrement happens inside the atomic commit.
 func TestInitRunDepsAndFanIn(t *testing.T) {
 	s := openStore(t)
-	q := s.Queue("steps", 30, 3)
+	q := s.Queue("nodes", 30, 3)
 
-	// Run with steps a, b, c. c depends on both a and b (fan-in); a and b
+	// Run with nodes a, b, c. c depends on both a and b (fan-in); a and b
 	// depend on nothing (initially ready).
 	rd := NewRunDeps("run-1", map[string]int{"a": 0, "b": 0, "c": 2}, []string{"a", "b", "c"})
 	if err := s.InitRunDeps(rd); err != nil {
@@ -22,19 +22,19 @@ func TestInitRunDepsAndFanIn(t *testing.T) {
 		t.Fatalf("c remaining = %d, want 2", n)
 	}
 
-	// Step a completes. c's count drops to 1; c is not ready, so its job is
+	// Node a completes. c's count drops to 1; c is not ready, so its job is
 	// not enqueued.
-	err := s.CommitStepAtom(StepAtom{
+	err := s.CommitNodeAtom(NodeAtom{
 		RunID:      "run-1",
-		StepID:     "a",
+		NodeID:     "a",
 		Result:     map[string]any{"a": true},
 		Dependents: []string{"c"},
 		Downstream: []Downstream{
-			{Queue: q, Payload: map[string]any{"step": "c"}},
+			{Queue: q, Payload: map[string]any{"node": "c"}},
 		},
 	})
 	if err != nil {
-		t.Fatalf("CommitStepAtom(a): %v", err)
+		t.Fatalf("CommitNodeAtom(a): %v", err)
 	}
 	if n, _ := s.RunDepsRemaining("run-1", "c"); n != 1 {
 		t.Fatalf("c remaining after a = %d, want 1", n)
@@ -43,18 +43,18 @@ func TestInitRunDepsAndFanIn(t *testing.T) {
 		t.Fatalf("c enqueued before all deps satisfied")
 	}
 
-	// Step b completes. c's count drops to 0; c is ready and is enqueued.
-	err = s.CommitStepAtom(StepAtom{
+	// Node b completes. c's count drops to 0; c is ready and is enqueued.
+	err = s.CommitNodeAtom(NodeAtom{
 		RunID:      "run-1",
-		StepID:     "b",
+		NodeID:     "b",
 		Result:     map[string]any{"b": true},
 		Dependents: []string{"c"},
 		Downstream: []Downstream{
-			{Queue: q, Payload: map[string]any{"step": "c"}},
+			{Queue: q, Payload: map[string]any{"node": "c"}},
 		},
 	})
 	if err != nil {
-		t.Fatalf("CommitStepAtom(b): %v", err)
+		t.Fatalf("CommitNodeAtom(b): %v", err)
 	}
 	if n, _ := s.RunDepsRemaining("run-1", "c"); n != 0 {
 		t.Fatalf("c remaining after b = %d, want 0", n)
@@ -67,8 +67,8 @@ func TestInitRunDepsAndFanIn(t *testing.T) {
 	if err := job.UnmarshalPayload(&p); err != nil {
 		t.Fatalf("payload: %v", err)
 	}
-	if p["step"] != "c" {
-		t.Fatalf("payload = %v, want step c", p)
+	if p["node"] != "c" {
+		t.Fatalf("payload = %v, want node c", p)
 	}
 }
 
@@ -76,7 +76,7 @@ func TestInitRunDepsAndFanIn(t *testing.T) {
 // decrement commits only with the rest of the atom.
 func TestFanInRollback(t *testing.T) {
 	s := openStore(t)
-	q := s.Queue("steps", 30, 3)
+	q := s.Queue("nodes", 30, 3)
 
 	rd := NewRunDeps("run-1", map[string]int{"a": 0, "c": 1}, []string{"a", "c"})
 	if err := s.InitRunDeps(rd); err != nil {
@@ -84,9 +84,9 @@ func TestFanInRollback(t *testing.T) {
 	}
 
 	// A failing atom (unmarshalable downstream payload) must not decrement c.
-	err := s.CommitStepAtom(StepAtom{
+	err := s.CommitNodeAtom(NodeAtom{
 		RunID:      "run-1",
-		StepID:     "a",
+		NodeID:     "a",
 		Result:     map[string]any{"ok": true},
 		Dependents: []string{"c"},
 		Downstream: []Downstream{
@@ -94,7 +94,7 @@ func TestFanInRollback(t *testing.T) {
 		},
 	})
 	if err == nil {
-		t.Fatal("expected CommitStepAtom to fail")
+		t.Fatal("expected CommitNodeAtom to fail")
 	}
 	if n, _ := s.RunDepsRemaining("run-1", "c"); n != 1 {
 		t.Fatalf("c remaining after rollback = %d, want 1 (decrement rolled back)", n)

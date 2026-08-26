@@ -10,12 +10,12 @@ import (
 )
 
 // TestRunEndToEnd starts a worker on a run enqueued by StartRun and verifies
-// the whole shell chain (a -> b) completes: both step results are written and
+// the whole shell chain (a -> b) completes: both node results are written and
 // the queue drains. It exercises the composition of the runner's run builder,
 // the worker loop, and the fan-out transaction together.
 func TestRunEndToEnd(t *testing.T) {
 	store := openStore(t)
-	q := store.Queue("steps", 30, 3)
+	q := store.Queue("nodes", 30, 3)
 
 	w, err := wafer.Parse([]byte(shellYAML))
 	if err != nil {
@@ -31,7 +31,7 @@ func TestRunEndToEnd(t *testing.T) {
 	defer cancel()
 	go func() { _ = worker.Run(ctx) }()
 
-	// Wait for both steps in the chain to complete.
+	// Wait for both nodes in the chain to complete.
 	deadline := time.After(4 * time.Second)
 	for {
 		a, _ := store.ResultJSON("run-e2e", "a")
