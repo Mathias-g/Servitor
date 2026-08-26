@@ -63,9 +63,9 @@ func TestIndexListsMechanisms(t *testing.T) {
 	if !idx.Generated {
 		t.Fatal("index should be marked generated")
 	}
-	byName := map[string]*mechanism{}
-	for i := range idx.Mechanisms {
-		byName[idx.Mechanisms[i].Name] = &idx.Mechanisms[i]
+	byName := map[string]*mechanismGroup{}
+	for i := range idx.MechanismGroups {
+		byName[idx.MechanismGroups[i].Name] = &idx.MechanismGroups[i]
 	}
 	core, ok := byName["core"]
 	if !ok {
@@ -108,7 +108,7 @@ func TestEntryContainsSchemaAndExample(t *testing.T) {
 	if err := yaml.Unmarshal(data, &e); err != nil {
 		t.Fatalf("parse http.yaml: %v", err)
 	}
-	if e.Kind != "node" || e.Type != "http" || e.Mechanism != "core" {
+	if e.Kind != "node" || e.Type != "http" || e.MechanismGroup != "core" {
 		t.Fatalf("unexpected entry header: %+v", e)
 	}
 	if _, ok := e.Schema["properties"]; !ok {

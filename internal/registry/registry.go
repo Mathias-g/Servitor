@@ -65,13 +65,14 @@ const (
 	DeliveryManual = "manual"
 )
 
-// Mechanism is the top-level mechanism a type belongs to. Mechanisms are how
-// Servitor interacts with a service (ADR-0017): `core` (universal primitives
-// and scheduling), `webhook` (inbound HTTP reception), `singer` (record
-// streaming), `mcp` (tool invocation), `helper` (compiled-in wrappers), and
-// `websocket` (inbound streaming, future). `capabilities` groups its output by
-// this value, so a service reached by several mechanisms appears in several
-// groups (SPEC: How an agent discovers integrations).
+// MechanismGroup is the top-level category a type belongs to (ADR-0017): `core`
+// (universal primitives and scheduling), `webhook` (inbound HTTP reception),
+// `singer` (record streaming), `mcp` (tool invocation), `helper` (compiled-in
+// wrappers), and `websocket` (inbound streaming, future). A mechanism group is
+// a family of mechanisms; the individual types within it are the mechanisms.
+// `capabilities` groups its output by this value, so a service reached by
+// several mechanisms appears in several groups (SPEC: How an agent discovers
+// integrations).
 const (
 	Core      = "core"
 	Webhook   = "webhook"
@@ -100,9 +101,9 @@ type Capability struct {
 	// scheduled, event, manual). It is informational, shown to agents, and
 	// fixed per capability. Empty for node capabilities.
 	Delivery string
-	// Mechanism is the mechanism this capability belongs to, or Core for
-	// Servitor's own primitives (SPEC: What counts as an integration).
-	Mechanism string
+	// MechanismGroup is the mechanism group this capability belongs to, or Core
+	// for Servitor's own primitives (SPEC: What counts as an integration).
+	MechanismGroup string
 	// Fields is the capability's config schema, keyed by field name.
 	Fields map[string]*Field
 }
@@ -124,11 +125,11 @@ func (t *Capability) isNodeRole() bool {
 // (ADR-0028).
 var types = []*Capability{
 	{
-		Name:       "http",
-		Desc:       "Make an HTTP request and capture the response.",
-		Role:       RoleAction,
-		SideEffect: true,
-		Mechanism:  Core,
+		Name:           "http",
+		Desc:           "Make an HTTP request and capture the response.",
+		Role:           RoleAction,
+		SideEffect:     true,
+		MechanismGroup: Core,
 		Fields: map[string]*Field{
 			"url":     {Type: "string", Required: true, Desc: "The URL to request.", Examples: []any{"https://api.example.com/things"}},
 			"method":  {Type: "string", Required: true, Desc: "HTTP method.", Examples: []any{"GET"}},
@@ -138,31 +139,31 @@ var types = []*Capability{
 		},
 	},
 	{
-		Name:       "shell",
-		Desc:       "Execute a command on the runner host.",
-		Role:       RoleAction,
-		SideEffect: true,
-		Mechanism:  Core,
+		Name:           "shell",
+		Desc:           "Execute a command on the runner host.",
+		Role:           RoleAction,
+		SideEffect:     true,
+		MechanismGroup: Core,
 		Fields: map[string]*Field{
 			"command": {Type: "string", Required: true, Desc: "The command to run.", Examples: []any{"echo hello"}},
 		},
 	},
 	{
-		Name:       "transform",
-		Desc:       "Reshape, extract, or compute over previous nodes' JSON output.",
-		Role:       RoleAction,
-		SideEffect: false,
-		Mechanism:  Core,
+		Name:           "transform",
+		Desc:           "Reshape, extract, or compute over previous nodes' JSON output.",
+		Role:           RoleAction,
+		SideEffect:     false,
+		MechanismGroup: Core,
 		Fields: map[string]*Field{
 			"expression": {Type: "string", Required: true, Desc: "A JSONata expression over the step's `{event, steps}` input (ADR-0020, ADR-0021).", Examples: []any{"$sum(steps.fetch.items[active=true].amount)"}},
 		},
 	},
 	{
-		Name:       "switch",
-		Desc:       "Route to one named branch based on a value.",
-		Role:       RoleFlow,
-		SideEffect: false,
-		Mechanism:  Core,
+		Name:           "switch",
+		Desc:           "Route to one named branch based on a value.",
+		Role:           RoleFlow,
+		SideEffect:     false,
+		MechanismGroup: Core,
 		Fields: map[string]*Field{
 			"expression": {Type: "string", Required: true, Desc: "A JSONata expression over the step's `{event, steps}` input producing the routing value (ADR-0020, ADR-0022).", Examples: []any{"steps.check"}},
 			"cases":      {Type: "object", Required: true, Desc: "Map of value to the name of the top-level node to route to.", Examples: []any{map[string]any{"high": "notify_finance", "low": "log_and_done"}}},
@@ -170,11 +171,11 @@ var types = []*Capability{
 		},
 	},
 	{
-		Name:       "foreach",
-		Desc:       "Fan a node out over a list.",
-		Role:       RoleFlow,
-		SideEffect: false,
-		Mechanism:  Core,
+		Name:           "foreach",
+		Desc:           "Fan a node out over a list.",
+		Role:           RoleFlow,
+		SideEffect:     false,
+		MechanismGroup: Core,
 		Fields: map[string]*Field{
 			"over": {Type: "string", Required: true, Desc: "A JSONata expression over the step's `{event, steps}` input yielding the list to iterate (ADR-0020, ADR-0024).", Examples: []any{"steps.fetch_ids"}},
 			"as":   {Type: "string", Desc: "Name for each element in the loop, exposed in each iteration's input. Defaults to `item`.", Examples: []any{"item"}},
@@ -182,11 +183,11 @@ var types = []*Capability{
 		},
 	},
 	{
-		Name:       "singer-tap",
-		Desc:       "Run a Singer tap and capture records and state.",
-		Role:       RoleAction,
-		SideEffect: true,
-		Mechanism:  Singer,
+		Name:           "singer-tap",
+		Desc:           "Run a Singer tap and capture records and state.",
+		Role:           RoleAction,
+		SideEffect:     true,
+		MechanismGroup: Singer,
 		Fields: map[string]*Field{
 			"tap":     {Type: "string", Required: true, Desc: "The tap to run.", Examples: []any{"tap-stripe"}},
 			"config":  {Type: "object", Desc: "Tap config."},
@@ -194,22 +195,22 @@ var types = []*Capability{
 		},
 	},
 	{
-		Name:       "singer-target",
-		Desc:       "Run a Singer target consuming records.",
-		Role:       RoleAction,
-		SideEffect: true,
-		Mechanism:  Singer,
+		Name:           "singer-target",
+		Desc:           "Run a Singer target consuming records.",
+		Role:           RoleAction,
+		SideEffect:     true,
+		MechanismGroup: Singer,
 		Fields: map[string]*Field{
 			"target": {Type: "string", Required: true, Desc: "The target to run.", Examples: []any{"target-grist"}},
 			"config": {Type: "object", Desc: "Target config."},
 		},
 	},
 	{
-		Name:       "mcp-call",
-		Desc:       "Invoke one named tool on one named MCP server over stdio (ADR-0015).",
-		Role:       RoleAction,
-		SideEffect: true,
-		Mechanism:  MCP,
+		Name:           "mcp-call",
+		Desc:           "Invoke one named tool on one named MCP server over stdio (ADR-0015).",
+		Role:           RoleAction,
+		SideEffect:     true,
+		MechanismGroup: MCP,
 		Fields: map[string]*Field{
 			"server": {Type: "string", Required: true, Desc: "The MCP server executable to run.", Examples: []any{"atomic-server"}},
 			"tool":   {Type: "string", Required: true, Desc: "The named tool to invoke.", Examples: []any{"search"}},
@@ -218,59 +219,59 @@ var types = []*Capability{
 		},
 	},
 	{
-		Name:      "http_webhook",
-		Desc:      "Generic inbound HTTP receiver with configurable HMAC verification.",
-		Role:      RoleTrigger,
-		Delivery:  DeliveryInstant,
-		Mechanism: Webhook,
-		Fields:    map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/things"}}, "secret": {Type: "string", Desc: "Secret name to verify the x-servitor-signature HMAC header with.", Examples: []any{"MY_WEBHOOK_SECRET"}}},
+		Name:           "http_webhook",
+		Desc:           "Generic inbound HTTP receiver with configurable HMAC verification.",
+		Role:           RoleTrigger,
+		Delivery:       DeliveryInstant,
+		MechanismGroup: Webhook,
+		Fields:         map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/things"}}, "secret": {Type: "string", Desc: "Secret name to verify the x-servitor-signature HMAC header with.", Examples: []any{"MY_WEBHOOK_SECRET"}}},
 	},
 	{
-		Name:      "standard_webhook",
-		Desc:      "Standard Webhooks-compliant receiver.",
-		Role:      RoleTrigger,
-		Delivery:  DeliveryInstant,
-		Mechanism: Webhook,
-		Fields:    map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/std"}}, "secret": {Type: "string", Desc: "Secret name to verify the Standard Webhooks signature with.", Examples: []any{"WEBHOOK_SECRET"}}},
+		Name:           "standard_webhook",
+		Desc:           "Standard Webhooks-compliant receiver.",
+		Role:           RoleTrigger,
+		Delivery:       DeliveryInstant,
+		MechanismGroup: Webhook,
+		Fields:         map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/std"}}, "secret": {Type: "string", Desc: "Secret name to verify the Standard Webhooks signature with.", Examples: []any{"WEBHOOK_SECRET"}}},
 	},
 	{
-		Name:      "grist_webhook",
-		Desc:      "Grist-specific receiver.",
-		Role:      RoleTrigger,
-		Delivery:  DeliveryInstant,
-		Mechanism: Webhook,
-		Fields:    map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/grist"}}},
+		Name:           "grist_webhook",
+		Desc:           "Grist-specific receiver.",
+		Role:           RoleTrigger,
+		Delivery:       DeliveryInstant,
+		MechanismGroup: Webhook,
+		Fields:         map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/grist"}}},
 	},
 	{
-		Name:      "github_webhook",
-		Desc:      "GitHub-specific receiver.",
-		Role:      RoleTrigger,
-		Delivery:  DeliveryInstant,
-		Mechanism: Webhook,
-		Fields:    map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/github"}}, "secret": {Type: "string", Desc: "Secret name to verify the X-Hub-Signature-256 header with.", Examples: []any{"GITHUB_WEBHOOK_SECRET"}}},
+		Name:           "github_webhook",
+		Desc:           "GitHub-specific receiver.",
+		Role:           RoleTrigger,
+		Delivery:       DeliveryInstant,
+		MechanismGroup: Webhook,
+		Fields:         map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/github"}}, "secret": {Type: "string", Desc: "Secret name to verify the X-Hub-Signature-256 header with.", Examples: []any{"GITHUB_WEBHOOK_SECRET"}}},
 	},
 	{
-		Name:      "slack_event",
-		Desc:      "Slack events (messages, mentions).",
-		Role:      RoleTrigger,
-		Delivery:  DeliveryInstant,
-		Mechanism: Webhook,
-		Fields:    map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/slack"}}, "secret": {Type: "string", Desc: "Secret name to verify the X-Slack-Signature header with.", Examples: []any{"SLACK_SIGNING_SECRET"}}},
+		Name:           "slack_event",
+		Desc:           "Slack events (messages, mentions).",
+		Role:           RoleTrigger,
+		Delivery:       DeliveryInstant,
+		MechanismGroup: Webhook,
+		Fields:         map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/slack"}}, "secret": {Type: "string", Desc: "Secret name to verify the X-Slack-Signature header with.", Examples: []any{"SLACK_SIGNING_SECRET"}}},
 	},
 	{
-		Name:      "atomic_event",
-		Desc:      "Atomic knowledge-base changes.",
-		Role:      RoleTrigger,
-		Delivery:  DeliveryInstant,
-		Mechanism: Webhook,
-		Fields:    map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/atomic"}}},
+		Name:           "atomic_event",
+		Desc:           "Atomic knowledge-base changes.",
+		Role:           RoleTrigger,
+		Delivery:       DeliveryInstant,
+		MechanismGroup: Webhook,
+		Fields:         map[string]*Field{"path": {Type: "string", Required: true, Desc: "Path to receive on.", Examples: []any{"/hooks/atomic"}}},
 	},
 	{
-		Name:      "email_received",
-		Desc:      "Inbound email parsed into a structured payload.",
-		Role:      RoleTrigger,
-		Delivery:  DeliveryPolling,
-		Mechanism: Helper,
+		Name:           "email_received",
+		Desc:           "Inbound email parsed into a structured payload.",
+		Role:           RoleTrigger,
+		Delivery:       DeliveryPolling,
+		MechanismGroup: Helper,
 		Fields: map[string]*Field{
 			"host":     {Type: "string", Required: true, Desc: "IMAP host of the mailbox, for example imap.gmail.com.", Examples: []any{"imap.gmail.com"}},
 			"username": {Type: "string", Required: true, Desc: "Mailbox account, for example me@company.com.", Examples: []any{"me@company.com"}},
@@ -279,28 +280,28 @@ var types = []*Capability{
 		},
 	},
 	{
-		Name:      "cron",
-		Desc:      "Run on the Honker scheduler.",
-		Role:      RoleTrigger,
-		Delivery:  DeliveryScheduled,
-		Mechanism: Core,
-		Fields:    map[string]*Field{"schedule": {Type: "string", Required: true, Desc: "Cron expression.", Examples: []any{"0 * * * *"}}},
+		Name:           "cron",
+		Desc:           "Run on the Honker scheduler.",
+		Role:           RoleTrigger,
+		Delivery:       DeliveryScheduled,
+		MechanismGroup: Core,
+		Fields:         map[string]*Field{"schedule": {Type: "string", Required: true, Desc: "Cron expression.", Examples: []any{"0 * * * *"}}},
 	},
 	{
-		Name:      "manual",
-		Desc:      "Invoked via the CLI.",
-		Role:      RoleTrigger,
-		Delivery:  DeliveryManual,
-		Mechanism: Core,
-		Fields:    map[string]*Field{},
+		Name:           "manual",
+		Desc:           "Invoked via the CLI.",
+		Role:           RoleTrigger,
+		Delivery:       DeliveryManual,
+		MechanismGroup: Core,
+		Fields:         map[string]*Field{},
 	},
 	{
-		Name:      "internal",
-		Desc:      "Fired by another workflow's completion.",
-		Role:      RoleTrigger,
-		Delivery:  DeliveryEvent,
-		Mechanism: Core,
-		Fields:    map[string]*Field{"workflow": {Type: "string", Required: true, Desc: "The workflow that fires this.", Examples: []any{"upstream-workflow"}}},
+		Name:           "internal",
+		Desc:           "Fired by another workflow's completion.",
+		Role:           RoleTrigger,
+		Delivery:       DeliveryEvent,
+		MechanismGroup: Core,
+		Fields:         map[string]*Field{"workflow": {Type: "string", Required: true, Desc: "The workflow that fires this.", Examples: []any{"upstream-workflow"}}},
 	},
 }
 
