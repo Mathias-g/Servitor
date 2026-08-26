@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"syscall"
 )
 
 // sentinelEnv is set by `varlock run` in the child process. Its presence marks
@@ -33,10 +34,17 @@ func Available() bool {
 
 // SelfHeal re-executes the current program under `varlock run` when it was not
 // already launched under varlock, so the runner always boots with secrets
-// resolved. It returns true when it re-executed (the caller should stop and
-// report any error), and false when the process is already under varlock or
-// the varlock binary is not on PATH, in which case the caller runs normally
-// without secret resolution.
+// resolved. It reports false when the process is already under varlock or the
+// varlock binary is not on PATH, in which case the caller runs normally
+// without secret resolution, and true when it has handed off to varlock (the
+// caller should stop).
+//
+// The handoff is a true exec (syscall.Exec): this process's image is replaced
+// by varlock, which then spawns the runner as its child. There is no lingering
+// wrapper process, so the operator sees a clean `manager -> varlock -> runner`
+// tree and signals sent to the process they launched reach varlock, which
+// forwards them to the runner. varlock is invoked with `--inject vars` so the
+// full `__VARLOCK_ENV` secret graph is not carried in the daemon's environment.
 func SelfHeal() (bool, error) {
 	if Under() {
 		return false, nil
@@ -49,12 +57,10 @@ func SelfHeal() (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("varlock: locate self: %w", err)
 	}
-	args := append([]string{"run", "--", exe}, os.Args[1:]...)
-	cmd := exec.Command(varlockBin, args...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	argv := append([]string{"varlock", "run", "--inject", "vars", "--", exe}, os.Args[1:]...)
+	// syscall.Exec does not return on success: the current process image is
+	// replaced by varlock. If it returns, the exec failed and we report it.
+	if err := syscall.Exec(varlockBin, argv, os.Environ()); err != nil {
 		return true, fmt.Errorf("varlock: re-exec: %w", err)
 	}
 	return true, nil

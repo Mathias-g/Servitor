@@ -1,5 +1,5 @@
 ---
-status: superseded
+status: superseded by ADR-0023
 date: 2026-08-24
 decision-makers: [Mathias]
 consulted: []

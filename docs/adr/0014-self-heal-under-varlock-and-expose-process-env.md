@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0029
 date: 2026-08-25
 decision-makers: [Mathias]
 consulted: []

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 )
 
 // Request is one subprocess step run.
@@ -60,18 +61,36 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	}
 
 	if err := cmd.Run(); err != nil {
-		return Result{Stderr: stderr.String()}, fmt.Errorf("exec: step failed: %w: %s", err, stderr.String())
+		return Result{Stderr: redactEnv(req.Env, stderr.String())}, fmt.Errorf("exec: step failed: %w: %s", err, redactEnv(req.Env, stderr.String()))
 	}
 
-	out := bytes.TrimSpace(stdout.Bytes())
+	out := redactEnv(req.Env, string(bytes.TrimSpace(stdout.Bytes())))
 	if len(out) == 0 {
-		return Result{Stderr: stderr.String()}, fmt.Errorf("exec: step produced no JSON output on stdout: %s", stderr.String())
+		return Result{Stderr: redactEnv(req.Env, stderr.String())}, fmt.Errorf("exec: step produced no JSON output on stdout: %s", redactEnv(req.Env, stderr.String()))
 	}
 	var v any
-	if err := json.Unmarshal(out, &v); err != nil {
-		return Result{Stderr: stderr.String()}, fmt.Errorf("exec: step stdout is not valid JSON: %w: %s", err, stderr.String())
+	if err := json.Unmarshal([]byte(out), &v); err != nil {
+		return Result{Stderr: redactEnv(req.Env, stderr.String())}, fmt.Errorf("exec: step stdout is not valid JSON: %w: %s", err, redactEnv(req.Env, stderr.String()))
 	}
-	return Result{Output: v, Stderr: stderr.String()}, nil
+	return Result{Output: v, Stderr: redactEnv(req.Env, stderr.String())}, nil
+}
+
+// redactEnv replaces any secret value present in env with a placeholder, so a
+// step's captured output does not carry the secrets it was granted back into
+// the runner's persisted state or logs (SPEC: Varlock). It uses only the
+// values in env (which FilteredEnv limited to PATH plus the step's declared
+// secrets), so it never touches anything the step could not already see. PATH
+// itself is not a secret and is left alone.
+func redactEnv(env []string, b string) string {
+	out := b
+	for _, kv := range env {
+		name, value, ok := strings.Cut(kv, "=")
+		if !ok || name == "PATH" || value == "" {
+			continue
+		}
+		out = strings.ReplaceAll(out, value, "<redacted:"+name+">")
+	}
+	return out
 }
 
 // FilteredEnv builds the environment a step's subprocess may see: a minimal

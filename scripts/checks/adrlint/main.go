@@ -21,10 +21,12 @@ import (
 var (
 	adrFileRe   = regexp.MustCompile(`^(\d{4})-([a-z0-9]+(?:-[a-z0-9]+)*)\.md$`)
 	validStatus = map[string]bool{
-		"proposed": true, "accepted": true,
-		"deprecated": true, "superseded": true,
+		"proposed": true, "accepted": true, "deprecated": true,
 	}
-	validImpact = map[string]bool{"none": true, "new": true, "breaking": true}
+	// supersededRe matches MADR's supersession form: "superseded by ADR-0123"
+	// (see the MADR template, adopted by this project).
+	supersededRe = regexp.MustCompile(`^superseded by ADR-\d{4}$`)
+	validImpact  = map[string]bool{"none": true, "new": true, "breaking": true}
 )
 
 type adr struct {
@@ -120,8 +122,8 @@ func parseADRs(path string) *adr {
 			k, v = strings.TrimSpace(k), strings.TrimSpace(v)
 			switch k {
 			case "status":
-				if !validStatus[v] {
-					fmt.Printf("%s: invalid status %q (want proposed|accepted|deprecated|superseded)\n", path, v)
+				if !validStatus[v] && !supersededRe.MatchString(v) {
+					fmt.Printf("%s: invalid status %q (want proposed|accepted|deprecated|superseded by ADR-NNNN)\n", path, v)
 					os.Exit(1)
 				}
 				a.status = v

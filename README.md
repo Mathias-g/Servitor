@@ -51,7 +51,7 @@ the box:
 - **Go** (the version in `go.mod`), `make`, and a **C compiler** (gcc/clang). The
   build uses cgo: the Honker SQLite extension requires the cgo `mattn/go-sqlite3`
   driver, so the binary is not fully static (ADR-0004).
-- **Varlock** on `PATH`. The runner re-execs under `varlock run` to resolve
+- **Varlock** on `PATH`. The runner execs itself under `varlock run` to resolve
   secrets into its environment. If it is missing, the runner boots anyway but
   warns that secret resolution is off, and steps that declare secrets fail.
 - **The Honker SQLite extension** (`libhonker_ext.so`). It is not committed to
@@ -60,8 +60,8 @@ the box:
 
 ## Getting started
 
-Build it, download the Honker extension, then run it; the runner re-execs
-itself under varlock to resolve secrets and boots the daemon.
+Build it, download the Honker extension, then run it; the runner execs itself
+under varlock to resolve secrets and boots the daemon.
 
 1. **Build.** Requires Go (the version in `go.mod`), `make`, and a C compiler
    (for cgo):
@@ -107,8 +107,9 @@ itself under varlock to resolve secrets and boots the daemon.
    Point the runner at it with `HONKER_EXTENSION_PATH`. (Other platforms: build
    or fetch the extension for your OS per the Honker docs.)
 
-4. **Run the runner.** `servitor` re-execs itself under varlock to resolve
-   secrets into its environment, then boots the daemon and owns its SQLite file:
+4. **Run the runner.** `servitor` execs itself under varlock (`--inject vars`)
+   to resolve secrets into its environment, then boots the daemon and owns its
+   SQLite file:
 
        HONKER_EXTENSION_PATH=/opt/servitor/libhonker_ext.so \
          ./bin/servitor run --db ./servitor.db --webhook-addr :8080

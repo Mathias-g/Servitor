@@ -139,9 +139,11 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// Self-healing launch: if this process was not started under varlock,
-	// re-execute under `varlock run` so the runner always boots with secrets
-	// resolved (SPEC: Varlock). SelfHeal blocks until the child exits and
-	// returns true once it has taken over.
+	// exec `varlock run --inject vars -- <self> run` so the runner always
+	// boots with secrets resolved (SPEC: Varlock). SelfHeal replaces the
+	// current process with varlock on success (it does not return), so this
+	// branch only runs when the process was already under varlock, varlock is
+	// absent, or the exec failed.
 	if healed, err := varlock.SelfHeal(); healed {
 		if err != nil {
 			_, _ = fmt.Fprintf(stderr, "servitor: %v\n", err)
