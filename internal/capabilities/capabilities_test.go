@@ -108,7 +108,7 @@ func TestEntryContainsSchemaAndExample(t *testing.T) {
 	if err := yaml.Unmarshal(data, &e); err != nil {
 		t.Fatalf("parse http.yaml: %v", err)
 	}
-	if e.Kind != "node" || e.Type != "http" || e.Group != "core" {
+	if e.Kind != "node" || e.Type != "http" || e.Mechanism != "core" {
 		t.Fatalf("unexpected entry header: %+v", e)
 	}
 	if _, ok := e.Schema["properties"]; !ok {

@@ -32,7 +32,7 @@ const DefaultDir = ".servitor/capabilities"
 type entry struct {
 	Kind        string         `yaml:"kind"`
 	Type        string         `yaml:"type"`
-	Group       string         `yaml:"group"`
+	Mechanism   string         `yaml:"mechanism"`
 	Role        string         `yaml:"role"`
 	Delivery    string         `yaml:"delivery,omitempty"`
 	Description string         `yaml:"description"`
@@ -232,7 +232,7 @@ func writeTypes(dir string) error {
 		e := entry{
 			Kind:        "node",
 			Type:        st.Name,
-			Group:       st.Group,
+			Mechanism:   st.Mechanism,
 			Role:        string(st.Role),
 			Description: st.Desc,
 			Schema:      st.JSONSchema(),
@@ -246,7 +246,7 @@ func writeTypes(dir string) error {
 		e := entry{
 			Kind:        "trigger",
 			Type:        tt.Name,
-			Group:       tt.Group,
+			Mechanism:   tt.Mechanism,
 			Role:        "trigger",
 			Delivery:    tt.Delivery,
 			Description: tt.Desc,
@@ -261,7 +261,7 @@ func writeTypes(dir string) error {
 }
 
 func writeEntry(dir string, e entry) error {
-	groupDir := filepath.Join(dir, e.Group)
+	groupDir := filepath.Join(dir, e.Mechanism)
 	if err := os.MkdirAll(groupDir, 0o755); err != nil {
 		return fmt.Errorf("capabilities: create %s: %w", groupDir, err)
 	}
@@ -286,12 +286,12 @@ func writeIndex(dir string) error {
 		}
 	}
 	for _, st := range registry.Nodes() {
-		add(st.Group)
-		groups[st.Group].Nodes = append(groups[st.Group].Nodes, st.Name)
+		add(st.Mechanism)
+		groups[st.Mechanism].Nodes = append(groups[st.Mechanism].Nodes, st.Name)
 	}
 	for _, tt := range registry.TriggerTypes() {
-		add(tt.Group)
-		groups[tt.Group].Triggers = append(groups[tt.Group].Triggers, tt.Name)
+		add(tt.Mechanism)
+		groups[tt.Mechanism].Triggers = append(groups[tt.Mechanism].Triggers, tt.Name)
 	}
 	sort.Strings(groupNames)
 	idx := index{Generated: true}
