@@ -79,9 +79,9 @@ The per-node delivery invariant is the one thing *not* generalized; it is fixed 
 
 ### How this maps onto the capability model
 
-A secret capability is a distinct **role**, `secret` (a capability that supplies secret material to nodes, not a node or trigger itself). The distinct ways Servitor obtains a secret value at runtime are **mechanisms** under a `secret-resolution` **mechanism group`.
+A secret capability is a distinct **role**, `secret` (a capability that supplies secret material to nodes, not a node or trigger itself). The distinct ways Servitor obtains a secret value at runtime are **mechanisms** under a `secret-resolution` **mechanism group**.
 
-It is tempting to list "the combinations" as a flat set, but the space is really three **orthogonal axes** that any specific arrangement combines:
+A secret-resolution mechanism is defined by picking one option on each of three **orthogonal axes**:
 
 - **Ingress** — how the secret material reaches the box: **push** (CI/CD delivers it during deploy) or **pull** (Servitor or a provider fetches it from an external store).
 - **Storage** — where the value lives at rest: in an **external store**, as **on-box ciphertext**, or as plaintext in the **environment**.
