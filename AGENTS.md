@@ -14,6 +14,7 @@ This file governs how context about the codebase (why things are the way they ar
 - **PLAN.md**: the implementation plan: build phases in order, dependencies, and what "done" means for each. Follow this when building.
 - **docs/adr/**: the decision log. Each significant decision, with its alternatives and rationale, recorded as a numbered, immutable ADR. This is where the "why" of the design lives.
 - **IDEAS.md**: a catch-all for promising directions that are not yet decided or built. Not commitments; ideas move to an ADR (and then the SPEC/PLAN) when they become real decisions, and are discarded when not.
+- **THREATS.md**: open, unsettled attack surfaces and things to investigate. Not decisions and not invariants yet; when one is resolved it moves to a test, the relevant SPEC section, Gotchas, or an ADR depending on what the resolution is, and is discarded when found to be a non-issue.
 - **README.md**: what Servitor is and how to get started.
 
 The docs are deliberately plain-language. Keep them that way.
@@ -48,6 +49,7 @@ Several homes, each owning one kind of context. Most context is in the product/b
 | Layer                         | Owns                                              | Mutable? | Enforced? |
 |-------------------------------|---------------------------------------------------|----------|-----------|
 | `SPEC.md`                     | What the product is and how it behaves            | yes      | review |
+| `THREATS.md`                  | Open, unsettled attack surfaces and things to investigate | yes | review |
 | `docs/adr/`                   | Decisions with real alternatives, and their rationale | append-only | linter (front matter) |
 | Exported Go identifiers + package docs | A package's public interface           | yes      | `go vet`, review |
 | Tests (per package)           | How the package behaves and how to call it        | yes      | CI |
@@ -82,6 +84,7 @@ How to route what you learned this session into the codebase, and what to discar
 - **Made a choice with real alternatives someone might later reverse?** ADR. If the choice changes behavior, the test that pins the new behavior is part of recording it.
 - **Changed the product's behavior or interface (Wafer schema, CLI, daemon protocol)?** Update `SPEC.md` and, if it was a genuine decision, write an ADR.
 - **Established or changed how a package is supposed to behave** (an edge case, an input/output guarantee, a regression you just fixed)? A test. This is preferred over prose whenever the behavior can be asserted.
+- **Found an open, unsettled attack surface or something to investigate?** `THREATS.md`. It is not a decision and not an invariant yet; when resolved it moves to a test, the relevant SPEC section, Gotchas, or an ADR depending on what the resolution is, and is discarded when found to be a non-issue.
 - **Learned a durable gotcha or invariant that no assertion can capture**, something about intent or rationale rather than behavior? Package README or docstring, or the Gotchas section of `SPEC.md` for cross-cutting operational lessons.
 - **Just describes what this diff does?** Commit or PR body.
 - **Exploration that concluded nothing durable?** Discard. Do not write it anywhere.
