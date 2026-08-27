@@ -34,7 +34,8 @@ type Field struct {
 	Examples []any
 }
 
-// Role is where a capability may be used.
+// Role is the category of thing a capability is, which determines where it may
+// be used (under `on:` or `nodes:`) and how it is treated.
 type Role string
 
 const (

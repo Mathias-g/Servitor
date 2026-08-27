@@ -59,17 +59,16 @@ mechanism group. `capabilities` groups its output by mechanism group, and
 supersedes ADR-0017's wording, which called the top level "mechanism"; the
 grouping behavior is unchanged, only the term for the top level is corrected.
 
-A mechanism group is added only when a capability in it actually exists. The
-distinct ways a future secret provider might retrieve a secret (fetch from an
-external store, decrypt on-box, unseal with TPM/vTPM, decrypt via an off-box
-KMS, read from the environment) are mechanisms, and would belong to a
-`secret` mechanism group; that group is added when the first such capability is
-built, not before.
+A mechanism group is added only when a capability in it actually exists.
+
+A capability's role is its category of thing, which determines where it may be
+used (under `on:` for triggers, under `nodes:` for action and flow nodes) and
+how it is treated. Roles today are `trigger`, `action`, and `flow`.
 
 ### Consequences
 
-- Good: the two levels are now named precisely, so a future mechanism group
-  (for example `secret`) has a clear home.
+- Good: the two levels are now named precisely, and a new mechanism group has a
+  clear home when a capability in it is added.
 - Good: the authoring-agent legibility goal (ADR-0017's driver) is preserved
   with an accurate name for the category.
 - Good: aligns the code field with the concept (the field holds a group).
