@@ -44,7 +44,7 @@ Designing for agents first changes specific decisions:
 - **The artifact is the Wafer, not a database row.** A Wafer is the YAML file that defines a whole workflow: triggers (`on:`) that start the run and nodes (`nodes:`) that do the work. Agents read, write, diff, and version-control the same file a human would. There is no "form state" living somewhere the agent can't see.
 - **Capability discovery is a first-class operation.** `servitor capabilities` returns every capability (trigger, action node, or flow node, with its role and delivery), every declared secret, and every Singer tap available, each with its JSON Schema and an example rendered from that schema. An agent never has to guess what fields a node takes.
 - **Validation errors are structured, not stringified.** Errors are returned as JSON with paths, codes, and suggestions. An agent that submits a workflow with `type: slak` gets back an `unknown_node_type` error with `suggestion: slack`, the way an IDE would flag the typo. (See the Structured validation errors section for the full shape.)
-- **Dry-run is a real primitive.** `servitor dry-run` resolves the entire workflow and returns the DAG the runner *would* execute. No nodes run, no external services are contacted, nothing is persisted. It reports the workflow's declared secret names (redacted, never values) and warns with a `missing_secret` code when one is not present in the environment, so an agent can verify structure, secret availability, and node configuration before committing.
+- **Dry-run is a real primitive.** `servitor dry-run` resolves the entire workflow and returns the DAG the runner *would* execute. No nodes run, no external services are contacted, nothing is persisted. It reports the workflow's declared secret names (redacted, never values) and warns with a `missing_secret` code when one is not resolvable by the configured provider, so an agent can verify structure, secret availability, and node configuration before committing.
 - **The same CLI serves humans and agents.** No private API the agent doesn't have access to. If a future UI exists, it talks to the same control plane.
 
 These are not nice-to-haves bolted on after the fact; they are why this project exists as a separate thing rather than as a fork of an existing runner.
@@ -84,7 +84,7 @@ That's it. Submit it via CLI, enable it, and the next time a row is added to you
 
 Read this once and the rest of the document fills in the details. The split: steps 1, 2, 6, and 8 are the runner's job (receive, verify, persist, execute). Steps 3, 4, 5, and 7 are the author's job, human or agent (decide what to build, write it, submit it, react to results). The runner never decides what a workflow should do; that is always the author, because the author has the context.
 
-1. **Start the runner.** `servitor run` boots the daemon under varlock, which resolves secrets into its environment. One process owns the SQLite file.
+1. **Start the runner.** `servitor run` boots the daemon, which obtains secrets on demand through its configured provider (SPEC: Secret resolution). One process owns the SQLite file.
 2. **Discover what's possible.** `servitor capabilities` lists capabilities (triggers, action nodes, and flow nodes, with roles and delivery), secrets, and Singer taps with schemas. An agent reads this instead of guessing.
 3. **Write a Wafer.** A human edits a YAML file, or an agent generates one from the capabilities schema. The Wafer declares triggers and nodes.
 4. **Dry-run it.** `servitor dry-run ./wf.yml` validates and resolves the workflow without running anything, so the author sees the DAG and the declared secrets (redacted, with a `missing_secret` warning when one is absent).
@@ -113,7 +113,7 @@ Go keeps subprocess startup fast (roughly a millisecond), which is why every nod
 
 ### Dependencies and standards (reference)
 
-The runner is a single Go binary, but it composes external pieces and speaks external standards. Two of these are runtime dependencies the runner actually pulls in (Honker, Varlock); the other two are standards it adheres to by spawning external tools or implementing a scheme (Singer, Standard Webhooks). Only the runner itself is Go.
+The runner is a single Go binary, but it composes external pieces and speaks external standards. One of these is a runtime dependency the runner actually pulls in (Honker); the others are standards it adheres to by spawning external tools or implementing a scheme (Singer, Standard Webhooks). Only the runner itself is Go. Secrets are handled separately, through a pluggable provider (Secret resolution), not as a runtime dependency on any particular store.
 
 #### Honker, durable queue and scheduler (runtime dependency)
 
@@ -128,19 +128,6 @@ What we use it for:
 - **State persistence.** Every workflow's run history, node outcomes, Singer state bookmarks, and pending events live in the same SQLite file.
 - **Transactional commits.** A node's completion writes commit as a single atomic SQLite transaction rather than as separate operations. This is the mechanism behind the transactional fan-out guarantee; see step 8 of the Execution model for what the transaction contains and why it must never be split.
 - **Scheduler primitive.** Cron-style triggers use Honker's built-in scheduler.
-
-#### Varlock, secret management (runtime dependency)
-
-[Varlock](https://varlock.dev) is a typed, schema-validated `.env` replacement with runtime log redaction and plugin support for a range of secret managers (e.g. 1Password, HashiCorp Vault, AWS Secrets Manager). Servitor does not assume any particular one: the operator points varlock at whatever backing store they already use, and the runner only ever sees resolved env vars, so the choice of manager is the operator's, not Servitor's.
-
-What we use it for:
-
-- **Secret resolution at process start.** The operator just runs `servitor`. The process checks whether it is already running under varlock; if not, it execs itself as `varlock run --inject vars -- servitor run`. Varlock resolves secrets from their backing store, validates them against the schema, and injects them as individual env vars before any of the runner's real code executes. The `--inject vars` form injects only the individual resolved vars and omits varlock's `__VARLOCK_ENV` graph blob, so the full secret set is not carried in one environment variable on the daemon.
-- **Per-node secret filtering at subprocess spawn.** When the runner spawns a node subprocess, it constructs the subprocess's env from scratch and includes *only* the secrets the node declared. Webhook secrets, runner-internal secrets, and other nodes' secrets never appear in the subprocess env. Because every node runs as a subprocess (ADR-0008), no node ever runs in the runner's process where it could reach the resolved-secret cache.
-- **Webhook signature secrets.** Each integrated service's webhook signing key is declared in the varlock schema. The receiver reads them from the process environment at verification time, in the runner process only.
-- **Node output redaction.** A node's captured stdout and stderr are scrubbed of any secret value the node was granted before the result is returned or persisted. A node that echoes a secret back cannot carry it into the runner's stored state or logs.
-
-**Self-healing launch.** The danger with exposing the inner `servitor run` target is that someone reads `--help`, types `servitor run` directly, and boots the runner with no secrets in its environment, which is the one startup mistake that matters. This is prevented by a sentinel rather than by hiding the command. Varlock always sets `__VARLOCK_RUN=1` in the environment of the process it launches. So on startup the runner checks for `__VARLOCK_RUN`: if it is present, the process is already wrapped and boots normally; if it is absent, the process execs itself as `varlock run --inject vars -- servitor run` and lets varlock populate the environment first. Both `servitor` and a directly typed `servitor run` therefore converge on the same wrapped path. The re-exec is idempotent: the inner invocation runs with `__VARLOCK_RUN` set, so it boots rather than wrapping itself again. The handoff is a true exec, so the process the operator launched becomes varlock, which becomes the runner's parent; there is no lingering wrapper above varlock. If varlock is not installed, the runner boots anyway and warns that secret resolution is off; nodes that declare secrets will then fail, which is the visible signal that varlock is missing.
 
 #### Singer, data movement integrations (standard)
 
@@ -189,6 +176,145 @@ A second `SIGTERM`, or a `SIGKILL`, skips draining and stops immediately; everyt
 
 ---
 
+## Secret resolution
+
+Secrets are obtained through a narrow, pluggable **provider** (ADR-0032): an
+in-process interface, roughly `Resolve(ctx, nodeName, secretName) -> value`,
+with caching and expiry as provider properties and failure semantics that
+distinguish the source being unreachable, the secret being missing, and the
+secret being stale or invalid (Secret invalidity and rotation). A provider
+encapsulates its own mechanism (its own on-box unlock: a local key, TPM/vTPM, or
+an off-box KMS call; or, for the pull arrangements, a store credential).
+Multiple providers coexist, with per-secret routing and optional failover. A
+secret capability is a distinct **role**, `secret`, and the available secret
+sources are mechanisms under the `secret-resolution` mechanism group (ADR-0036);
+that group is what an agent consults to know the valid `source` values for
+`secrets.yaml`.
+
+The recommended mechanism is **push-based on-box ciphertext**: CI/CD delivers
+the material during deploy, the value is sealed to the box, and Servitor
+decrypts locally when a node needs it. At rest, secrets are never plaintext on
+disk: TPM is the preferred unlock tier, with a non-TPM fallback (an off-box KMS
+key or a strong local-key file) that still holds the line against plaintext.
+Other arrangements are supported for their niches: a pull-based external store
+(for stores fast enough to resolve from directly per node, such as AWS Secrets
+Manager), a pull-based on-box ciphertext store (for slow stores, fetched once
+into the local copy and then resolved per node), and plain environment (a
+dev/testing fallback). The three axes a mechanism bundles (ingress, storage,
+unlock) are composed within the provider in code; they are not independently
+configured at runtime.
+
+**Per-node, per-subprocess delivery is the security invariant** (ADR-0033): a
+secret is resolved at the moment its node runs, handed to that one subprocess's
+filtered env, and held by the runner only while that subprocess is alive. A
+node's secret dies with its subprocess. A resolved secret may flow only to the
+declaring node's subprocess, or to an external provider for the purpose of
+authenticating, and is eliminated after. The runner resolves exactly the union
+of secrets the registered Wafers reference, so if the last Wafer using a secret
+is removed, the runner stops resolving it.
+
+Two honest limits are part of the model, not caveats to hide:
+
+- **"Gone after use" means no longer reachable, not erased from memory.** Go
+  strings are immutable and the garbage collector does not zero memory, so there
+  is no way to force a secret's bytes out of RAM. The invariant is reachability:
+  once the runner drops its reference, no running code in the runner can reach
+  the value, and the subprocess that held it is gone. A fully memory-compromised
+  process (a core dump or a read of the runner's heap) could still find stale
+  bytes, but an attacker with that level of memory access can read the next
+  resolve in plaintext anyway, so this is out of scope.
+- **Redaction keeps operating on the running node's filtered env.** A node's
+  captured output is scrubbed of any secret value the node was granted by
+  scanning the node's filtered env (ADR-0029). Per-node delivery holds a value
+  only while its node runs, which is exactly the window redaction needs, and
+  redaction only ever scrubs values the node was granted. There is no global
+  secret map to redact from; redaction operates per node, and this is what lets
+  per-node delivery compose with it.
+
+**The auth-before-side-effect contract.** A node's secret-authenticating call
+is its first outbound call and fails before any side effect, so that a retry on
+a stale secret (Secret invalidity and rotation) can never redo a side effect.
+Side-effecting nodes still declare a `dedupe_key` as a belt-and-suspenders
+guard.
+
+**The webhook signing key is resolved per use.** The webhook receiver resolves
+the current signing key fresh each time it verifies a message, and the value is
+held only for that one verification, not for the runner's life. There is no
+rollover window: a message that does not verify with the current key is rejected
+and logged, with no retry (an inbound webhook is sent once). The runner's only
+life-long-held secrets are the pull-provider store/KMS credentials it needs to
+authenticate outbound.
+
+### Secret invalidity and rotation
+
+A secret can become invalid at any time, whether it is in active use or idle: it
+can expire, be revoked, or be rotated while nothing is running. Per-node
+delivery makes fresh values free: each node resolves fresh and its value dies
+with its subprocess, so once the store holds a new value the next resolve picks
+it up. Two cases remain. A secret can go bad *while idle*: the next node that
+needs it fails at the moment of use, and a fresh resolve returns the new value
+once the store is updated; this only needs the resume-from-failure behavior
+below. The harder case is a long-lived holder (a persistent node connection such
+as a websocket, and the pull-provider credentials the runner uses to
+authenticate out): a value is held across a connection's life, and a fresh
+resolve cannot reach an already-open connection, so the holder must actively
+react. Invalidity is handled reactively, on failure rather than on a schedule:
+
+- A node whose auth fails (a 401/403, a dropped or rejected connection) fails
+  and reports it to the runner. The runner respawns the node's subprocess with a
+  freshly resolved secret, up to the configured retry count. Each retry is a new
+  subprocess spawn with a new resolve; the failed subprocess's value dies with
+  it. If the store value rotated, a fresh resolve gets the new one and the
+  retried request succeeds. This composes safely with `dedupe_key` only because
+  of the auth-before-side-effect contract (Secret resolution): auth is the
+  node's first outbound call and fails before any side effect, so a retry never
+  redoes one.
+- Retries are bounded: a configured number of attempts before the node fails, so
+  a genuinely bad secret does not loop forever. Initially a single global default
+  in the servitor config (for example `secret_retry_count: 3`), applied to all
+  nodes; a per-node or per-secret override can come later. When retries are
+  exhausted, the node fails with a distinct error (`secret_auth_failed`,
+  distinct from `missing_secret`) in the same structured `path`/`code` shape as
+  other node errors, written to the run's log, and emitted as an event a
+  workflow can trigger on (reusing the `internal` trigger's completion-callback
+  plumbing), so the operator can wire up their own notification.
+
+The three failure semantics a provider can return are not handled the same way:
+
+- **Stale/invalid (auth fails on use)** is the reactive-retry case above:
+  bounded retry with a fresh resolve, because a fresh resolve may get a rotated
+  value.
+- **Source unreachable** (the store/provider is down) is a transient
+  infrastructure failure. Retry with exponential backoff before failing, since
+  the source may come back. If it stays down, fail with a distinct error.
+- **Secret missing** (declared but no value in the store) is not transient, so
+  retrying is pointless; fail fast, no retry, with a `missing_secret`-style
+  error. The operator adds the value and resumes from the failed node.
+
+The model never proactively polls for rotation and never holds a value longer
+than it must; it only re-resolves when a failure makes a fresh value legitimate,
+which is exactly what the egress rule permits.
+
+Because the runner does not pre-check that every node's auth will work before a
+run starts, a run can fail partway through its DAG with some nodes completed and
+others not. Supplying the new secret should resume the run from the failed node,
+not restart it from the top: restarting would re-run the already-completed
+nodes, redoing their side effects (and, for nodes without a `dedupe_key`,
+redoing them unsafely). Resuming from the failure point leaves the completed
+nodes as they are and runs only the failed node and its remaining successors;
+this reuses the suspend/resume machinery sketched for parked runs, with the
+failed node as the continuation point. What "run it again" means is
+configurable, settable globally in the servitor config and per Wafer, with the
+CLI able to override it for a specific run:
+
+- **continue**: resume from the failed node, leaving completed nodes and their
+  side effects as they are. The default, and the safe choice for the
+  secret-invalidity case.
+- **restart**: re-run from the top. Redoes completed side effects, so it is only
+  safe for a Wafer whose side-effecting nodes all declare a `dedupe_key`.
+- **discard**: drop the failed run entirely and do not re-run it, cleaning up
+  any partial state.
+
 ## Control plane
 
 The runner is a long-lived daemon. The control plane is a CLI that talks to it, plus the daemon control protocol the CLI is one client of. Everything an agent or human does runs through this interface; there is no separate API. (The decision and rationale are in ADR-0005.)
@@ -198,8 +324,9 @@ The runner is a long-lived daemon. The control plane is a CLI that talks to it, 
 The command set, grouped by what you're doing. These are the contract humans and agents share. `servitor capabilities` writes schemas to files that the agent reads on demand, so big JSON schemas never sit in the agent's context; this is the token-efficiency payoff of a CLI over an MCP server.
 
 ```
-servitor run                        # boot the runner daemon (under varlock)
+servitor run                        # boot the runner daemon
 servitor capabilities               # write capability/trigger/secret/tap schemas + derived examples to files
+servitor secret add|list|remove     # manage declared secrets
 servitor dry-run <wafer>            # validate and resolve without executing (--json for structured)
 servitor submit <wafer>             # validate and register a workflow
 servitor update <wafer>             # replace a workflow's definition
@@ -249,7 +376,7 @@ JSON Schema, role, and delivery.
 
 ### How an agent discovers integrations
 
-Before writing a Wafer, an agent needs to know what the *target* server supports and how to use it. `servitor capabilities` answers both, and it is a per-server query: the authoritative set is what that runner has compiled in (its capabilities), what its varlock schema declares (secrets, present or not), and which integrations the operator has declared (Singer taps, MCP servers; ADR-0018). The agent asks the server rather than trusting a doc, because the answer differs per deployment.
+Before writing a Wafer, an agent needs to know what the *target* server supports and how to use it. `servitor capabilities` answers both, and it is a per-server query: the authoritative set is what that runner has compiled in (its capabilities), what the operator has declared for secrets (names and metadata, never values; ADR-0035) and integrations (Singer taps, MCP servers; ADR-0018). The agent asks the server rather than trusting a doc, because the answer differs per deployment.
 
 For each capability, `capabilities` returns:
 
@@ -260,11 +387,11 @@ The example is **derived from the schema, not written by hand**: the structural 
 
 This is how "what integrations exist and how do I use them" is answered: the agent runs `capabilities`, reads the schemas and their derived examples, and generates a valid Wafer. The pipeline then re-validates the Wafer against the live server's capabilities on deploy (ADR-0009).
 
-`servitor capabilities [dir]` writes files rather than printing, so the schemas never sit in the agent's context: one file per capability (its JSON Schema, role, and delivery, plus a derived example), grouped by **mechanism group** into top-level directories, plus a `secrets.yaml` reporting the declared secret names and whether each is present (never the values) and an `index.yaml` listing the mechanism groups. A mechanism group (ADR-0031) is a family of mechanisms: `core` (universal primitives and scheduling), `webhook` (inbound HTTP reception), `singer` (record streaming), `mcp` (tool invocation), `helper` (compiled-in wrappers), and `websocket` (inbound streaming, future). The individual types within a group are the mechanisms (for example `grist_webhook` and `http_webhook` are both mechanisms under `webhook`). A service reached by several mechanisms appears in several groups; the type name carries the service (`grist_webhook`, `slack_event`, `tap-grist`). The declared integrations sit with their mechanism group: `singer/taps.yaml` lists the declared Singer taps, and `mcp/servers.yaml` lists the declared MCP servers (ADR-0018), so an agent sees both a capability and what is installed to run against it. The distinction between a standard envelope and a bespoke one (for example `standard_webhook` vs `http_webhook` vs `grist_webhook`) is a per-type detail within a mechanism group, not a separate group (SPEC: What counts as an integration).
+`servitor capabilities [dir]` writes files rather than printing, so the schemas never sit in the agent's context: one file per capability (its JSON Schema, role, and delivery, plus a derived example), grouped by **mechanism group** into top-level directories, plus a `secrets.yaml` reporting the declared secrets (name, account, permissions, and expiry, never the values) and an `index.yaml` listing the mechanism groups. A mechanism group (ADR-0031) is a family of mechanisms: `core` (universal primitives and scheduling), `webhook` (inbound HTTP reception), `singer` (record streaming), `mcp` (tool invocation), `helper` (compiled-in wrappers), `secret-resolution` (the available secret sources, the valid `source` values for `secrets.yaml`; ADR-0036), and `websocket` (inbound streaming, future). The individual types within a group are the mechanisms (for example `grist_webhook` and `http_webhook` are both mechanisms under `webhook`). The `secret-resolution` group is different in kind from the node-capability groups: it does not hold Wafer node types, it enumerates the secret providers an agent can name as a secret's `source` (SPEC: Secret resolution, ADR-0036). A service reached by several mechanisms appears in several groups; the type name carries the service (`grist_webhook`, `slack_event`, `tap-grist`). The declared integrations sit with their mechanism group: `singer/taps.yaml` lists the declared Singer taps, and `mcp/servers.yaml` lists the declared MCP servers (ADR-0018), so an agent sees both a capability and what is installed to run against it. The distinction between a standard envelope and a bespoke one (for example `standard_webhook` vs `http_webhook` vs `grist_webhook`) is a per-type detail within a mechanism group, not a separate group (SPEC: What counts as an integration).
 
 For a **remote agent**, capabilities reach it the same way Wafers do: the pipeline (which already runs the CLI on the box) runs `servitor capabilities` and commits the generated directory into the git repo, and the agent reads the files from the repo on demand. Capabilities are still per-server because the directory is generated from that box's compiled-in set; committing it is a materialized snapshot, not a hand-written doc, so it cannot drift. A local agent (on the box, or the pipeline's own runner) can also run `capabilities` directly into a scratch directory.
 
-The integrations themselves are declared in a local `servitor.integrations.yaml` (ADR-0018): the operator names each MCP server, Singer tap, and Singer target with its exact command and the env vars it needs. `servitor mcp`/`tap`/`target` add/list/remove manage this file; the actual software install is delegated to the ecosystem's package managers (npx, pipx, uv, Meltano). `capabilities` reports only what is declared, probing each once at refresh for its schemas; there is no PATH scan and no naming convention to break.
+The integrations themselves are declared in a local `servitor.integrations.yaml` (ADR-0018): the operator names each MCP server, Singer tap, and Singer target with its exact command and the env vars it needs, and each declared secret with its source and optional metadata (ADR-0035). `servitor mcp`/`tap`/`target`/`secret` add/list/remove manage this file; the actual software install is delegated to the ecosystem's package managers (npx, pipx, uv, Meltano). `capabilities` reports only what is declared, probing each once at refresh for its schemas; there is no PATH scan and no naming convention to break.
 
 ### Triggers
 
@@ -274,7 +401,7 @@ The integrations themselves are declared in a local `servitor.integrations.yaml`
 - `github_webhook`. GitHub-specific.
 - `slack_event`. Slack events (messages, mentions, and so on).
 - `atomic_event`. Atomic knowledge-base changes. Atomic is a separate, self-hostable project (atomicapp.ai) Servitor integrates with; it is not built as part of Servitor.
-- `email_received`. Inbound email parsed into a structured payload. Its `host`, `username`, and `secret` (a varlock secret name) name the mailbox, and its `poll` schedule (default every 5 minutes) polls it for new mail, firing one run per new email. Built for Google Workspace via IMAP (app password); other providers are future helpers.
+- `email_received`. Inbound email parsed into a structured payload. Its `host`, `username`, and `secret` (a declared secret name) name the mailbox, and its `poll` schedule (default every 5 minutes) polls it for new mail, firing one run per new email. Built for Google Workspace via IMAP (app password); other providers are future helpers.
 - *(more per-service trigger types as integrations are added)*
 - `cron`. Honker scheduler.
 - `manual`. Invoked via CLI.
@@ -298,11 +425,11 @@ sender signs:
   for it is built.
 
 Each type takes a `path` (the URL path it receives on) and, when the receiver
-verifies a signature, a `secret` (the varlock secret name holding the shared
-key; see SPEC: Varlock). A request that hits a configured `path` is persisted
-before matching (SPEC: Execution model step 2), its signature is verified against
-the secret, and each matching enabled workflow is enqueued (SPEC: Execution model
-step 5).
+verifies a signature, a `secret` (the declared secret name holding the shared
+key; see SPEC: Secret resolution). A request that hits a configured `path` is
+persisted before matching (SPEC: Execution model step 2), its signature is
+verified against the secret, and each matching enabled workflow is enqueued
+(SPEC: Execution model step 5).
 
 Not all webhook types are served yet. `standard_webhook` and `http_webhook` are
 built and verify signatures, as are the `github_webhook` (HMAC-SHA256 in
@@ -319,9 +446,10 @@ before relying on a provider-specific type.
 is one kind of the general polling mechanism: a recurring poll runs a fetcher
 subprocess on a schedule and fans out one run per item, and `email_received`
 is the email instance. It takes `host` (the IMAP server, for example
-`imap.gmail.com`), `username`, and `secret` (the varlock secret name holding the
-app password, see SPEC: Varlock), plus an optional `poll` cron schedule (default
-every 5 minutes). Each new message is parsed into the run's event: `event.from`,
+`imap.gmail.com`), `username`, and `secret` (the declared secret name holding
+the app password, see SPEC: Secret resolution), plus an optional `poll` cron
+schedule (default every 5 minutes). Each new message is parsed into the run's
+event: `event.from`,
 `event.to`, `event.subject`, `event.body`, `event.date`, and `event.message_id`.
 Polling marks messages as read, so each email fires once. The first provider is
 Google Workspace over IMAP; a future provider is a different `host`/auth on the
@@ -391,7 +519,7 @@ Initial set (subject to your stack's priorities):
 rather than a hand-written helper, since it is low-frequency and the server is
 self-hostable alongside the runner.)
 
-Each helper uses varlock-injected secrets for auth and exposes its
+Each helper uses declared secrets for auth and exposes its
 actions/triggers via `servitor capabilities`.
 
 **What counts as an integration.** The "X integrations" number in the tagline counts services, not mechanisms. Any service the runner can talk to via any dedicated mechanism (a Singer tap, a Singer target, a trigger type, a curated helper, or any combination) counts as one integration. Slack having both a `slack_event` trigger and a `slack` helper is one integration, not two.
@@ -402,7 +530,7 @@ actions/triggers via `servitor capabilities`.
 
 1. **Trigger fires.** A webhook arrives, a cron fires, or someone calls `servitor trigger`.
 2. **Event is persisted.** The raw event is written to Honker before any matching happens. Failed events, orphan events, and crash-survival all benefit from this.
-3. **Signature verification.** The receiver verifies the signature against the relevant secret from varlock, in the parent process.
+3. **Signature verification.** The receiver verifies the signature against the relevant secret, resolved per use from the provider, in the parent process.
 4. **Workflow matching.** The runner finds workflows whose `on:` block matches the event.
 5. **Run enqueued.** A workflow run is created in Honker with the event payload as input. The run's initial node(s) are enqueued in the same transaction.
 6. **Workers claim and execute.** A node executor in the parent process claims a job and checks the node's `dedupe_key` against the dedupe table. It spawns a subprocess with a filtered env containing only the secrets the node declared (every node runs as a subprocess; ADR-0008).
@@ -457,7 +585,7 @@ Because agents are first-class authors, the shape of validation errors is part o
 }
 ```
 
-Codes are stable identifiers (`unknown_node_type`, `missing_required_field`, `type_mismatch`, `missing_secret`, `circular_dependency`, `missing_dedupe_key`, etc.). Paths are JSON Pointers into the submitted YAML. Multiple errors are returned at once, not one-at-a-time, so an agent fixing a malformed workflow makes one round trip per fix-batch rather than one per fix. A `missing_secret` warning is emitted by `dry-run` when a node declares a secret that is not present in the environment; the workflow's declared secret names are shown redacted (`<redacted:secret_name>`), never their values.
+Codes are stable identifiers (`unknown_node_type`, `missing_required_field`, `type_mismatch`, `missing_secret`, `circular_dependency`, `missing_dedupe_key`, etc.). Paths are JSON Pointers into the submitted YAML. Multiple errors are returned at once, not one-at-a-time, so an agent fixing a malformed workflow makes one round trip per fix-batch rather than one per fix. A `missing_secret` warning is emitted by `dry-run` when a node declares a secret that is not resolvable by the configured provider; the workflow's declared secret names are shown redacted (`<redacted:secret_name>`), never their values.
 
 The full workflow JSON Schema and every capability's config schema are also retrievable through `servitor capabilities`, so agents can validate locally before submitting.
 
@@ -471,14 +599,14 @@ Getting onto the box is the operator's existing access (SSH or VPN), not a Servi
 
 "Auth" also shows up in two places that are not operator authentication:
 
-- **Webhook signature verification** (inbound triggers) is not user auth; see the Standard Webhooks and per-provider trigger type sections. Secrets come from varlock.
-- **Outbound credentials** for integrated services live in varlock. Long-lived API tokens (Slack bot tokens, GitHub PATs, Grist API keys, Stripe restricted keys) are preferred over OAuth flows. This is a deliberate scope choice: the runner is for self-hosted single-team deployments, not multi-tenant SaaS, so the OAuth-flow-and-refresh complexity isn't warranted in the core.
+- **Webhook signature verification** (inbound triggers) is not user auth; see the Standard Webhooks and per-provider trigger type sections. Secrets come from the secret provider, resolved per use.
+- **Outbound credentials** for integrated services live in the secret provider. Long-lived API tokens (Slack bot tokens, GitHub PATs, Grist API keys, Stripe restricted keys) are preferred over OAuth flows. This is a deliberate scope choice: the runner is for self-hosted single-team deployments, not multi-tenant SaaS, so the OAuth-flow-and-refresh complexity isn't warranted in the core.
 
 ---
 
 ## Design principles
 
-**Small interfaces compose well.** Honker handles durability. Varlock handles secrets. Singer handles record-stream integration. Standard Webhooks handles modern webhook reception. The CLI and daemon protocol handle control. This runner is the glue. Each piece does its narrow job; replacing any one doesn't affect the others.
+**Small interfaces compose well.** Honker handles durability. The secret provider handles secrets. Singer handles record-stream integration. Standard Webhooks handles modern webhook reception. The CLI and daemon protocol handle control. This runner is the glue. Each piece does its narrow job; replacing any one doesn't affect the others.
 
 **The workflow is fully defined by the Wafer, nowhere else.** No state lives in a UI. Workflows are version-controllable, diff-able, and reviewable. Agents and humans manipulate the same artifact.
 
@@ -488,7 +616,7 @@ Getting onto the box is the operator's existing access (SSH or VPN), not a Servi
 
 **Code-first.** No visual builder. The Wafer is the artifact.
 
-**Delegate hard problems to maintained tools.** Identity, secret storage, webhook signing: each of these is owned by a project that does it full-time. The runner does not reimplement any of them.
+**Delegate hard problems to maintained tools.** Identity, webhook signing: each of these is owned by a project that does it full-time. The runner does not reimplement any of them. Secret storage is delegated to the pluggable provider (SPEC: Secret resolution), which the runner calls rather than reimplementing.
 
 **Honest about scope.** This is for self-hosted single-tenant deployments. SQLite single-writer means one runner process owns the database. Multi-host scaling is a different problem and a different tool.
 
@@ -533,6 +661,8 @@ Early development. The daemon lifecycle, loopback control protocol, Wafer model 
 
 - Worker concurrency limits; runs execute as a dependency DAG with fan-out (ADR-0023), but branches run sequentially rather than in parallel.
 - The trigger receiver's framing of the remaining bespoke per-provider signing schemes (Grist and Atomic).
+
+**Target model, not yet built.** The Secret resolution section (ADR-0032, ADR-0033, ADR-0034, ADR-0035, ADR-0036) describes the target secret model, which is not yet implemented. The current build still resolves the full secret set under varlock at boot, as the previous varlock section described. The diff between this SPEC and the pre-secrets-model revision is the implementation checklist for the new model. **Delete this paragraph once the new model is implemented**, so it does not linger describing a transition that has already happened.
 
 Contributions welcome once the initial scaffolding is in place.
 

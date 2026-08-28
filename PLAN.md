@@ -27,12 +27,12 @@ The artifact. Everything else reads, validates, and executes Wafers.
 
 ## Phase 3: Capability discovery
 
-How an agent learns what the server supports and how to use it (SPEC: How an agent discovers integrations). Capabilities are per-server: the set is what the runner has compiled in. The schema and example generator and the file writer are built here; reporting declared secrets (varlock) and available Singer taps belongs to the phases that build those integrations.
+How an agent learns what the server supports and how to use it (SPEC: How an agent discovers integrations). Capabilities are per-server: the set is what the runner has compiled in. The schema and example generator and the file writer are built here; reporting declared secrets (the declared-secrets config) and available Singer taps belongs to the phases that build those integrations.
 
 - [x] A capability registry, each entry with its JSON Schema, grouped by mechanism with a `core` group for Servitor's own types.
 - [x] The schema-to-example generator: render a Wafer fragment from a schema (skeleton from the schema, sample values from each property's `examples`).
 - [x] `servitor capabilities [dir]` writes, per capability, the schema and its derived example to files, grouped by mechanism (`core`, `webhook`, `singer`, `mcp`, `helper`, `websocket`; ADR-0017), plus an index. A pipeline can commit the output so remote agents read it from the repo.
-- [x] Report declared secrets (names and presence, not values) in `capabilities` (a `secrets.yaml` from the varlock schema).
+- [x] Report declared secrets (names and presence, not values) in `capabilities` (a `secrets.yaml` from the secret schema).
 - [x] Report available Singer taps in `capabilities` (names of installed taps and their schemas). Done with the Singer integration; see Phase 11.
 
 **Done when:** an agent runs `servitor capabilities`, reads a capability's schema and a valid example Wafer fragment, and can author a Wafer without guessing.
@@ -44,7 +44,7 @@ The pre-deploy gate. It belongs in the pipeline (ADR-0009).
 - [x] `servitor dry-run <wafer>` validates and resolves the workflow's dependency DAG (run order, dependencies, cycle and unknown-reference detection) and returns it as structured output, without running anything, contacting anything, or persisting anything.
 - [x] Declared secrets resolved and shown as `<redacted:secret_name>` in dry-run (names only, never values), with a `missing_secret` warning when one is absent from the environment.
 
-**Done when:** an agent can verify structure and node config before a PR. (Secret availability checking is deferred to the varlock phase.)
+**Done when:** an agent can verify structure and node config before a PR. (Secret availability checking is deferred to the secret-resolution phase.)
 
 ## Phase 5: Honker integration (durable queue)
 
@@ -78,15 +78,27 @@ Inbound events.
 
 **Done when:** a signed webhook is verified, the event persisted, the workflow matched, and a run enqueued. (Done for `standard_webhook`/`http_webhook`/`cron`/`manual`/`internal`; provider-specific and `email_received` remain.)
 
-## Phase 8: Varlock integration
+## Phase 8: Secret resolution (provider + per-node delivery)
 
-Secrets.
+Secrets (SPEC: Secret resolution, ADR-0032, ADR-0033, ADR-0034, ADR-0035, ADR-0036). Replaces the varlock boot mechanism with a pluggable provider that resolves each secret per node at subprocess spawn, and a declared-secrets config the operator owns. There is no migration: Servitor has no users, so the varlock boot path is removed outright, not transitioned.
 
-- [x] Self-healing launch: `servitor` execs itself under `varlock run --inject vars -- servitor run` if `__VARLOCK_RUN` is absent, and warns (booting without secret resolution) if varlock is not installed.
-- [x] Per-node secret filtering at subprocess spawn (only the node's declared secrets).
-- [x] Webhook signing secrets read from the runner's environment.
+- [ ] **Provider interface** (ADR-0032): a narrow in-process `Resolve(ctx, nodeName, secretName)` contract, with failure semantics distinguishing source-unreachable / secret-missing / stale-invalid. A provider encapsulates its own mechanism (its on-box unlock: local key, TPM/vTPM, or off-box KMS; or a store credential for the pull arrangements). The axis options are shared internal components, not runtime-pluggable seams.
+- [ ] **A first provider: varlock as a pull source.** Build varlock in first as the pull provider (fetch each value once into the on-box at-rest store, then resolve per node from the local copy). It is not the recommended default, but it is the store already installed and working on this machine, so it is the easiest first implementation to validate the provider interface against. The on-box ciphertext provider (recommended) is built after.
+- [ ] **A working provider** for the recommended mechanism, push-based on-box ciphertext: material sealed to the box, decrypted locally when a node needs it, at rest never plaintext (TPM preferred, non-TPM fallback for the host). Pull arrangements (external store, slow-store-into-on-box) are additional providers built as needed.
+- [ ] **Per-node, per-subprocess delivery** (ADR-0033): resolve each secret at the moment its node runs, hand it to that one subprocess's filtered env, hold nothing past the subprocess. Redaction keeps operating on the running node's filtered env (ADR-0029). Resolve only what the registered Wafers reference; drop a secret whose last Wafer is removed.
+- [ ] **Remove the varlock boot path** (ADR-0034): drop the self-healing `varlock run` launch; the runner resolves through the provider instead. Varlock survives only as an optional pull provider, absent from the default. This means stripping the varlock integration from each place it is wired today:
+  - Delete the `internal/varlock` package's boot API (`SelfHeal`, `Under`, `Available`, `ResolvedSecrets`), keeping at most a pull-provider implementation.
+  - Remove the self-heal block and the `Secrets: varlock.ResolvedSecrets()` wiring in `internal/cli/cli.go`, and its import.
+  - Replace the daemon's `Secrets map[string]string` and the worker's `Secrets` field + the six `exec.FilteredEnv(w.secrets, ...)` call sites (per-node filtering) with resolution through the provider per node at spawn. This reworks `exec.FilteredEnv` (which takes the whole resolved map today) to build a node's env from the provider's resolve of that node's declared names, so redaction keeps operating on the running node's filtered env.
+  - Replace the webhook receiver's `r.secrets` map (`internal/trigger`) with per-use resolution of the signing key from the provider.
+  - Replace `internal/capabilities` `declaredSecrets()` (which shells out to `varlock load`) with the declared-secrets config.
+  - Update the varlock-dependent tests (`internal/varlock/varlock_test.go`, `internal/capabilities/capabilities_test.go`) and any worker/daemon/trigger/exec tests that assume the resolved `Secrets` map.
+  - Update `internal/cli/usage.go` and the `servitor run` help text (which still say "under varlock").
+- [ ] **Declared secrets config + `servitor secret` CLI** (ADR-0035): a `secrets:` section in `servitor.integrations.yaml` (name + source required; account, permissions, expiry optional), managed by `servitor secret add/list/remove`. A secret referenced by a Wafer but not declared refuses to submit/run; declared-but-unused warns.
+- [ ] **Capabilities surface** (ADR-0035, ADR-0036): `capabilities` renders `secrets.yaml` (name + account + permissions + expiry, never values) and the `secret-resolution` mechanism group enumerating the available secret sources (the valid `source` values).
+- [ ] **Secret invalidity and rotation** (SPEC: Secret invalidity and rotation): reactive retry on auth failure with a fresh resolve (bounded, global `secret_retry_count` default); source-unreachable retries with backoff; secret-missing fails fast; the webhook signing key is verify-only, resolved per use, with no rollover window; and resume-from-failure modes (continue/restart/discard) reusing the suspend/resume machinery.
 
-**Done when:** the runner always boots with secrets resolved, and no node subprocess sees a secret it did not declare.
+**Done when:** a node's secret is resolved per node at spawn and dies with its subprocess, the daemon no longer holds the full set or boots under varlock, an agent discovers the available secret sources and names via `capabilities`/`secrets.yaml`, and secret invalidity/rotation behaves per the SPEC.
 
 ## Phase 9: SKILL.md
 
@@ -102,7 +114,7 @@ How an agent uses Servitor (SPEC: Consuming Servitor as a skill, ADR-0009).
 - [x] Single-binary packaging and the release flow (`make release`, `VERSION` bump).
 - [x] README getting-started matches the real install.
 
-**Done when:** downloading and running the binary works with nothing else installed. (The runner is a single Go binary built with `make build`/`make release`; the only runtime dependency is the operator-supplied Honker extension, per ADR-0011, and varlock for secrets.)
+**Done when:** downloading and running the binary works with nothing else installed. (The runner is a single Go binary built with `make build`/`make release`; the only runtime dependency is the operator-supplied Honker extension, per ADR-0011, and the secret provider for secrets.)
 
 ## Phase 11: Singer integration
 
@@ -155,6 +167,8 @@ Everything still to do, consolidated from the review of SPEC/ADRs vs the code.
 - [ ] **Provider-specific webhook receivers (Grist, Atomic).** `grist_webhook` and `atomic_event` are registered as types but `isWebhookType` does not serve them, so they cannot match inbound events yet. Note: Grist's current webhooks authenticate with a static `Authorization` header, not an HMAC, so its receiver needs the scheme clarified before building.
 - [x] **`email_received` trigger (Google Workspace).** Polls a mailbox via a gmail helper subprocess (ADR-0027): the trigger carries `host`/`username`/`secret`/`poll`, a scheduled poll runs the hidden `__email_poll` command, and the daemon fans out one run per new email with the parsed email as the event. Uses pinned emersion/go-imap v1. Future providers are new helpers.
 - [x] **`internal` trigger.** Registered; fired by another workflow's completion (ADR-0026). The worker calls a completion callback when a run finishes; the daemon wires it to the trigger receiver, which starts any enabled workflow whose `internal` trigger names the completed workflow, passing an event of `{trigger, from, from_run}`.
+- [ ] **Secret provider and per-node delivery.** The current build resolves the full secret set under varlock at boot. Replaced by the provider + per-node delivery model (ADR-0032, ADR-0033, ADR-0034, ADR-0035, ADR-0036) built in Phase 8.
+- [ ] **`secret-resolution` mechanism group and `secret` role.** No capability exists yet; the group and role are added with the first secret provider in Phase 8 (ADR-0036).
 
 ### Curated integration helpers (SPEC lists, not built)
 
@@ -170,4 +184,4 @@ Everything still to do, consolidated from the review of SPEC/ADRs vs the code.
 - [x] **`dedupe_key` expression language.** JSONata via `internal/expression` (ADR-0020), evaluated at execution time against the step's `{event, steps}` input (ADR-0021) and stringified into the key.
 - [x] **`transform` expression language.** Settled: JSONata via gnata behind `internal/expression` (ADR-0020). Runs as a subprocess, so no host access; evaluation is bounded.
 - [x] **Bespoke per-provider signing schemes.** The receiver verifies the GitHub and Slack schemes (ADR-0025); Grist and Atomic remain open.
-- [x] **Varlock signal handling.** `varlock run` forwards SIGTERM/SIGINT to the runner child and propagates its exit code, and the self-heal now execs varlock (`--inject vars`) so the process the operator launches becomes varlock, giving a clean `manager -> varlock -> runner` tree. No minimal init needed (ADR-0029).
+- [x] **Varlock signal handling.** `varlock run` forwards SIGTERM/SIGINT to the runner child and propagates its exit code, and the self-heal now execs varlock (`--inject vars`) so the process the operator launches becomes varlock, giving a clean `manager -> varlock -> runner` tree. No minimal init needed (ADR-0029). (The varlock boot path itself is removed by Phase 8, ADR-0034.)
