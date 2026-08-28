@@ -68,7 +68,7 @@ Two decisions, deliberately different in how opinionated we are:
 
 This generalizes the thing that should vary (where secrets come from) and pins down the thing that should not (that a subprocess sees only its own secrets, at the moment it needs them, and nothing is held in the daemon).
 
-Generalization is not a single axis; we agreed on several distinct levels, each pluggable so a deployment keeps what it already has:
+Generalization happens at several distinct levels, each pluggable so a deployment keeps what it already has:
 
 - **The source of secrets** (which store/provider): Bitwarden, 1Password, Vault/OpenBao, AWS Secrets Manager, KMS, a local-TPM-sealed file, plain env. This is the provider interface (piece 1).
 - **At-rest key custody** (where the decryption capability lives): off-box KMS, on-box TPM/vTPM, or a local key. Each is a supported way to protect secrets at rest, chosen per deployment (piece 3).
@@ -81,13 +81,13 @@ The per-node delivery invariant is the one thing *not* generalized; it is fixed 
 
 A secret capability is a distinct **role**, `secret` (a capability that supplies secret material to nodes, not a node or trigger itself). The distinct ways Servitor obtains a secret value at runtime are **mechanisms** under a `secret-resolution` **mechanism group**.
 
-A secret-resolution mechanism is defined by picking one option on each of three **orthogonal axes**:
+A secret-resolution **mechanism** is one concrete way Servitor obtains a secret value: it is an **arrangement** of the three axes, one option picked on each. The axes are composed *within* a mechanism, in code; they are not independently configured at runtime. A mechanism bundles them into a single, complete resolver.
 
 - **Ingress** — how the secret material reaches the box: **push** (CI/CD delivers it during deploy) or **pull** (Servitor or a provider fetches it from an external store).
 - **Storage** — where the value lives at rest: in an **external store**, as **on-box ciphertext**, or as plaintext in the **environment**.
 - **Unlock** — how the plaintext value is obtained when used: a **store credential** (the store authenticates and returns plaintext, no on-box decryption), a **local key** or **on-box TPM/vTPM** (an on-box key decrypts or unseals on-box ciphertext), an **off-box KMS** call (a credential authorizes the remote KMS to decrypt on-box ciphertext with its non-exportable key), or **none** (already plaintext in the environment).
 
-A few representative arrangements make this concrete:
+A few representative arrangements (each one a mechanism) make this concrete:
 
 - **Pull-based external store** — pull ingress, external storage, credential unlock. The store returns plaintext after authenticating; Servitor hands it straight to the node's subprocess (no on-box decryption). Intended for stores that are fast enough to pull from directly per node (for example AWS Secrets Manager).
 - **Push-based on-box ciphertext** — push ingress, on-box ciphertext, unlock by local key, TPM/vTPM, or off-box KMS. CI/CD delivers the material during deploy; Servitor decrypts locally when a node needs it. The recommended option, with TPM/vTPM the preferred unlock.
@@ -95,6 +95,8 @@ A few representative arrangements make this concrete:
 - **Environment** — env storage, no unlock. A pragmatic testing/dev fallback, or for platforms that inject secrets as env vars; plaintext, so not the secure ideal.
 
 Preference: the recommended option is **push-based on-box ciphertext with TPM/vTPM unlock** (strongest key custody, no store credentials or runtime store-dependency on the runner). The other arrangements are supported for their niches; ranking their relative security is left to design time, not settled here. Environment is a dev/testing fallback.
+
+The axis options are shared internal components, not per-mechanism reimplementations. A mechanism stays the deployable unit (one provider), but each mechanism calls the same components for the options it uses: one TPM unlock, one KMS call, one on-box ciphertext store, and so on, all in a shared internal library. This keeps the code DRY without making the axes runtime-pluggable seams (which would force maintaining every combination).
 
 The group name carries "secret" so it cannot be mistaken for a general-purpose resolver of non-secret things.
 
@@ -307,6 +309,54 @@ It must follow the subprocess model (ADR-0008): a subprocess with only its decla
 - The mechanism (baked-in interpreter vs. declared runtime integration) and which language(s) to support.
 - The result-shape contract: always JSON to stdout, or allow other types (and how errors are surfaced in the structured error format).
 - Determinism does not apply here (Servitor checkpoints data, not a replayed program), so a code node is just a one-shot subprocess like any other node.
+
+## Mobile push notification node (APNs / FCM)
+
+An action node that sends a push notification to a mobile device or app, covering both of the dominant mobile push services: Apple Push Notification service (APNs) for iOS and Firebase Cloud Messaging (FCM) for Android (and to some extent iOS/web). Like the curated helpers, it wraps an official SDK and authenticates with a varlock-injected secret, so it slots into the existing action-node model: it runs as a subprocess (ADR-0008), its output is committed and threaded forward as a step result, and a `dedupe_key` guards a retry from re-sending a notification.
+
+The realistic first cut is a single "send a notification" action: device tokens (from a prior step or the event) in, delivery status out. It is the outbound counterpart to the inbound `email_received` trigger: a way for a workflow to reach a person on their phone.
+
+### How it would be shaped
+
+Two related choices, in the same spirit as the model node:
+
+- **One node type or two?** APNs and FCM are different wire protocols with different SDKs, but the node-level shape is the same (send to a device token, optionally with a title/body/payload). Options are a single `push-notify` node that dispatches by service, or separate `apns` / `fcm` nodes.
+- **Curated helper vs declared integration.** APNs and FCM are best reached through an official SDK (a curated helper, the `slack`/`github`/`email` pattern), rather than through the `mcp-call`/Singer subprocess mechanisms, which do not fit a push send. So the natural home is a curated helper with its action surfaced via `servitor capabilities`.
+
+### Open questions to settle if it moves toward a decision
+
+- **Credentials and secrets.** APNs authenticates with a token or key (a `.p8` key, or a provider token), FCM with a service-account credential. Both are secrets that varlock would hold; the exact secret shape (and whether device tokens are secrets too, or just data threaded from a prior step) needs settling.
+- **One node vs two**, per above.
+- **Delivery confirmation.** Whether the node reports just "accepted" or returns per-device delivery status, and how failures (invalid/unregistered device tokens) are surfaced in the structured error format.
+- **Whether it is just a curated helper today** (the simplest fallback, since `http` could already call the FCM/APNs REST endpoints directly with a secret).
+
+## Servitor monitoring: watch for failures and see what is running
+
+An idea for monitoring Servitor, aimed at a human operator. It has two halves that are really one concern (knowing what is going on) split by whether you wait for a problem or go looking:
+
+- **Reactive alerting** — tell the operator when something is wrong: a run or node failed, a run is stuck, the daemon is down, a webhook trigger stopped matching, a secret is near expiry or failing to resolve, the queue is backing up.
+- **Passive observability** — let the operator see what is happening: all runs, their outcomes, durations, retries, and the health of the runner. Much of this data already exists (`servitor runs`, `servitor run <id>`) but there is no unified view over it.
+
+### The reactive half is dogfooded (a Wafer)
+
+Servitor already has the primitives: cron and internal-event triggers, run data, and outbound notify nodes (slack, email, the mobile-push node). So reactive monitoring is naturally a **Wafer**, consistent with the dogfooding idea (Servitor watches itself using its own workflow mechanism) and with "the Wafer is the artifact": the alerting logic is a normal workflow, not bespoke machinery.
+
+The load-bearing question is how the health/failure signals get *into* the Wafer's reach, since today a Wafer only sees external events and its own `{event, steps}`. Two signals, likely both:
+
+- **Internal failure events.** Emit an event when a run/node fails (and on daemon events such as start), so a monitoring Wafer subscribes and alerts immediately. Event-driven, no polling, no new storage.
+- **A health read.** A `servitor health`-style command (or status file) a cron-triggered Wafer polls for daemon liveness and queue depth. Needed because a dead daemon cannot emit events, so liveness needs a heartbeat.
+
+The product surface stays small: expose the signals, and the operator composes them into an alerting Wafer with existing notify nodes.
+
+### The passive half shares run data with the native app
+
+Seeing "all the runs" is human-facing and read-only, the same territory as the native-app idea (browse runs). It is distinct from the reactive half (active alerting vs passive browsing) and does not depend on the app, but the two can share the same run/outcome data, and the app is a natural consumer of it. If only one is built first, reactive alerting is the smaller, more clearly valuable slice.
+
+### Open questions to settle if it moves toward a decision
+
+- Whether a monitoring Wafer is one shipped Wafer, or a set of exposed signals the operator composes into their own Wafer (leaning toward the latter, in the agent-first spirit).
+- Which internal events and health fields to expose first, and how a Wafer reads them.
+- How much of the passive half belongs to monitoring vs the native app, and whether they share a data source.
 
 ## (Add more ideas here as they come up; delete them when they become ADRs or
 ## are discarded.)
