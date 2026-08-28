@@ -185,6 +185,7 @@ A few points were settled while shaping this entry and should carry into the ADR
 - **Webhook key is per-use; no rollover.** The receiver resolves the current signing key fresh per verification. No old-key acceptance window (dropped as over-engineering); the only daemon-held secrets are pull-provider store/KMS credentials.
 - **The zeroization limit.** "Gone after use" means no longer reachable by the daemon, not bytes wiped from RAM (Go cannot zero memory). See piece 2.
 - **The auth-before-side-effect contract.** Retries compose with `dedupe_key` only because a node's auth call is its first outbound call. See "Secret invalidity and rotation".
+- **Redaction composes with per-node delivery.** Redaction scrubs a granted secret value from a node's captured output by scanning that node's filtered env (exec package). Per-node delivery holds a value only while its node runs, which is exactly the window redaction needs, and redaction only ever scrubs values the node was granted. So the new model must keep redaction operating on the running node's filtered env, not on a global secret map, because under per-node delivery there is no global map to redact from. The verbatim-only limit (a transformed secret is not scrubbed) is an open attack surface recorded in THREATS.md, and belongs to the credential-proxy idea, not the core model.
 
 ## Safety primitives and mechanisms (emergency / decommission)
 

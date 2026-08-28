@@ -60,3 +60,23 @@ of that data as code. These are the boundaries to examine:
 The common shape: data is data unless a boundary explicitly treats it as code,
 and validation enforces which boundaries may do that. Most of this is static and
 checkable at dry-run, which is where the defense belongs.
+
+### Redaction bypassed by derived forms of a secret
+
+Redaction scrubs a secret value from captured subprocess output only when it
+appears verbatim (a literal substring of stdout/stderr, `exec.go`'s
+`strings.ReplaceAll`). A node that transforms a secret before emitting it, for
+example base64, hex, hashing, substring, or concatenation, produces a derived
+form that redaction does not recognize, so it is not scrubbed from the result
+or logs. This is pre-existing, not introduced by any new secrets model.
+
+The boundary to be honest about: redaction defends against the *accidental*
+echo of an exact granted value, not against a node deliberately transforming or
+exfiltrating a secret. A node with the value plus network access does not need
+stdout to exfiltrate; it can POST the value out directly, and a derived form is
+byte-for-byte indistinguishable from a node legitimately computing data from a
+secret. Closing the deliberate case is the job of the subprocess-isolation
+boundary and the credential-proxy idea, not of output redaction. Open question:
+whether the SPEC should state this limit explicitly (redaction is verbatim-only,
+not a defense against transformation or deliberate exfiltration) so the
+guarantee is not overstated.
