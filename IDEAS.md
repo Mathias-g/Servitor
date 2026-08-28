@@ -106,6 +106,8 @@ The group name carries "secret" so it cannot be mistaken for a general-purpose r
 
 2. **Strict per-node / per-subprocess delivery and egress (the invariant).** The daemon resolves each secret at the moment its node runs, hands it to that one subprocess's filtered env, and does not hold it past that subprocess: the value is gone once the subprocess completes. A node's secret dies with its subprocess. The egress rule is the same invariant from the other side: a resolved secret may flow only to the declaring node's subprocess, or to an external provider for the purpose of authenticating, and must be eliminated after. The value cannot go anywhere else. This narrows the runtime window to almost nothing and directly closes the "compromised daemon holds the full set" gap. The mechanism must be in-process (a provider/Go SDK), not a per-node CLI, so it is fast (milliseconds) rather than the ~290ms varlock boot.
 
+   One honest limit on this invariant: "gone once the subprocess completes" means the daemon no longer holds a reference and the value dies with the subprocess, not that the bytes are wiped from physical memory. Go strings are immutable and the garbage collector does not zero memory, so there is no way to force a secret's bytes out of RAM; they remain in the heap until the GC reclaims and reuses the region, and are not guaranteed zeroed. What matters for security is reachability: once the daemon drops its reference, no running code in the daemon can reach the value, and the subprocess that held it is gone. A fully memory-compromised process (a core dump or a read of the daemon's heap in that window) could still find stale bytes, but an attacker with that level of memory access can already read the next resolve in plaintext anyway, so this is defense-in-depth we cannot provide in Go, and it is out of scope for the model.
+
 3. **At-rest protection (TPM when available, never plaintext).** Secrets must never be plaintext on disk. TPM is the primary tier and is more broadly available than it used to be: physical TPMs plus virtual TPMs on VPS providers (for example AWS NitroTPM, a free TPM 2.0 device with sealing and measured boot) make it the default on many of the machines Servitor targets. Still provider- and host-dependent, so keep a non-TPM fallback that also holds the line against plaintext: an off-box key (KMS / self-hosted OpenBao transit) or a strong local-key file. Aim above the peers, who put the key in the same env as the ciphertext.
 
    The key-custody nuance that makes this a real security difference: an **off-box or hardware-bound key is non-exportable** (a KMS key or TPM seal cannot be copied off), so a thief who steals the disk or a backup gets only ciphertext and cannot decrypt it anywhere else. That is the genuine win over the peers, who keep a *copyable* key in the same env as the ciphertext. But it is not a complete boundary: it does not protect the value in the runtime window (the plaintext is in Servitor's memory and the subprocess either way), and it does not stop code already running as Servitor's user from calling the decryption service or TPM to obtain the value on demand. So at-rest key custody protects against disk/backup theft, not against a compromised daemon.
@@ -141,11 +143,15 @@ A note on **least-privilege credentials**: operators should provision per-integr
 
 Compared to the current model, the daemon no longer holds the full secret set; each secret is resolved per node (cheaply, in-process) and dies with its subprocess. Compared to the peers, this is a strictly higher bar: they co-locate the key with the ciphertext and resolve-and-hold all credentials at the worker level.
 
+This is also a demotion for varlock. Today varlock resolves the whole secret set into the daemon at boot, which is exactly the mechanism this idea replaces. Under the new model varlock is not on the default path at all (the recommended scheme is push-based on-box ciphertext, which skips it entirely); at most it survives as one optional slow pull origin, fetched once into the on-box at-rest store and then resolved per node from the local copy. That is a real architectural change to a system Servitor currently relies on, so it is a decision to be recorded in the ADR, not a silent byproduct.
+
 ### Secret invalidity and rotation
 
-A secret can become invalid at any time, whether it is in active use or idle: it can expire, be revoked, or be rotated to a new value while nothing is running. The per-node delivery invariant makes fresh values free: each node resolves fresh and its value dies with its subprocess, so once a store holds a new value the next resolve picks it up. Two cases remain. A secret can go bad *while idle*: the next node that needs it fails at the moment of use, and a fresh resolve returns the new value once the store is updated. This only needs the resume-from-failure behavior below. The harder case is a long-lived holder (a persistent node connection such as a websocket, and the webhook receiver, which holds each signing key for the daemon's life): a value is held across a connection's life, and a fresh resolve cannot reach an already-open connection, so the holder must actively react. Invalidity is handled reactively, on failure rather than on a schedule:
+A secret can become invalid at any time, whether it is in active use or idle: it can expire, be revoked, or be rotated to a new value while nothing is running. The per-node delivery invariant makes fresh values free: each node resolves fresh and its value dies with its subprocess, so once a store holds a new value the next resolve picks it up. Two cases remain. A secret can go bad *while idle*: the next node that needs it fails at the moment of use, and a fresh resolve returns the new value once the store is updated. This only needs the resume-from-failure behavior below. The harder case is a long-lived holder (a persistent node connection such as a websocket, and the pull-provider credentials the daemon uses to authenticate out): a value is held across a connection's life, and a fresh resolve cannot reach an already-open connection, so the holder must actively react. Invalidity is handled reactively, on failure rather than on a schedule:
 
 - A node whose auth fails (a 401/403, a dropped or rejected connection) fails and reports it to the daemon. The daemon respawns the node's subprocess with a freshly resolved secret, up to the configured retry count. Each retry is a new subprocess spawn with a new resolve; the failed subprocess's value dies with it (the invariant). If the store value rotated, a fresh resolve gets the new one and the retried request succeeds.
+
+   This composes safely with `dedupe_key` only under a contract we must record: a node's secret-authenticating call is its first outbound call and fails before any side effect. If auth were hit only on a later call, a retry could redo a side effect the failed subprocess already caused, which is exactly what `dedupe_key` exists to guard against. So the contract is that the auth failure precedes any side effect; retries then never redo one, and a side-effecting node still declares `dedupe_key` as a belt-and-suspenders guard.
 - Retries are bounded: a configured number of attempts before the node fails, so a genuinely bad secret does not loop forever. Initially this is a single global default in the servitor config (for example `secret_retry_count: 3`), applied to all nodes; a per-node or per-secret override can come later if it is ever needed. When retries are exhausted, the node fails with a distinct error, visible in `servitor run <id>` with the same structured `path`/`code` shape as other node errors (a code like `secret_auth_failed`, distinct from `missing_secret`), and written to the run's log. That failure is also emitted as an event a workflow can trigger on, reusing the `internal` trigger's completion-callback plumbing (ADR-0026), so the operator can wire up their own notification through whatever integration they choose: a Slack message, a text, an email, or anything else. The failed-secret event is not a hardcoded notification; it is just another event an agent can react to.
 
 The three failure semantics a provider can return (piece 1) are not all the same, so they are not handled the same way:
@@ -154,7 +160,7 @@ The three failure semantics a provider can return (piece 1) are not all the same
 - **Source unreachable** (the store/provider is down) is a transient infrastructure failure. Retry with exponential backoff (for example 1s, 2s, 4s, capped) before failing, since the source may come back. If it stays down, fail with a distinct error.
 - **Secret missing** (declared but no value in the store) is not transient, so retrying is pointless; fail fast, no retry, with a `missing_secret`-style error. The operator adds the value and resumes from the failed node.
 
-The webhook receiver is a separate special case, not one of the provider failure semantics, because a webhook signing key is used only to verify inbound messages: it is never used to make an outgoing call, so the reactive "auth fails on use" mechanism does not apply to it. It is still a secret: a stolen key lets an attacker forge signed events and drive the workflows they trigger, so it gets the same at-rest protection as any other secret. Rotation for a verify-only key is a rollover: the receiver accepts the new key and, for a transition window, the old key too, so messages signed before the service switched over still verify. During the window a message that verifies with either key is accepted; that is the point of keeping both. A message that verifies with neither fails verification and is rejected, which is logged; there is no retry, because an inbound webhook is sent once and a rejection is the receiver's only action.
+The webhook receiver is not one of the provider failure semantics, because a webhook signing key is used only to verify inbound messages: it is never used to make an outgoing call, so the reactive "auth fails on use" mechanism does not apply to it. It is still a secret: a stolen key lets an attacker forge signed events and drive the workflows they trigger, so it gets the same at-rest protection as any other secret. It is also resolved per use like any other secret: the receiver resolves the current signing key fresh each time it verifies a message, and the value is held only for that one verification, not for the daemon's life. There is no rollover window (the receiver does not accept an old key during rotation): a message that does not verify with the current key is rejected and logged, and there is no retry, because an inbound webhook is sent once and a rejection is the receiver's only action. Rotation just means the store holds the new value and the next verification picks it up, exactly like a node secret. This removes the only extended-hold window in the model: the daemon's only life-long-held secrets are the pull-provider store/KMS credentials it needs to authenticate outbound.
 
 This keeps the invariant intact: the model never proactively polls for rotation and never holds a value longer than it must. It only re-resolves when a failure makes a fresh value legitimate, which is exactly what the egress rule already permits.
 
@@ -169,6 +175,16 @@ What "run it again" means is a configurable behavior, settable globally in the s
 ### Carried forward to the ADR / SPEC
 
 When this idea becomes a real decision and turns into specification, settle the naming: the role is `secret` and the group is `secret-resolution`, but whether those exact names hold once the first real secret capability is built is not yet settled. They will be decided in the ADR that records the decision.
+
+A few points were settled while shaping this entry and should carry into the ADR/SPEC unchanged:
+
+- **Recoverability is not Servitor's problem.** The box holds only derived ciphertext; the origin (the store, or the material CI/CD pushes) lives elsewhere, so losing the box costs nothing durable, you just re-run setup. The non-exportable key protects only against the thief who steals the disk, not against a lost box.
+- **Single server.** Servitor runs on one host, so per-host TPM binding is a non-issue: the ciphertext and the TPM that seals it share the box.
+- **Provisioning is the operator's job.** Setting up TPM/KMS/vTPM is one-time host setup the operator owns, not workflow behavior. `servitor secret add` is management-only metadata (name, source, account, permissions, expiry); value delivery is CI/CD (push) or the store (pull), never a provider-agnostic local seal.
+- **varlock is demoted.** It is not on the default path; at most an optional slow pull origin fetched once into the on-box store. See "What this means versus today".
+- **Webhook key is per-use; no rollover.** The receiver resolves the current signing key fresh per verification. No old-key acceptance window (dropped as over-engineering); the only daemon-held secrets are pull-provider store/KMS credentials.
+- **The zeroization limit.** "Gone after use" means no longer reachable by the daemon, not bytes wiped from RAM (Go cannot zero memory). See piece 2.
+- **The auth-before-side-effect contract.** Retries compose with `dedupe_key` only because a node's auth call is its first outbound call. See "Secret invalidity and rotation".
 
 ## Safety primitives and mechanisms (emergency / decommission)
 
@@ -390,6 +406,46 @@ Seeing "all the runs" is human-facing and read-only, the same territory as the n
 - Whether a monitoring Wafer is one shipped Wafer, or a set of exposed signals the operator composes into their own Wafer (leaning toward the latter, in the agent-first spirit).
 - Which internal events and health fields to expose first, and how a Wafer reads them.
 - How much of the passive half belongs to monitoring vs the native app, and whether they share a data source.
+
+## Compare the Wafer format against Home Assistant's automation YAML before release
+
+Before Servitor goes public, sanity-check the Wafer schema against the automation YAML format used by Home Assistant (HA), the most widely adopted declarative automation syntax there is. HA's format is a useful baseline because it solved, at scale, the same problem we are solving: expressing "when this happens, if this holds, do this" in a flat, human-and-agent-readable YAML file. The goal is not to copy HA, it is to find any place where our Wafer is harder than it needs to be while there is still no installed base to break.
+
+HA's automation is built on three top-level lists, in order:
+
+```yaml
+alias: "Turn on the hall light on motion at night"
+triggers:
+  - trigger: state
+    entity_id: binary_sensor.motion_hall
+    to: "on"
+conditions:
+  - condition: time
+    after: "20:00"
+    before: "06:00"
+actions:
+  - action: light.turn_on
+    target:
+      entity_id: light.hall
+```
+
+The properties worth comparing against (not all of which are automatically better than ours):
+
+- **Triggers, conditions, and actions as sibling lists.** HA separates *when* (triggers), *if* (conditions), and *do* (actions) into three explicit top-level keys, rather than folding them into a single trigger/step chain. Ours uses trigger + DAG of nodes; the question is whether the condition/if boundary is as legible in a Wafer as it is in HA.
+- **A named `alias` for the automation**, human-first, distinct from any id, so a person or agent can refer to it by a friendly name. Worth comparing to how a Wafer is named.
+- **`mode`**: single, queued, parallel, restart. HA lets the author say what happens when a trigger fires while the previous run is still going (drop it, queue it, run concurrently, or restart it). Servitor's trigger and queue semantics are a real design surface, and HA's four-way split is a mature vocabulary for it, even if we do not adopt all of it.
+- **`choose` / `if`** for branching in actions, a declarative alternative to our `switch` step. Worth confirming ours is at least as ergonomic.
+- **`id` on triggers and actions** so an automation can refer to a specific trigger/action (for rerun-this-trigger or to remove a previous action's effect). A small but real feature for recovery/cleanup semantics.
+- **Everything is a list, order matters within it.** HA's lists are ordered and every item is self-describing (each starts with a `trigger:`/`condition:`/`action:` discriminator). That is the same "list of discriminated nodes" shape our DAG uses, so it is likely fine; the comparison is about whether the three-part trigger/condition/action separation reads better for an agent than a single node graph.
+
+Why it matters before release: the Wafer is the artifact, the thing agents and humans author and read, so its ergonomics are the product's ergonomics, and the cost of getting them wrong goes up sharply once there is an installed base. HA is the strongest prior art for "declarative automation YAML that non-experts actually write," so a point-by-point comparison is cheap insurance. It is a review exercise, not a commitment to adopt HA's shapes.
+
+Open questions to settle if it moves toward a decision:
+
+- Whether HA's three-part trigger/condition/action separation is worth any of our structure, or whether our trigger + DAG already covers it (and `conditions` are just a node that gates).
+- Whether to adopt an `alias` (or keep `id` and add a separate friendly name).
+- Whether `mode` (single/queued/parallel/restart) is a gap in our trigger/queue semantics worth naming explicitly.
+- Whether `id` on nodes for cleanup/recovery is a gap.
 
 ## (Add more ideas here as they come up; delete them when they become ADRs or
 ## are discarded.)
