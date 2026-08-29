@@ -280,24 +280,54 @@ Not buildable until Servitor actually publishes the data the app reads and the s
 
 ## Suspended waits: durable wait between nodes (timer and signal)
 
-A durable `wait` flow node so a run can pause mid-way and resume much later, without adopting a durable-execution/replay architecture. The motivation and boundary are compared against Temporal in the context of long-lived workflows; the short version is that Servitor already checkpoints data (each node's `{event, steps}` input and the pending counter), not a running program, so "months later" is just "a queued job with a persisted input" rather than replaying code from an event history.
+A durable `wait` flow node so a run can pause mid-way and resume much later, without adopting a durable-execution/replay architecture. The motivation and boundary are compared against Temporal in the context of long-lived workflows; the short version is that Servitor already checkpoints data (each node's `{event, steps}` input and the pending counter), not a running program, so "months later" is just "a queued job with a persisted input" rather than replaying code from an event history. The comparison to Temporal is deliberate: the uses we reached for this (approval waits, timed holds, saga compensation, external-callback waits) are the ones Temporal serves with its timer and signal primitives, so the shape below is checked against what those uses actually need.
 
 ### The shape
 
-A `wait` node with two sources:
+A single `wait` node that carries both a **timer** and a **signal** source, either optional, and **resolves on whichever fires first**:
 
-- `wait.timer`: resume after a duration or at a cron time. Honker's scheduler is already durable in the same SQLite file and survives restarts, so a one-shot "resume at T" job is the natural mechanism.
-- `wait.signal`: resume when an external event arrives, via one of several reuse paths: a per-run resume webhook (existing webhook receiver + varlock secret), extending the `completed` trigger (which today only *starts* a run) to *resume* a parked run id, and/or `servitor resume <run-id> [payload]` for manual/human input.
+- `wait.timer`: resume after a duration or at an absolute resume time. Two explicit sub-fields, both optional:
+  - `after`: a duration (for example `48h`), resolved to a `RunAt` at park time (`now + duration`).
+  - `at`: an absolute resume time (for example `2026-09-01T10:00:00Z`), used directly as the `RunAt`.
+  Explicit sub-fields rather than one auto-detected field, so the author never relies on type inference. Honker's queue supports one-shot jobs natively: enqueuing a resume job with `EnqueueOptions{RunAt}` (an absolute unix epoch) makes it claimable at that time, durable in the same SQLite file and surviving restarts, and the worker's claim loop (`ClaimWaker`) sleeps until the soonest future `RunAt` and wakes then. (The Honker *scheduler* is cron-only and is not used for this; the queue's `RunAt` is the mechanism.) The internal `Tx.Enqueue` wrapper needs a `RunAt`-carrying variant.
+- `wait.signal`: resume when a **named signal** arrives. The author names the signal in the Wafer (a first-class field, the same "the artifact is the source of truth" principle as `dedupe_key` and `transform`, ADR-0020/0021): `signal` is a JSONata expression over the run's `{event, steps}` input, resolved at park time to the effective signal name, so an author writes `signal: approval_gate.${event.order_id}` to scope by a business key the run already carries. Senders address a parked run by that name:
+  - another workflow sends it via a small `resume` / `send-signal` node, and/or
+  - `servitor resume <signal-name> [payload]` for manual/human input (an optional run-id form is a small nicety for humans, not a separate mechanism).
+  The runner routes the signal to the run parked on that name, with the payload landing in the wait node's result; when more than one run is parked on the same effective name, the signal is **rejected as ambiguous** (delivered to none of them) and reported, because the author controls the name and a collision is an authoring bug, not something the runner should silently resolve. Because the name lives in the artifact, it is discoverable and the sender needs only the business key, never the parked run's id. Two runs with different business keys resolve to different effective names, so concurrency is unambiguous by construction. A literal `signal: approval_gate` is legal and means "any run parked on this name." External callbacks (a non-Servitor service, a SaaS, a human) do not need a bespoke resume webhook: they POST to an ordinary `http_webhook`/`standard_webhook` trigger, which starts a small broker workflow that sends the named signal, reusing the existing webhook surface instead of adding a per-run one. This replaces the earlier per-run one-shot resume webhook idea.
+
+The "resolves on whichever fires first" behavior is the load-bearing piece, and it is the reason `timer` and `signal` live on one node rather than two. The canonical durable-wait is an approval with a deadline (Temporal's `Workflow.await(timeout, condition)`): wait for the external signal but auto-continue (or auto-fail) when the grace period expires, with the downstream flow able to tell which one happened. Expressing that as two separate nodes would be awkward and unlike Temporal. So a `wait` is one node, and its result records which source resolved it.
+
+The node's **result shape** is therefore a first-class contract, because the downstream flow routes on it. Signals carry data (approve/reject, a payload), and the caller must know whether the wait resolved by signal or by timer. The shape is deliberately small and fixed, and the node does no reshaping of its own:
+
+```
+{source: "signal" | "timer", payload: <the signal payload, or null on timer>}
+```
+
+- `source` is `"signal"` when a signal resolved the wait and `"timer"` when the timer did (the value is `"timer"`, not `"timeout"`, because a pure timed hold is not a failure; a downstream `switch` reads `source: "timer"` as "the deadline elapsed").
+- `payload` is always present and `null` when the timer fired.
+- The signal payload is **opaque data**: whatever the sender passed, threaded forward as the wait node's step result. It is not re-injected as a new run `event`, and the wait node does not interpret it. This keeps one input shape (ADR-0021) with no second plumbing for signals, and matches how every node's result is threaded. Users add shape with a downstream `transform` or `switch`, not by growing the wait node.
+
+A following `switch`/`transform` branches on `steps.<wait>.source` and extracts `steps.<wait>.payload`, exactly as with any other node's result.
+
+The **race rules** are pinned so signals are not lost, mirroring Temporal's buffered signals and so callers are not surprised by a gotcha:
+
+- **A signal that arrives before the run parks is buffered, not dropped.** The webhook receiver already persists an inbound event before matching (SPEC: Execution model step 2). A signal is persisted the same way, and the `wait` node's park transaction checks for and consumes a buffered signal; if one is present the wait resumes immediately rather than parking. This closes the race where an external caller fires a callback a moment before the run parks.
+- **A second resume is a no-op.** Once a run is resumed (or a signal consumed), a repeat resume must not re-run anything. This protects against double-delivery (webhook retries, an operator double-click) and is what makes the buffered signal safe. Mechanically it is an atomic compare-and-set on the run's `waiting` status: if the run is no longer `waiting`, the resume is ignored.
+- **Timer and signal are mutually exclusive by construction.** Because of first-wins, only one source can be the cause of resume; the other source's pending work is cleaned up when either fires (the pending `RunAt` timer job is dropped when a signal resolves the wait, and any later signal is a no-op when the timer fires).
 
 ### Why the code already supports it
 
 The worker's model makes this small. A `NodeJob` is fully self-contained (worker.go), the completion signal is just a `pending` counter reaching zero (honker runs.go, `checkRunComplete` in worker.go), and all writes go through one atomic `CommitNodeAtom` (honker tx.go). So:
 
-- Processing a `wait` node parks the run in one transaction: write a `suspended_continuations` row holding the next node id + its `{event, steps}` input, set run status to a new `waiting`, and ack the wait job's claim.
+- Processing a `wait` node parks the run in one transaction: write a `suspended_continuations` row holding the continuation (the wait node's downstream sub-DAG and its `{event, steps}` input), set run status to a new `waiting`, and ack the wait job's claim.
 - `checkRunComplete` must not complete a parked run, so its guard becomes `pending == 0 && status != waiting`.
-- On resume: re-enqueue the continuation node (pending +1), flip status to `running`, delete the row. The run continues to completion normally.
+- On resume: re-enqueue the continuation node (pending +1), flip status to `running`, delete the row. The run picks up at the next node after the wait and continues to completion normally, with the pre-wait results already saved.
 
 This slots into the existing transactional discipline as a new kind of atom.
+
+### The DAG-shaped continuation
+
+Because runs are dependency DAGs (ADR-0023), the continuation is not a single "next node id": a `wait` can sit before a fan-in rejoin (multiple dependents), inside a `foreach` body (several iterations), or in a `switch` branch. The continuation therefore holds the wait node's whole downstream sub-DAG (its `Downstream` tree) plus the current `run_deps` state for those nodes, and the resume re-enqueues the frontier. This is the same machinery the resume-from-failure `continue` mode (SPEC: Secret invalidity and rotation, PLAN Phase 13) reuses: that mode also resumes from an arbitrary point in the DAG, so making the continuation DAG-shaped rather than linear is what keeps it general enough for both.
 
 ### What it would take to build
 
@@ -305,16 +335,18 @@ Roughly: one flow node type, one new table, one run status, a guard change, the 
 
 ### The one real decision it forces
 
-**Wafer version drift.** A run parked for months, then the Wafer redeployed with changed nodes. The simplest honest answer, consistent with the self-contained-job model: freeze the continuation in the job payload at park time, so a parked run resumes with its original definition and new runs use the new wafer.
+**Wafer version drift.** A run parked for months, then the Wafer redeployed with changed nodes. The simplest honest answer, consistent with the self-contained-job model: freeze the continuation in the job payload at park time, so a parked run resumes with its original definition and new runs use the new wafer. This is the Servitor equivalent of Temporal's ContinueAsNew-free checkpointing: Servitor freezes the continuation payload rather than rolling over an append-only event history, so very long waits need no extra machinery.
 
 ### The boundary that remains
 
-Suspend is between nodes only, never inside arbitrary code. Compute still runs to completion in one subprocess and crashes re-run it (that is what `dedupe_key` is for). So "mid-computation, wait three days and resume with local variables intact" stays out of reach. But the common long-lived cases (timed holds, approval waits, saga compensation, external-callback waits between discrete steps) are expressible, because they are waits between steps, not inside a step.
+Suspend is **between nodes only, never inside a node's own work**. A run parks at a `wait` node and resumes at the next node: the results of the nodes before the wait are written down and passed forward, so the run picks up right where it left off. What stays out of reach is pausing a single node *mid-way through its own work* and resuming it with its in-memory state intact. Each node runs as a subprocess (ADR-0008) that runs to completion and exits; only its result survives, written down and passed to the next node. So "wait three days" works fine when the wait is between two nodes (the saved results persist, the run resumes at the next step), but a node cannot hold its own half-finished state across a pause. A crashed node simply re-runs from scratch (that is what `dedupe_key` is for). The common long-lived cases (timed holds, approval waits, saga compensation, external-callback waits between discrete steps) are all expressible, because they are waits between steps, not inside a step. This matches Temporal exactly: Temporal's waits live in the orchestrator (workflow code), never inside an activity, and an activity re-runs from scratch on failure.
+
+### A parked run stays inspectable and cancellable
+
+While parked, a run must remain visible and controllable. `servitor runs` and `servitor run <id>` show `waiting`; `servitor cancel` drops parked continuations so a run no one is ever going to resume can be cleaned up. This mirrors Temporal's queries and cancellation on a running workflow.
 
 Open questions:
 
-- Whether the resume wake-up path is webhook, `completed` trigger, CLI, or some combination, and how the one-shot resume key is scoped.
-- Whether `wait.timer` uses the existing Honker scheduler or a dedicated delayed-queue construct.
 - How parked runs interact with graceful shutdown / drain (a parked run holds no live work, so it should be trivially drain-safe, but worth confirming).
 
 Not a decision, not in scope yet; recorded here so the shape is not lost.
