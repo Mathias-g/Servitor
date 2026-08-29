@@ -146,6 +146,7 @@ The automated checks enforce structure. This covers what they cannot:
 - An earlier phase may be superseded by a later one (for example the varlock boot phase is removed by the secret-resolution phase), but the superseded phase stays in place as a record of what was built; the later phase records the change. Do not reach back and rewrite or delete the earlier phase.
 - The only exception is when the developer explicitly asks for phases to be reordered or merged.
 - A change to a task inside an existing phase (marking it done, splitting out a blocked task) is fine; renumbering, deleting, or reworking a whole phase is not.
+- A partially-finished task is split into a done part (`[x]`) and a not-done part (`[ ]`), or the `[x]` line is annotated with what is deferred. Do not leave a task half-done with no marker of what remains; a `[x]` means "its intended scope is done" and a `[ ]` means "not done", with the text saying exactly what is left.
 
 ### Tests
 
