@@ -18,6 +18,7 @@
 package registry
 
 import (
+	"fmt"
 	"sort"
 )
 
@@ -83,6 +84,26 @@ const (
 	Websocket = "websocket"
 )
 
+// RunKind tells the worker which execution harness runs a node of this type. It
+// is set by a mechanism's package alongside its Spawn (ADR-0045); the worker
+// dispatches on it instead of naming a node type in a switch.
+type RunKind string
+
+const (
+	// RunPlain is the default: the node runs as a subprocess via the worker's
+	// exec harness on its Spawn argv, and its JSON output is the result.
+	RunPlain RunKind = "plain"
+	// RunSinger means the node runs through the Singer harness (a tap or
+	// target, with bookmark state), not a plain exec.
+	RunSinger RunKind = "singer"
+	// RunMCP means the node runs through the MCP harness (a tool call over
+	// stdio), not a plain exec.
+	RunMCP RunKind = "mcp"
+	// RunFlow marks a control node whose execution the worker engine handles
+	// directly (it routes or fans out); it has no plain subprocess result.
+	RunFlow RunKind = "flow"
+)
+
 // Capability describes one capability (for example `http`, `email_received`, or
 // `singer-tap`). A capability is either a trigger, an action node, or a flow
 // node.
@@ -107,6 +128,14 @@ type Capability struct {
 	MechanismGroup string
 	// Fields is the capability's config schema, keyed by field name.
 	Fields map[string]*Field
+	// Spawn builds the argv for a node of this type from its config, or nil for
+	// a control node with no plain subprocess. A mechanism package sets it
+	// alongside its metadata (ADR-0045); the runner dispatches through it rather
+	// than a central switch.
+	Spawn func(cfg map[string]any) ([]string, error)
+	// RunKind tells the worker which execution harness runs a node of this type
+	// (ADR-0045). It applies to node capabilities; empty means RunPlain.
+	RunKind RunKind
 }
 
 // isTriggerRole reports whether the capability may be used as a trigger.
@@ -204,6 +233,37 @@ func Lookup(name string) *Capability {
 		}
 	}
 	return nil
+}
+
+// CommandFor builds the argv for a node of the given type from its config, by
+// dispatching through the registered capability's Spawn (ADR-0045). It returns
+// nil when the type is a control node with no plain subprocess, and an error
+// when the type is unknown or its Spawn rejects the config. The runner calls
+// this instead of naming node types in a switch.
+func CommandFor(nodeType string, cfg map[string]any) ([]string, error) {
+	c := Lookup(nodeType)
+	if c == nil {
+		return nil, fmt.Errorf("node type %q has no handler built yet", nodeType)
+	}
+	if c.Spawn == nil {
+		return nil, nil
+	}
+	return c.Spawn(cfg)
+}
+
+// RunKindFor returns the execution harness a node of the given type runs with
+// (ADR-0045). It returns RunPlain for an unknown or unset type, so the worker
+// needs no switch over node type names; an unknown type is rejected earlier by
+// validation and CommandFor.
+func RunKindFor(nodeType string) RunKind {
+	c := Lookup(nodeType)
+	if c == nil {
+		return RunPlain
+	}
+	if c.RunKind == "" {
+		return RunPlain
+	}
+	return c.RunKind
 }
 
 func sortedTypes() []*Capability {

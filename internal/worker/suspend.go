@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Mathias-g/Servitor/internal/expression"
+	"github.com/Mathias-g/Servitor/internal/components/expression"
 	"github.com/Mathias-g/Servitor/internal/honker"
 )
 

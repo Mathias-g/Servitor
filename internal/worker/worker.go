@@ -19,12 +19,13 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Mathias-g/Servitor/internal/exec"
-	"github.com/Mathias-g/Servitor/internal/expression"
+	"github.com/Mathias-g/Servitor/internal/components/exec"
+	"github.com/Mathias-g/Servitor/internal/components/expression"
+	"github.com/Mathias-g/Servitor/internal/components/mcp"
+	"github.com/Mathias-g/Servitor/internal/components/secret"
+	"github.com/Mathias-g/Servitor/internal/components/singer"
 	"github.com/Mathias-g/Servitor/internal/honker"
-	"github.com/Mathias-g/Servitor/internal/mcp"
-	"github.com/Mathias-g/Servitor/internal/secret"
-	"github.com/Mathias-g/Servitor/internal/singer"
+	"github.com/Mathias-g/Servitor/internal/registry"
 )
 
 // NodeJob is the payload of one queued node execution. It is fully
@@ -777,11 +778,13 @@ func (w *Worker) runNode(ctx context.Context, sj NodeJob, dedupeKey string) (res
 		}
 	}
 
-	if sj.NodeType == "singer-tap" || sj.NodeType == "singer-target" {
+	// Dispatch on the mechanism's run harness (ADR-0045), not a node-type
+	// switch. The Singer and MCP harnesses produce a result different from a
+	// plain exec (bookmark state; structured tool output).
+	switch registry.RunKindFor(sj.NodeType) {
+	case registry.RunSinger:
 		return w.runSingerNode(ctx, sj)
-	}
-
-	if sj.NodeType == "mcp-call" {
+	case registry.RunMCP:
 		return w.runMCPNode(ctx, sj)
 	}
 

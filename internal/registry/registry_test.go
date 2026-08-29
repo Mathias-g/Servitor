@@ -121,3 +121,47 @@ func TestFlowNodesAreNotActionsOrTriggers(t *testing.T) {
 		t.Fatalf("http role = %q, want action", http.Role)
 	}
 }
+
+func TestCommandForDispatchesThroughRegistry(t *testing.T) {
+	// Spawn is set by each mechanism's package and the runner dispatches through
+	// it (ADR-0045), so the runner names no node type in a switch.
+	cmd, err := registry.CommandFor("shell", map[string]any{"command": "echo hi"})
+	if err != nil || len(cmd) != 3 || cmd[0] != "/bin/sh" || cmd[1] != "-c" || cmd[2] != "echo hi" {
+		t.Fatalf("shell spawn = %v, %v; want /bin/sh -c echo hi", cmd, err)
+	}
+	cmd, err = registry.CommandFor("singer-tap", map[string]any{"tap": "tap-stripe"})
+	if err != nil || len(cmd) != 1 || cmd[0] != "tap-stripe" {
+		t.Fatalf("singer-tap spawn = %v, %v; want [tap-stripe]", cmd, err)
+	}
+	cmd, err = registry.CommandFor("mcp-call", map[string]any{"server": "atomic-server"})
+	if err != nil || len(cmd) != 1 || cmd[0] != "atomic-server" {
+		t.Fatalf("mcp-call spawn = %v, %v; want [atomic-server]", cmd, err)
+	}
+	// A control node has no plain subprocess: nil, nil.
+	if cmd, err := registry.CommandFor("wait", map[string]any{}); err != nil || cmd != nil {
+		t.Fatalf("wait spawn = %v, %v; want nil, nil", cmd, err)
+	}
+	// An unknown type is rejected.
+	if _, err := registry.CommandFor("nope", nil); err == nil {
+		t.Fatal("unknown type should error")
+	}
+}
+
+func TestRunKindForDispatchesThroughRegistry(t *testing.T) {
+	cases := map[string]registry.RunKind{
+		"singer-tap":    registry.RunSinger,
+		"singer-target": registry.RunSinger,
+		"mcp-call":      registry.RunMCP,
+		"switch":        registry.RunFlow,
+		"foreach":       registry.RunFlow,
+		"wait":          registry.RunFlow,
+		"shell":         registry.RunPlain,
+		"http":          registry.RunPlain,
+		"nope":          registry.RunPlain,
+	}
+	for typ, want := range cases {
+		if got := registry.RunKindFor(typ); got != want {
+			t.Fatalf("RunKindFor(%q) = %q, want %q", typ, got, want)
+		}
+	}
+}

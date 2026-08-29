@@ -5,7 +5,11 @@
 // integrations, ADR-0018).
 package singer
 
-import "github.com/Mathias-g/Servitor/internal/registry"
+import (
+	"fmt"
+
+	"github.com/Mathias-g/Servitor/internal/registry"
+)
 
 func init() {
 	registry.Register(tap)
@@ -23,6 +27,14 @@ var tap = &registry.Capability{
 		"config":  {Type: "object", Desc: "Tap config."},
 		"catalog": {Type: "array", Desc: "The selected streams to sync, copied from the tap's catalog in capabilities. Each entry is one stream with its schema and a `selected: true` metadata. Omit to sync all streams.", Examples: []any{[]any{map[string]any{"stream": "customers", "tap_stream_id": "customers", "schema": map[string]any{"type": "object"}, "metadata": []any{map[string]any{"breadcrumb": []any{}, "metadata": map[string]any{"selected": true}}}}}}},
 	},
+	RunKind: registry.RunSinger,
+	Spawn: func(cfg map[string]any) ([]string, error) {
+		tap, ok := cfg["tap"].(string)
+		if !ok || tap == "" {
+			return nil, fmt.Errorf("singer-tap requires a `tap` name")
+		}
+		return []string{tap}, nil
+	},
 }
 
 var target = &registry.Capability{
@@ -34,5 +46,13 @@ var target = &registry.Capability{
 	Fields: map[string]*registry.Field{
 		"target": {Type: "string", Required: true, Desc: "The target to run.", Examples: []any{"target-grist"}},
 		"config": {Type: "object", Desc: "Target config."},
+	},
+	RunKind: registry.RunSinger,
+	Spawn: func(cfg map[string]any) ([]string, error) {
+		target, ok := cfg["target"].(string)
+		if !ok || target == "" {
+			return nil, fmt.Errorf("singer-target requires a `target` name")
+		}
+		return []string{target}, nil
 	},
 }

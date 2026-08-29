@@ -13,9 +13,9 @@ package runner
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 
 	"github.com/Mathias-g/Servitor/internal/honker"
+	"github.com/Mathias-g/Servitor/internal/registry"
 	"github.com/Mathias-g/Servitor/internal/wafer"
 	"github.com/Mathias-g/Servitor/internal/worker"
 )
@@ -23,79 +23,10 @@ import (
 // commandFor maps a node to the argv the worker runs for it. Every node runs as
 // a subprocess (ADR-0008); `transform` re-invokes the servitor binary's hidden
 // `__transform` command so even pure-computation nodes stay out of the runner's
-// process.
+// process. It dispatches through the mechanism registry's Spawn (ADR-0045), so
+// the runner names no node type in a switch.
 func commandFor(s wafer.Node) ([]string, error) {
-	switch s.Type {
-	case "shell":
-		cmd, ok := s.Config["command"].(string)
-		if !ok || cmd == "" {
-			return nil, fmt.Errorf("node %q: shell requires a string command", nodeName(s))
-		}
-		return []string{"/bin/sh", "-c", cmd}, nil
-	case "transform":
-		expr, ok := s.Config["expression"].(string)
-		if !ok || expr == "" {
-			return nil, fmt.Errorf("node %q: transform requires a string expression", nodeName(s))
-		}
-		exe, err := os.Executable()
-		if err != nil {
-			return nil, fmt.Errorf("node %q: locate servitor binary: %w", nodeName(s), err)
-		}
-		return []string{exe, "__transform", expr}, nil
-	case "switch":
-		expr, ok := s.Config["expression"].(string)
-		if !ok || expr == "" {
-			return nil, fmt.Errorf("node %q: switch requires a string expression", nodeName(s))
-		}
-		exe, err := os.Executable()
-		if err != nil {
-			return nil, fmt.Errorf("node %q: locate servitor binary: %w", nodeName(s), err)
-		}
-		return []string{exe, "__switch", expr}, nil
-	case "foreach":
-		expr, ok := s.Config["over"].(string)
-		if !ok || expr == "" {
-			return nil, fmt.Errorf("node %q: foreach requires a string `over` expression", nodeName(s))
-		}
-		exe, err := os.Executable()
-		if err != nil {
-			return nil, fmt.Errorf("node %q: locate servitor binary: %w", nodeName(s), err)
-		}
-		return []string{exe, "__foreach", expr}, nil
-	case "singer-tap":
-		tap, ok := s.Config["tap"].(string)
-		if !ok || tap == "" {
-			return nil, fmt.Errorf("node %q: singer-tap requires a `tap` name", nodeName(s))
-		}
-		return []string{tap}, nil
-	case "singer-target":
-		target, ok := s.Config["target"].(string)
-		if !ok || target == "" {
-			return nil, fmt.Errorf("node %q: singer-target requires a `target` name", nodeName(s))
-		}
-		return []string{target}, nil
-	case "mcp-call":
-		server, ok := s.Config["server"].(string)
-		if !ok || server == "" {
-			return nil, fmt.Errorf("node %q: mcp-call requires a `server` name", nodeName(s))
-		}
-		return []string{server}, nil
-	case "wait", "send-signal", "rerun-failed":
-		// Flow/control nodes handled in the worker (ADR-0041, ADR-0042,
-		// ADR-0044); they run no subprocess. commandFor returns an empty argv
-		// marker so FromWafer accepts them and the worker dispatches on NodeType
-		// before running.
-		return nil, nil
-	default:
-		return nil, fmt.Errorf("node %q: node type %q has no handler built yet (Phase 6 runs shell; the rest come later)", nodeName(s), s.Type)
-	}
-}
-
-func nodeName(s wafer.Node) string {
-	if s.Name != "" {
-		return s.Name
-	}
-	return s.Type
+	return registry.CommandFor(s.Type, s.Config)
 }
 
 // removeStr removes all occurrences of s from the slice, preserving order.

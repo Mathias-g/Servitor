@@ -16,12 +16,12 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/Mathias-g/Servitor/internal/components/mcp"
+	"github.com/Mathias-g/Servitor/internal/components/secret"
+	"github.com/Mathias-g/Servitor/internal/components/singer"
 	"github.com/Mathias-g/Servitor/internal/integrations"
-	"github.com/Mathias-g/Servitor/internal/mcp"
 	"github.com/Mathias-g/Servitor/internal/registry"
 	_ "github.com/Mathias-g/Servitor/internal/registry/mechanisms"
-	"github.com/Mathias-g/Servitor/internal/secret"
-	"github.com/Mathias-g/Servitor/internal/singer"
 )
 
 // DefaultDir is where capabilities writes when no directory is given.

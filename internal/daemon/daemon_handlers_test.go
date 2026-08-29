@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Mathias-g/Servitor/internal/components/secret"
 	"github.com/Mathias-g/Servitor/internal/honker"
 	"github.com/Mathias-g/Servitor/internal/protocol"
-	"github.com/Mathias-g/Servitor/internal/secret"
 )
 
 // daemonExtPath returns the Honker extension path, skipping when unset (the

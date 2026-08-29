@@ -4,7 +4,11 @@
 // not compiled in (SPEC: How an agent discovers integrations, ADR-0018).
 package mcp
 
-import "github.com/Mathias-g/Servitor/internal/registry"
+import (
+	"fmt"
+
+	"github.com/Mathias-g/Servitor/internal/registry"
+)
 
 func init() {
 	registry.Register(call)
@@ -21,5 +25,13 @@ var call = &registry.Capability{
 		"tool":   {Type: "string", Required: true, Desc: "The named tool to invoke.", Examples: []any{"search"}},
 		"input":  {Type: "object", Desc: "The tool arguments.", Examples: []any{map[string]any{"query": "meeting notes"}}},
 		"mode":   {Type: "string", Desc: "The MCP protocol mode the server speaks, `classic` or `stateless`, copied from capabilities. Omit to probe once at run time.", Examples: []any{"stateless"}},
+	},
+	RunKind: registry.RunMCP,
+	Spawn: func(cfg map[string]any) ([]string, error) {
+		server, ok := cfg["server"].(string)
+		if !ok || server == "" {
+			return nil, fmt.Errorf("mcp-call requires a `server` name")
+		}
+		return []string{server}, nil
 	},
 }

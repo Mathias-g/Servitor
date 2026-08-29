@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Mathias-g/Servitor/internal/secret"
+	"github.com/Mathias-g/Servitor/internal/components/secret"
 	"github.com/Mathias-g/Servitor/internal/wafer"
 	"github.com/Mathias-g/Servitor/internal/worker"
 )

@@ -3,7 +3,12 @@
 // part of Servitor's spec, not integrations, so this package is never removed.
 package core
 
-import "github.com/Mathias-g/Servitor/internal/registry"
+import (
+	"fmt"
+	"os"
+
+	"github.com/Mathias-g/Servitor/internal/registry"
+)
 
 func init() {
 	registry.Register(http)
@@ -20,6 +25,17 @@ func init() {
 	registry.Register(failed)
 }
 
+// selfExe returns the path to the running servitor binary, used to re-invoke it
+// for the pure-computation subprocess commands (`__transform`, `__switch`,
+// `__foreach`) so even those stay out of the runner's process (ADR-0008).
+func selfExe() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "servitor"
+	}
+	return exe
+}
+
 var http = &registry.Capability{
 	Name:           "http",
 	Desc:           "Make an HTTP request and capture the response.",
@@ -33,6 +49,7 @@ var http = &registry.Capability{
 		"body":    {Type: "any", Desc: "Request body.", Examples: []any{map[string]any{"query": "SELECT * FROM things"}}},
 		"timeout": {Type: "integer", Desc: "Request timeout in seconds.", Examples: []any{30}},
 	},
+	RunKind: registry.RunPlain,
 }
 
 var shell = &registry.Capability{
@@ -44,6 +61,14 @@ var shell = &registry.Capability{
 	Fields: map[string]*registry.Field{
 		"command": {Type: "string", Required: true, Desc: "The command to run.", Examples: []any{"echo hello"}},
 	},
+	RunKind: registry.RunPlain,
+	Spawn: func(cfg map[string]any) ([]string, error) {
+		cmd, ok := cfg["command"].(string)
+		if !ok || cmd == "" {
+			return nil, fmt.Errorf("shell requires a string command")
+		}
+		return []string{"/bin/sh", "-c", cmd}, nil
+	},
 }
 
 var transform = &registry.Capability{
@@ -54,6 +79,14 @@ var transform = &registry.Capability{
 	MechanismGroup: registry.Core,
 	Fields: map[string]*registry.Field{
 		"expression": {Type: "string", Required: true, Desc: "A JSONata expression over the step's `{event, steps}` input (ADR-0020, ADR-0021).", Examples: []any{"$sum(steps.fetch.items[active=true].amount)"}},
+	},
+	RunKind: registry.RunPlain,
+	Spawn: func(cfg map[string]any) ([]string, error) {
+		expr, ok := cfg["expression"].(string)
+		if !ok || expr == "" {
+			return nil, fmt.Errorf("transform requires a string expression")
+		}
+		return []string{selfExe(), "__transform", expr}, nil
 	},
 }
 
@@ -68,6 +101,14 @@ var switchNode = &registry.Capability{
 		"cases":      {Type: "object", Required: true, Desc: "Map of value to the name of the top-level node to route to.", Examples: []any{map[string]any{"high": "notify_finance", "low": "log_and_done"}}},
 		"default":    {Type: "string", Desc: "Name of the top-level node to route to when no `cases` key matches.", Examples: []any{"log_unknown"}},
 	},
+	RunKind: registry.RunFlow,
+	Spawn: func(cfg map[string]any) ([]string, error) {
+		expr, ok := cfg["expression"].(string)
+		if !ok || expr == "" {
+			return nil, fmt.Errorf("switch requires a string expression")
+		}
+		return []string{selfExe(), "__switch", expr}, nil
+	},
 }
 
 var foreachNode = &registry.Capability{
@@ -81,6 +122,14 @@ var foreachNode = &registry.Capability{
 		"as":   {Type: "string", Desc: "Name for each element in the loop, exposed in each iteration's input. Defaults to `item`.", Examples: []any{"item"}},
 		"body": {Type: "string", Required: true, Desc: "Name of the top-level node to run once per element (ADR-0024).", Examples: []any{"process_one"}},
 	},
+	RunKind: registry.RunFlow,
+	Spawn: func(cfg map[string]any) ([]string, error) {
+		expr, ok := cfg["over"].(string)
+		if !ok || expr == "" {
+			return nil, fmt.Errorf("foreach requires a string `over` expression")
+		}
+		return []string{selfExe(), "__foreach", expr}, nil
+	},
 }
 
 var waitNode = &registry.Capability{
@@ -93,6 +142,7 @@ var waitNode = &registry.Capability{
 		"signal": {Type: "string", Desc: "A JSONata expression over the step's `{event, steps}` input resolved at park time to the effective signal name (ADR-0042). A signal resumes the run with the payload; the result reports `source: \"signal\"`.", Examples: []any{"approval_gate.${event.order_id}"}},
 		"timer":  {Type: "object", Desc: "A timer that resumes the run: `after` (a duration, for example `48h`) or `at` (an absolute time). The result reports `source: \"timer\"` (ADR-0043).", Examples: []any{map[string]any{"after": "48h"}}},
 	},
+	RunKind: registry.RunFlow,
 }
 
 var sendSignal = &registry.Capability{
@@ -105,6 +155,7 @@ var sendSignal = &registry.Capability{
 		"signal":  {Type: "string", Required: true, Desc: "A JSONata expression over the step's `{event, steps}` input resolving to the effective signal name of the parked run to wake.", Examples: []any{"approval_gate.${event.order_id}"}},
 		"payload": {Type: "any", Desc: "A JSONata expression for the payload delivered to the parked run's wait node result. Omit for no payload.", Examples: []any{map[string]any{"approved": true}}},
 	},
+	RunKind: registry.RunFlow,
 }
 
 var rerunFailed = &registry.Capability{
@@ -117,6 +168,7 @@ var rerunFailed = &registry.Capability{
 		"run_id": {Type: "string", Desc: "A JSONata expression over the step's `{event, steps}` input resolving to the id of the failed run to re-run. Defaults to `event.from_run` (the run whose `failed` trigger started this workflow).", Examples: []any{"event.from_run"}},
 		"mode":   {Type: "string", Desc: "How to re-run: `continue` (from the failed node), `restart` (from the top), or `discard` (drop the failed run). Default `continue`.", Examples: []any{"continue"}},
 	},
+	RunKind: registry.RunFlow,
 }
 
 var cron = &registry.Capability{

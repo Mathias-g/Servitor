@@ -12,12 +12,12 @@ import (
 	"time"
 
 	"github.com/Mathias-g/Servitor/internal/capabilities"
+	"github.com/Mathias-g/Servitor/internal/components/expression"
+	"github.com/Mathias-g/Servitor/internal/components/secret"
 	"github.com/Mathias-g/Servitor/internal/daemon"
-	"github.com/Mathias-g/Servitor/internal/expression"
 	"github.com/Mathias-g/Servitor/internal/gmail"
 	"github.com/Mathias-g/Servitor/internal/integrations"
 	"github.com/Mathias-g/Servitor/internal/protocol"
-	"github.com/Mathias-g/Servitor/internal/secret"
 	"github.com/Mathias-g/Servitor/internal/wafer"
 )
 

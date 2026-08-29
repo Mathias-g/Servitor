@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Mathias-g/Servitor/internal/components/secret"
 	"github.com/Mathias-g/Servitor/internal/integrations"
-	"github.com/Mathias-g/Servitor/internal/secret"
 )
 
 // These commands manage the declared integrations config (ADR-0018): the local

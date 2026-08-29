@@ -200,7 +200,7 @@ registry (ADR-0045). The goal is a single physical home per mechanism and clean
 deletion: removing a package removes the mechanism with no central references
 left to edit.
 
-- [ ] **Registration surface.** The registry gains a handler type that carries a
+- [x] **Registration surface.** The registry gains a handler type that carries a
   mechanism's metadata and its dispatch (how a node of that type is spawned and
   run), plus a `Register` entry point. `commandFor` in the runner and the
   worker's node-type special cases become lookups into the registry's handler
@@ -208,10 +208,16 @@ left to edit.
   - [x] **`Register` entry point.** `registry.Register` adds a capability,
     idempotent by name; the registry's list is populated only through it
     (ADR-0045).
-  - [ ] **Dispatch through the registry.** A handler type carrying how a node is
-    spawned and run, and replacing `commandFor` in the runner and the worker's
-    node-type special cases with lookups into the registry's handler map. The
-    metadata half is done; the run-behavior half is the remaining piece.
+  - [x] **Dispatch through the registry.** `Capability` carries a `Spawn`
+    function (builds the node's argv) and a `RunKind` (which execution harness
+    runs it). `commandFor` in the runner is now `registry.CommandFor`, and the
+    worker's `runNode` dispatches the singer/mcp harnesses via
+    `registry.RunKindFor`, so neither names a node type in a switch. The worker
+    engine's control-flow routing (`wait`, `switch`, `foreach`, `send-signal`,
+    `rerun-failed`, `poll`, `resume`, `skip`) stays in the worker keyed by
+    `NodeType`: those are Servitor's spec primitives, not deletable
+    integrations, and they are inseparable from the worker's store and queue
+    (a package under the registry cannot import the worker without a cycle).
 - [x] **Group packages.** One directory per mechanism group under the registry
   (`core`, `webhook`, `singer`, `mcp`, `helper`, `websocket`). Within each, one
   package per mechanism, each registering its capability and handler. An
@@ -228,6 +234,23 @@ left to edit.
   group, not appended to the central registry list. This supersedes the
   "Curated integration helpers" list in Outstanding work, which is where they
   are tracked today.
+
+## Phase 16: Shared components home
+
+Gives reusable, mechanism-agnostic machinery a distinct home and a rigid
+placement rule (ADR-0046), separating it from both mechanisms and the engine.
+
+- [x] **Move shared machinery into `internal/components/`.** The exec,
+  expression, singer, mcp, and secret packages move from `internal/` top level
+  into `internal/components/`, and all importers (worker, runner, daemon,
+  trigger, cli, capabilities) update their import paths.
+- [x] **Document the routing rule.** `internal/components/doc.go` and the SPEC
+  state the three-home rule (engine at `internal/` top level, mechanism in its
+  group folder, shared component in `internal/components/`) and the invariants:
+  a component names no capability, imports only other components and the
+  standard library, and dependency points downstream. A component with a single
+  consumer is moved into that consumer rather than left as a seam.
+
 
 ## Outstanding work
 

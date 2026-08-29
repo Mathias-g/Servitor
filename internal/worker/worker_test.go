@@ -8,10 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Mathias-g/Servitor/internal/exec"
+	"github.com/Mathias-g/Servitor/internal/components/exec"
+	"github.com/Mathias-g/Servitor/internal/components/mcp"
+	"github.com/Mathias-g/Servitor/internal/components/secret"
 	"github.com/Mathias-g/Servitor/internal/honker"
-	"github.com/Mathias-g/Servitor/internal/mcp"
-	"github.com/Mathias-g/Servitor/internal/secret"
+	_ "github.com/Mathias-g/Servitor/internal/registry/mechanisms"
 )
 
 func extPath(t *testing.T) string {
