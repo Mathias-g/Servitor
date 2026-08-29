@@ -85,6 +85,27 @@ and they are not runtime-pluggable seams. Shared components (one TPM unlock, one
 KMS call, one on-box ciphertext store) live in a shared internal library so a
 provider does not reimplement them (SPEC: Secret resolution).
 
+At-rest protection is part of the on-box mechanisms. Secrets must never be
+plaintext on disk: TPM is the primary unlock tier, with a non-TPM fallback (an
+off-box KMS key or a strong local-key file) that still holds the line against
+plaintext. The key-custody distinction that makes this a real security
+difference is that an **off-box or hardware-bound key is non-exportable** (a KMS
+key or a TPM seal cannot be copied off), so a thief who steals the disk or a
+backup gets only ciphertext and cannot decrypt it anywhere else. That is the
+genuine win over the peers, who keep a *copyable* key in the same environment
+as the ciphertext. It is not a complete boundary: it does not protect the value
+in the runtime window (the plaintext is in the runner's memory and the
+subprocess either way), and it does not stop code already running as the
+runner's user from calling the decryption service or TPM on demand. So at-rest
+key custody protects against disk/backup theft, not against a compromised
+daemon (SPEC: Secret resolution).
+
+Recoverability follows from the same arrangement: the box holds only derived
+ciphertext, and the origin (the store, or the material CI/CD pushes) lives
+elsewhere, so losing the box costs nothing durable, you simply run the setup
+again. The non-exportable key protects only against the thief who steals the
+disk, not against a lost box.
+
 ### Consequences
 
 - Good: the source of secrets is the operator's choice, not Servitor's; a

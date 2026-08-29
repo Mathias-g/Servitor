@@ -17,12 +17,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/Mathias-g/Servitor/internal/honker"
 	"github.com/Mathias-g/Servitor/internal/protocol"
 	"github.com/Mathias-g/Servitor/internal/runner"
+	"github.com/Mathias-g/Servitor/internal/secret"
 	"github.com/Mathias-g/Servitor/internal/trigger"
 	"github.com/Mathias-g/Servitor/internal/wafer"
 	"github.com/Mathias-g/Servitor/internal/worker"
@@ -60,10 +62,14 @@ type Config struct {
 	// MaxAttempts is how many times a node is tried before it is dead-lettered.
 	// Zero means 3.
 	MaxAttempts int
-	// Secrets are the runner's resolved secrets (name to value). Only the
-	// secrets a node declares are passed to its subprocess. In later phases
-	// this comes from varlock.
-	Secrets map[string]string
+	// SecretRetryCount bounds how many times a node is retried for a
+	// secret-specific failure (a stale secret, or an unreachable source) before
+	// it fails (SPEC: Secret invalidity and rotation). Zero means 3.
+	SecretRetryCount int
+	// Resolver resolves a node's declared secrets per node at spawn (SPEC:
+	// Secret resolution, ADR-0032, ADR-0033). It replaces the resolved global
+	// secret map; the runner no longer holds the full set.
+	Resolver *secret.Resolver
 	// Workers is how many worker loops to run. When DBPath is set and Workers
 	// is zero, one worker runs; set Workers to 0 with DisableRunner to run
 	// the daemon without executing nodes.
@@ -97,11 +103,14 @@ type Server struct {
 	// receiver handles inbound webhooks and manual triggers, set by Run when a
 	// store and webhook address are configured.
 	receiver *trigger.Receiver
+	// resolver resolves secrets per node; submit uses it to reject a Wafer that
+	// references an undeclared secret (ADR-0035).
+	resolver *secret.Resolver
 }
 
 // NewServer builds the control-plane server. It does not listen; call Serve.
 func NewServer(cfg Config) *Server {
-	s := &Server{cfg: cfg}
+	s := &Server{cfg: cfg, resolver: cfg.Resolver}
 	mux := http.NewServeMux()
 	mux.HandleFunc(protocol.PathHealth, s.handleHealth)
 	mux.HandleFunc(protocol.PathStop, s.handleStop)
@@ -185,6 +194,20 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request, requireE
 	if err != nil {
 		http.Error(w, "parse wafer: "+err.Error(), http.StatusBadRequest)
 		return
+	}
+	// A secret the Wafer references but that is not declared must refuse to
+	// submit or run (ADR-0035): the run could never complete.
+	if s.resolver != nil {
+		var undeclared []string
+		for _, name := range wf.ReferencedSecrets() {
+			if !s.resolver.Declared(name) {
+				undeclared = append(undeclared, name)
+			}
+		}
+		if len(undeclared) > 0 {
+			http.Error(w, "workflow references undeclared secret(s): "+strings.Join(undeclared, ", ")+" (declare them with `servitor secret add`)", http.StatusUnprocessableEntity)
+			return
+		}
 	}
 	if requireExisting {
 		existing, gerr := s.store.GetWorkflow(wf.Name)
@@ -539,7 +562,7 @@ func Run(ctx context.Context, cfg Config) error {
 		// against the same store.
 		queue := store.Queue(cfg.QueueName, cfg.VisibilityTimeoutS, cfg.MaxAttempts)
 		srv.queue = queue
-		srv.receiver = trigger.NewReceiver(store, queue, cfg.Secrets)
+		srv.receiver = trigger.NewReceiver(store, queue, cfg.Resolver)
 	}
 
 	if cfg.Started != nil {
@@ -556,7 +579,8 @@ func Run(ctx context.Context, cfg Config) error {
 		queue := srv.store.Queue(cfg.QueueName, cfg.VisibilityTimeoutS, cfg.MaxAttempts)
 		for i := 0; i < cfg.Workers; i++ {
 			w := worker.New(srv.store, queue, fmt.Sprintf("worker-%d", i), worker.Config{
-				Secrets: cfg.Secrets,
+				Resolver:         cfg.Resolver,
+				SecretRetryCount: cfg.SecretRetryCount,
 				// When a run completes, fire any workflow with an `internal`
 				// trigger naming the completed workflow (SPEC: `internal` trigger).
 				OnRunComplete: func(workflowID, runID string) {

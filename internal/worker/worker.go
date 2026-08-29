@@ -15,6 +15,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/Mathias-g/Servitor/internal/expression"
 	"github.com/Mathias-g/Servitor/internal/honker"
 	"github.com/Mathias-g/Servitor/internal/mcp"
+	"github.com/Mathias-g/Servitor/internal/secret"
 	"github.com/Mathias-g/Servitor/internal/singer"
 )
 
@@ -135,10 +137,15 @@ func (subprocessMCPRunner) Call(ctx context.Context, req mcp.CallRequest) (mcp.C
 
 // Config controls a Worker.
 type Config struct {
-	// Secrets are the runner's resolved secrets (name to value). Only the
-	// secrets a node declares are passed to its subprocess. In later phases
-	// this comes from varlock; for now the caller supplies the resolved map.
-	Secrets map[string]string
+	// Resolver resolves a node's declared secrets per node, per subprocess
+	// (SPEC: Secret resolution, ADR-0032, ADR-0033). It replaces the resolved
+	// global secret map; a node's value dies with its subprocess.
+	Resolver *secret.Resolver
+	// SecretRetryCount bounds how many times a node is retried for a
+	// secret-specific failure (a stale secret, or a source that is unreachable)
+	// before it fails, independent of the queue's generic MaxAttempts
+	// (SPEC: Secret invalidity and rotation). Zero means 3.
+	SecretRetryCount int
 	// Runner runs node subprocesses. Defaults to real subprocesses.
 	Runner NodeRunner
 	// Singer runs singer tap and target subprocesses. Defaults to real
@@ -160,15 +167,16 @@ type Config struct {
 // Worker claims and executes jobs from a queue, committing each node's
 // completion atomically through the honker store.
 type Worker struct {
-	store    *honker.Store
-	queue    *honker.Queue
-	workerID string
-	secrets  map[string]string
-	runner   NodeRunner
-	singer   SingerRunner
-	mcp      MCPRunner
-	onDone   func(workflowID, runID string)
-	onPoll   func(workflowID, kind string, items []any)
+	store         *honker.Store
+	queue         *honker.Queue
+	workerID      string
+	resolver      *secret.Resolver
+	secretRetries int
+	runner        NodeRunner
+	singer        SingerRunner
+	mcp           MCPRunner
+	onDone        func(workflowID, runID string)
+	onPoll        func(workflowID, kind string, items []any)
 }
 
 // New builds a worker over the store's queue. workerID is used for Honker
@@ -183,20 +191,41 @@ func New(store *honker.Store, queue *honker.Queue, workerID string, cfg Config) 
 	if cfg.MCP == nil {
 		cfg.MCP = subprocessMCPRunner{}
 	}
-	if cfg.Secrets == nil {
-		cfg.Secrets = map[string]string{}
+	if cfg.Resolver == nil {
+		cfg.Resolver = secret.NewResolver(secret.DefaultRegistry(), nil)
+	}
+	secretRetries := cfg.SecretRetryCount
+	if secretRetries == 0 {
+		secretRetries = 3
 	}
 	return &Worker{
-		store:    store,
-		queue:    queue,
-		workerID: workerID,
-		secrets:  cfg.Secrets,
-		runner:   cfg.Runner,
-		singer:   cfg.Singer,
-		mcp:      cfg.MCP,
-		onDone:   cfg.OnRunComplete,
-		onPoll:   cfg.OnPoll,
+		store:         store,
+		queue:         queue,
+		workerID:      workerID,
+		resolver:      cfg.Resolver,
+		secretRetries: secretRetries,
+		runner:        cfg.Runner,
+		singer:        cfg.Singer,
+		mcp:           cfg.MCP,
+		onDone:        cfg.OnRunComplete,
+		onPoll:        cfg.OnPoll,
 	}
+}
+
+// nodeEnv resolves a node's declared secrets through the resolver and builds
+// the filtered environment for its subprocess (per-node, per-subprocess
+// delivery; ADR-0033). It returns the NAME=value pairs (PATH plus the resolved
+// declared secrets) and an error if a secret is undeclared, its source is
+// unreachable, or it is stale. A missing secret is returned as the second
+// value so the caller can fail with the same "does not have" message as
+// before.
+func (w *Worker) nodeEnv(ctx context.Context, nodeName string, names []string) (env []string, missing []string, err error) {
+	values, missing, err := w.resolver.Resolve(ctx, nodeName, names)
+	if err != nil {
+		return nil, missing, err
+	}
+	env, _ = exec.FilteredEnv(values, names)
+	return env, missing, nil
 }
 
 // Run is the blocking worker loop. It claims jobs as they become available,
@@ -391,9 +420,12 @@ func (w *Worker) runSwitch(ctx context.Context, sj NodeJob) (string, error) {
 	if len(sj.Command) == 0 {
 		return "", fmt.Errorf("node type switch has no command to run")
 	}
-	env, missing := exec.FilteredEnv(w.secrets, sj.Secrets)
+	env, missing, err := w.nodeEnv(ctx, sj.NodeName, sj.Secrets)
+	if err != nil {
+		return "", err
+	}
 	if len(missing) > 0 {
-		return "", fmt.Errorf("switch declares secrets the runner does not have: %s", strings.Join(missing, ", "))
+		return "", fmt.Errorf("%w: %s", secret.ErrSecretMissing, strings.Join(missing, ", "))
 	}
 	cases, _ := sj.Config["cases"].(map[string]any)
 	defaultTarget, _ := sj.Config["default"].(string)
@@ -516,10 +548,14 @@ func (w *Worker) handlePoll(ctx context.Context, sj NodeJob, claimed *honker.Job
 		_, _ = claimed.Ack()
 		return fmt.Errorf("worker: poll %s (job %d): no command", sj.NodeID, claimed.ID)
 	}
-	env, missing := exec.FilteredEnv(w.secrets, sj.Secrets)
+	env, missing, err := w.nodeEnv(ctx, sj.NodeName, sj.Secrets)
+	if err != nil {
+		_, _ = claimed.Ack()
+		return fmt.Errorf("worker: poll %s (job %d): %w", sj.NodeID, claimed.ID, err)
+	}
 	if len(missing) > 0 {
 		_, _ = claimed.Ack()
-		return fmt.Errorf("worker: poll %s (job %d): missing secret(s): %s", sj.NodeID, claimed.ID, strings.Join(missing, ", "))
+		return fmt.Errorf("worker: poll %s (job %d): %w: %s", sj.NodeID, claimed.ID, secret.ErrSecretMissing, strings.Join(missing, ", "))
 	}
 	res, rerr := w.runner.Run(ctx, exec.Request{Command: sj.Command, Env: env, Input: sj.Input})
 	if rerr != nil {
@@ -543,9 +579,12 @@ func (w *Worker) runForeach(ctx context.Context, sj NodeJob) ([]any, error) {
 	if len(sj.Command) == 0 {
 		return nil, fmt.Errorf("node type foreach has no command to run")
 	}
-	env, missing := exec.FilteredEnv(w.secrets, sj.Secrets)
+	env, missing, err := w.nodeEnv(ctx, sj.NodeName, sj.Secrets)
+	if err != nil {
+		return nil, err
+	}
 	if len(missing) > 0 {
-		return nil, fmt.Errorf("foreach declares secrets the runner does not have: %s", strings.Join(missing, ", "))
+		return nil, fmt.Errorf("%w: %s", secret.ErrSecretMissing, strings.Join(missing, ", "))
 	}
 	res, rerr := w.runner.Run(ctx, exec.Request{Command: sj.Command, Env: env, Input: sj.Input})
 	if rerr != nil {
@@ -678,9 +717,12 @@ func (w *Worker) runNode(ctx context.Context, sj NodeJob, dedupeKey string) (res
 		return nil, true, nil, fmt.Errorf("node type %q has no command to run", sj.NodeType)
 	}
 
-	env, missing := exec.FilteredEnv(w.secrets, sj.Secrets)
+	env, missing, err := w.nodeEnv(ctx, sj.NodeName, sj.Secrets)
+	if err != nil {
+		return nil, true, nil, err
+	}
 	if len(missing) > 0 {
-		return nil, true, nil, fmt.Errorf("node declares secrets the runner does not have: %s", strings.Join(missing, ", "))
+		return nil, true, nil, fmt.Errorf("%w: %s", secret.ErrSecretMissing, strings.Join(missing, ", "))
 	}
 
 	res, rerr := w.runner.Run(ctx, exec.Request{Command: sj.Command, Env: env, Input: sj.Input})
@@ -699,9 +741,12 @@ func (w *Worker) runSingerNode(ctx context.Context, sj NodeJob) (result any, ran
 	if len(sj.Command) == 0 {
 		return nil, true, nil, fmt.Errorf("node type %q has no command to run", sj.NodeType)
 	}
-	env, missing := exec.FilteredEnv(w.secrets, sj.Secrets)
+	env, missing, err := w.nodeEnv(ctx, sj.NodeName, sj.Secrets)
+	if err != nil {
+		return nil, true, nil, err
+	}
 	if len(missing) > 0 {
-		return nil, true, nil, fmt.Errorf("node declares secrets the runner does not have: %s", strings.Join(missing, ", "))
+		return nil, true, nil, fmt.Errorf("%w: %s", secret.ErrSecretMissing, strings.Join(missing, ", "))
 	}
 
 	switch sj.NodeType {
@@ -747,9 +792,12 @@ func (w *Worker) runMCPNode(ctx context.Context, sj NodeJob) (result any, ran bo
 	if len(sj.Command) == 0 {
 		return nil, true, nil, fmt.Errorf("node type %q has no command to run", sj.NodeType)
 	}
-	env, missing := exec.FilteredEnv(w.secrets, sj.Secrets)
+	env, missing, err := w.nodeEnv(ctx, sj.NodeName, sj.Secrets)
+	if err != nil {
+		return nil, true, nil, err
+	}
 	if len(missing) > 0 {
-		return nil, true, nil, fmt.Errorf("node declares secrets the runner does not have: %s", strings.Join(missing, ", "))
+		return nil, true, nil, fmt.Errorf("%w: %s", secret.ErrSecretMissing, strings.Join(missing, ", "))
 	}
 	tool, _ := sj.Config["tool"].(string)
 	if tool == "" {
@@ -837,10 +885,62 @@ func recordsFromInput(input map[string]any) []singer.Record {
 
 // recordFailure persists a node's failure: a failed result row and, when the
 // node has a dedupe key, a failed dedupe record so a later retry proceeds
-// rather than being skipped (SPEC: Idempotency). It then retries the claim,
-// which Honker dead-letters once attempts reach the queue's max.
+// rather than being skipped (SPEC: Idempotency). It then decides what to do
+// with the claim based on the failure kind (SPEC: Secret invalidity and
+// rotation):
+//
+//   - A missing secret fails fast: no retry (a missing value is not transient),
+//     the claim is dead-lettered with a `missing_secret` error, and the operator
+//     adds the value and resumes.
+//   - An unreachable source retries with exponential backoff, since the source
+//     may come back; if it stays down past the secret retry count it fails with
+//     a distinct error.
+//   - A stale secret retries with a fresh resolve (each retry re-resolves), and
+//     fails with `secret_auth_failed` once the secret retry count is reached.
+//   - Any other node failure keeps the current behavior: retry immediately,
+//     bounded by the queue's generic max attempts.
 func (w *Worker) recordFailure(sj NodeJob, claimed *honker.Job, cause error) {
+	code := ""
+	switch {
+	case errors.Is(cause, secret.ErrSecretMissing):
+		code = "missing_secret"
+	case errors.Is(cause, secret.ErrSourceUnreachable):
+		code = "secret_source_unreachable"
+	case errors.Is(cause, secret.ErrStale):
+		code = "secret_auth_failed"
+	}
+	if code != "" {
+		result := map[string]any{"ok": false, "code": code, "error": cause.Error()}
+		w.commitFailed(sj, result)
+		if claimed != nil {
+			if code == "missing_secret" || claimed.Attempts >= int64(w.secretRetries) {
+				_, _ = claimed.Fail(cause.Error())
+				return
+			}
+			if code == "secret_source_unreachable" {
+				_, _ = claimed.Retry(backoffDelay(claimed.Attempts), cause.Error())
+				return
+			}
+			_, _ = claimed.Retry(0, cause.Error())
+			return
+		}
+		return
+	}
+
 	result := map[string]any{"ok": false, "error": cause.Error()}
+	w.commitFailed(sj, result)
+	if claimed != nil {
+		_, _ = claimed.Retry(0, cause.Error())
+	}
+	// The failing node is not acked (it retries), so the run's pending count is
+	// unchanged and the run is neither completed nor failed yet. It resolves
+	// when the node succeeds or is dead-lettered.
+}
+
+// commitFailed persists a failed result row and, when the node has a dedupe
+// key, a failed dedupe record so a later retry proceeds rather than being
+// skipped (SPEC: Idempotency).
+func (w *Worker) commitFailed(sj NodeJob, result map[string]any) {
 	atom := honker.NodeAtom{
 		RunID:  sj.RunID,
 		NodeID: sj.NodeID,
@@ -864,10 +964,15 @@ func (w *Worker) recordFailure(sj NodeJob, claimed *honker.Job, cause error) {
 		}
 	}
 	_ = w.store.CommitNodeAtom(atom)
-	if claimed != nil {
-		_, _ = claimed.Retry(0, cause.Error())
+}
+
+// backoffDelay returns an exponential backoff delay in seconds for the given
+// attempt (1s, 2s, 4s, ...) capped at 30s, for a transiently unreachable
+// secret source (SPEC: Secret invalidity and rotation).
+func backoffDelay(attempt int64) int64 {
+	delay := int64(1) << min(attempt, 5)
+	if delay > 30 {
+		return 30
 	}
-	// The failing node is not acked (it retries), so the run's pending count is
-	// unchanged and the run is neither completed nor failed yet. It resolves
-	// when the node succeeds or is dead-lettered.
+	return delay
 }

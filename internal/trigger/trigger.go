@@ -27,23 +27,25 @@ import (
 	"github.com/Mathias-g/Servitor/internal/email"
 	"github.com/Mathias-g/Servitor/internal/honker"
 	"github.com/Mathias-g/Servitor/internal/runner"
+	"github.com/Mathias-g/Servitor/internal/secret"
 	"github.com/Mathias-g/Servitor/internal/wafer"
 )
 
 // Receiver handles inbound webhook events and manual triggers against the
 // runner's registered workflows.
 type Receiver struct {
-	store   *honker.Store
-	queue   *honker.Queue
-	secrets map[string]string
+	store    *honker.Store
+	queue    *honker.Queue
+	resolver *secret.Resolver
 	// now is injectable for tests.
 	now func() time.Time
 }
 
-// NewReceiver builds a receiver over the store's queue. secrets is the
-// runner's resolved secret map; webhook triggers name a secret to verify with.
-func NewReceiver(store *honker.Store, queue *honker.Queue, secrets map[string]string) *Receiver {
-	return &Receiver{store: store, queue: queue, secrets: secrets, now: time.Now}
+// NewReceiver builds a receiver over the store's queue. resolver resolves a
+// webhook trigger's signing key per use (SPEC: Secret resolution); webhook
+// triggers name a secret to verify with.
+func NewReceiver(store *honker.Store, queue *honker.Queue, resolver *secret.Resolver) *Receiver {
+	return &Receiver{store: store, queue: queue, resolver: resolver, now: time.Now}
 }
 
 // matchPath returns the trigger's configured path, or "" when it has none.
@@ -280,12 +282,22 @@ func isWebhookType(typ string) bool {
 	}
 }
 
-// verify checks the request signature for a webhook trigger. It returns true
-// when the signature is valid or when the trigger names no secret (an open
-// receiver; varlock secret resolution is Phase 8). It returns false only on a
-// definite mismatch.
+// verify checks the request signature for a webhook trigger. It resolves the
+// trigger's signing key fresh per use (SPEC: Secret resolution); there is no
+// rollover window, so a message that does not verify with the current key is
+// rejected and logged, with no retry. It returns true when the signature is
+// valid or when the trigger names no resolvable secret (an open receiver). It
+// returns false only on a definite mismatch.
 func (r *Receiver) verify(w *wafer.Wafer, tr wafer.Trigger, h http.Header, body []byte) bool {
-	secret := r.secrets[secretName(tr)]
+	name := secretName(tr)
+	if name == "" || r.resolver == nil {
+		return true
+	}
+	values, missing, err := r.resolver.Resolve(context.Background(), "webhook", []string{name})
+	if err != nil || len(missing) > 0 {
+		return true
+	}
+	secret := values[name]
 	if secret == "" {
 		return true
 	}

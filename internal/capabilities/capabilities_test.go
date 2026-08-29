@@ -2,7 +2,6 @@ package capabilities
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -149,9 +148,18 @@ func TestEntryEmitsRoleAndDelivery(t *testing.T) {
 	}
 }
 
-func TestWriteSecretsWithoutVarlockWritesNote(t *testing.T) {
-	// Ensure varlock is not on PATH so this is deterministic.
-	t.Setenv("PATH", t.TempDir())
+func TestWriteSecretsFromDeclaredConfig(t *testing.T) {
+	writeTestConfig(t, &integrations.Config{
+		Secrets: map[string]*integrations.Secret{
+			"GMAIL_SEND_TOKEN": {
+				Source:      "varlock",
+				Account:     "billing@acme.com",
+				Permissions: []string{"send"},
+				Expiry:      "2027-01-01",
+			},
+			"GH_TOKEN": {Source: "env"},
+		},
+	})
 	dir := t.TempDir()
 	if err := Write(dir); err != nil {
 		t.Fatalf("Write: %v", err)
@@ -160,52 +168,42 @@ func TestWriteSecretsWithoutVarlockWritesNote(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read secrets.yaml: %v", err)
 	}
-	if !strings.Contains(string(data), "varlock not available") {
-		t.Fatalf("secrets.yaml = %q, want a varlock-unavailable note", data)
+	s := string(data)
+	// The richer shape (name + account + permissions + expiry), never a value.
+	for _, want := range []string{
+		"GMAIL_SEND_TOKEN", "source: varlock", "account: billing@acme.com",
+		"permissions:", "- send", `expiry: "2027-01-01"`,
+		"GH_TOKEN", "source: env",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("secrets.yaml missing %q:\n%s", want, s)
+		}
+	}
+	if strings.Contains(s, "secretvalue") {
+		t.Fatalf("secrets.yaml must never contain a value:\n%s", s)
 	}
 }
 
-func TestWriteSecretsWithVarlockReportsNamesAndPresence(t *testing.T) {
-	if _, err := exec.LookPath("varlock"); err != nil {
-		t.Skip("varlock not installed; skipping varlock-backed secrets test")
-	}
-	// Canonical varlock layout (SPEC: Varlock): the schema declares each secret
-	// with its decorators and an empty value; the present value lives in the
-	// git-ignored .env.local. MAYBE is optional and empty, so it is declared
-	// but not present; TOKEN has a value, so it is present.
+func TestWriteSecretResolutionGroupAndSources(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, ".env.schema"),
-		[]byte("# @sensitive @type=string\nTOKEN=\n# @sensitive @optional @type=string\nMAYBE=\n"), 0o644); err != nil {
-		t.Fatalf("write .env.schema: %v", err)
+	if err := Write(dir); err != nil {
+		t.Fatalf("Write: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, ".env.local"),
-		[]byte("TOKEN=abc\n"), 0o600); err != nil {
-		t.Fatalf("write .env.schema: %v", err)
-	}
-	oldwd, _ := os.Getwd()
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-	defer func() { _ = os.Chdir(oldwd) }()
-
-	entries, note, err := declaredSecrets()
+	data, err := os.ReadFile(filepath.Join(dir, "secret-resolution", "sources.yaml"))
 	if err != nil {
-		t.Fatalf("declaredSecrets: %v (%s)", err, note)
+		t.Fatalf("read secret-resolution/sources.yaml: %v", err)
 	}
-	var token, maybe *secretEntry
-	for i := range entries {
-		if entries[i].Name == "TOKEN" {
-			token = &entries[i]
-		}
-		if entries[i].Name == "MAYBE" {
-			maybe = &entries[i]
+	for _, want := range []string{"env", "varlock", "onbox"} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("sources.yaml missing source %q:\n%s", want, data)
 		}
 	}
-	if token == nil || !token.Present {
-		t.Fatalf("expected TOKEN present, got %+v", entries)
+	idx, err := os.ReadFile(filepath.Join(dir, "index.yaml"))
+	if err != nil {
+		t.Fatalf("read index.yaml: %v", err)
 	}
-	if maybe == nil || maybe.Present {
-		t.Fatalf("expected MAYBE not present, got %+v", entries)
+	if !strings.Contains(string(idx), "secret-resolution") {
+		t.Fatalf("index.yaml missing secret-resolution group:\n%s", idx)
 	}
 }
 

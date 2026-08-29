@@ -10,6 +10,7 @@ import (
 
 	"github.com/Mathias-g/Servitor/internal/honker"
 	"github.com/Mathias-g/Servitor/internal/protocol"
+	"github.com/Mathias-g/Servitor/internal/secret"
 )
 
 // daemonExtPath returns the Honker extension path, skipping when unset (the
@@ -83,5 +84,52 @@ func TestSubmitThenUpdateSucceeds(t *testing.T) {
 	}
 	if _, err := ctl.Update(ctx, []byte(validWafer)); err != nil {
 		t.Fatalf("update after submit: %v", err)
+	}
+}
+
+func TestSubmitRejectsUndeclaredSecret(t *testing.T) {
+	ctx := context.Background()
+	ext := handlerExtPath(t)
+	store, err := honker.Open(filepath.Join(t.TempDir(), "t.db"), ext)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	srv := NewServer(Config{Resolver: secret.ResolverFromMap(map[string]string{"DECLARED": "v"})})
+	srv.store = store
+	ts := httptest.NewServer(srv.httpSrv.Handler)
+	t.Cleanup(ts.Close)
+	ctl := protocol.NewClient(strings.TrimPrefix(ts.URL, "http://"))
+
+	wf := `
+name: wf
+on:
+  - type: manual
+nodes:
+  - type: shell
+    name: a
+    command: "true"
+    secrets: [UNDECLARED]
+`
+	if _, err := ctl.Submit(ctx, []byte(wf)); err == nil {
+		t.Fatal("expected submit referencing an undeclared secret to fail")
+	} else if !strings.Contains(err.Error(), "UNDECLARED") {
+		t.Fatalf("error %q should mention the undeclared secret", err.Error())
+	}
+
+	// A Wafer referencing a declared secret submits fine.
+	ok := `
+name: wf
+on:
+  - type: manual
+nodes:
+  - type: shell
+    name: a
+    command: "true"
+    secrets: [DECLARED]
+`
+	if _, err := ctl.Submit(ctx, []byte(ok)); err != nil {
+		t.Fatalf("submit with declared secret: %v", err)
 	}
 }

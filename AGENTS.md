@@ -85,6 +85,7 @@ How to route what you learned this session into the codebase, and what to discar
 - **Changed the product's behavior or interface (Wafer schema, CLI, daemon protocol)?** Update `SPEC.md` and, if it was a genuine decision, write an ADR.
 - **Established or changed how a package is supposed to behave** (an edge case, an input/output guarantee, a regression you just fixed)? A test. This is preferred over prose whenever the behavior can be asserted.
 - **Found an open, unsettled attack surface or something to investigate?** `THREATS.md`. It is not a decision and not an invariant yet; when resolved it moves to a test, the relevant SPEC section, Gotchas, or an ADR depending on what the resolution is, and is discarded when found to be a non-issue.
+- **Found a task that cannot be built yet because it depends on another idea in `IDEAS.md`** that is not yet in the SPEC/PLAN? Break it out as its own small task in the phase it belongs to in `PLAN.md`, marked with the blocking idea. Do not silently drop it or fold it into a completed task; it becomes buildable when the blocking idea is worked into the SPEC/PLAN.
 - **Learned a durable gotcha or invariant that no assertion can capture**, something about intent or rationale rather than behavior? Package README or docstring, or the Gotchas section of `SPEC.md` for cross-cutting operational lessons.
 - **Just describes what this diff does?** Commit or PR body.
 - **Exploration that concluded nothing durable?** Discard. Do not write it anywhere.
@@ -138,6 +139,13 @@ The automated checks enforce structure. This covers what they cannot:
 - A change that breaks the Wafer schema, CLI surface, or daemon protocol requires an ADR with `interface-impact: breaking`.
 - ADRs are for decisions. Do not write one to describe current state, and do not write one for a change that involved no contested choice.
 - An ADR records the decision and its durable rationale, not the moment in time it was made. Do not reference the implementation plan's phases or step numbers (for example "Phase 6"), the current state of the codebase, or any other thing that will drift as the project moves. Use the SPEC section the decision concerns (for example "SPEC: Execution model") as the anchor instead. A future reader of an ADR should understand the decision without knowing what the plan looked like on the day it was written.
+
+### PLAN.md
+
+- **PLAN.md is append-only.** Phases are numbered sequentially and never renumbered, and an existing phase is never overwritten or replaced to describe new work. When new work does not belong in an existing phase, add it as a new phase with the next number (for example, if the last phase is 12, the new phase is 13).
+- An earlier phase may be superseded by a later one (for example the varlock boot phase is removed by the secret-resolution phase), but the superseded phase stays in place as a record of what was built; the later phase records the change. Do not reach back and rewrite or delete the earlier phase.
+- The only exception is when the developer explicitly asks for phases to be reordered or merged.
+- A change to a task inside an existing phase (marking it done, splitting out a blocked task) is fine; renumbering, deleting, or reworking a whole phase is not.
 
 ### Tests
 

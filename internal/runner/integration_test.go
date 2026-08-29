@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Mathias-g/Servitor/internal/secret"
 	"github.com/Mathias-g/Servitor/internal/wafer"
 	"github.com/Mathias-g/Servitor/internal/worker"
 )
@@ -26,7 +27,7 @@ func TestRunEndToEnd(t *testing.T) {
 		t.Fatalf("StartRun: %v", err)
 	}
 
-	worker := worker.New(store, q, "worker-1", worker.Config{Secrets: map[string]string{}})
+	worker := worker.New(store, q, "worker-1", worker.Config{Resolver: secret.ResolverFromMap(nil)})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	go func() { _ = worker.Run(ctx) }()

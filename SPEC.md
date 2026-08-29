@@ -196,13 +196,36 @@ the material during deploy, the value is sealed to the box, and Servitor
 decrypts locally when a node needs it. At rest, secrets are never plaintext on
 disk: TPM is the preferred unlock tier, with a non-TPM fallback (an off-box KMS
 key or a strong local-key file) that still holds the line against plaintext.
+
+The key-custody distinction that makes this a real security difference: an
+**off-box or hardware-bound key is non-exportable** (a KMS key or a TPM seal
+cannot be copied off), so a thief who steals the disk or a backup gets only
+ciphertext and cannot decrypt it anywhere else. This is the genuine win over
+the peers, who keep a *copyable* key in the same environment as the ciphertext.
+But it is not a complete boundary: it does not protect the value in the runtime
+window (the plaintext is in the runner's memory and the subprocess either way),
+and it does not stop code already running as the runner's user from calling the
+decryption service or TPM to obtain the value on demand. So at-rest key custody
+protects against disk/backup theft, not against a compromised daemon.
+
+Recoverability follows from the same arrangement: the box holds only derived
+ciphertext, and the origin (the store, or the material CI/CD pushes) lives
+elsewhere, so losing the box costs nothing durable, you simply run the setup
+again. The non-exportable key protects only against the thief who steals the
+disk, not against a lost box.
+
 Other arrangements are supported for their niches: a pull-based external store
 (for stores fast enough to resolve from directly per node, such as AWS Secrets
 Manager), a pull-based on-box ciphertext store (for slow stores, fetched once
 into the local copy and then resolved per node), and plain environment (a
 dev/testing fallback). The three axes a mechanism bundles (ingress, storage,
 unlock) are composed within the provider in code; they are not independently
-configured at runtime.
+configured at runtime. The axis options are shared internal components, not
+per-mechanism reimplementations: a mechanism stays the deployable unit (one
+provider), but each mechanism calls the same components for the options it
+uses (one TPM unlock, one KMS call, one on-box ciphertext store, and so on, in
+a shared internal library). This keeps the code DRY without making the axes
+runtime-pluggable seams, which would force maintaining every combination.
 
 **Per-node, per-subprocess delivery is the security invariant** (ADR-0033): a
 secret is resolved at the moment its node runs, handed to that one subprocess's
@@ -657,12 +680,12 @@ Things deliberately out of scope for v1, kept here so the design doesn't quietly
 
 ## Status
 
-Early development. The daemon lifecycle, loopback control protocol, Wafer model and structured validation, capability discovery (including a `secrets.yaml` reporting declared secret names and presence, a `singer/taps.yaml` reporting declared Singer taps, and a `mcp/servers.yaml` reporting declared MCP servers; grouped by mechanism group per ADR-0031, sourced from the declared integrations config per ADR-0018), dry-run DAG resolution (including redacted secret names and a `missing_secret` warning), the Honker durability store (with the transactional atom), node execution (the worker loop, subprocess isolation with env filtering, and the dedupe contract), the Singer integration (the `singer-tap` and `singer-target` executors, bookmark state committed with each tap node's result, and schema discovery; ADR-0016), the MCP integration (the `mcp-call` node type with a client-mode executor, both classic and stateless protocol support, and structured error mapping; ADR-0015), inbound triggers (a webhook receiver for Standard Webhooks, generic HMAC, and the GitHub and Slack provider-specific schemes, plus cron and manual), the varlock integration (self-healing launch and per-node secret filtering), the shipped `SKILL.md` agent reference, run inspection (`servitor runs`, `servitor run <id>`, `servitor cancel`), and the release flow (`make release`) are built (`servitor run`, `stop`, `dry-run`, `capabilities`, `submit`, `update`, `enable`, `disable`, `trigger`, `runs`, `run`, `cancel`), the `transform` node handler and `dedupe_key` evaluation (JSONata via gnata, ADR-0020; `{event, steps}` threaded input, ADR-0021), and the `switch` and `foreach` node handlers with dependency-counter fan-out (ADR-0022, ADR-0023, ADR-0024). Provider-specific webhook receivers for Grist and Atomic, and the curated helpers (grist, slack, github, email send) are not yet built. Open questions, to be resolved as implementation progresses and tracked in ADRs in the `docs/adr/` directory:
+Early development. The daemon lifecycle, loopback control protocol, Wafer model and structured validation, capability discovery (including a `secrets.yaml` reporting declared secret names, account, permissions, and expiry, a `secret-resolution` group enumerating the available secret sources, a `singer/taps.yaml` reporting declared Singer taps, and a `mcp/servers.yaml` reporting declared MCP servers; grouped by mechanism group per ADR-0031, sourced from the declared integrations config per ADR-0018), dry-run DAG resolution (including redacted secret names and a `missing_secret` warning), the Honker durability store (with the transactional atom), node execution (the worker loop, subprocess isolation with env filtering, and the dedupe contract), the secret-resolution model (a pluggable provider with per-node, per-subprocess delivery; the `env` and `varlock` providers; a declared-secrets section in the integrations config and the `servitor secret` CLI; submit rejects a Wafer that references an undeclared secret; the varlock boot path is removed, ADR-0032 through ADR-0036), the Singer integration (the `singer-tap` and `singer-target` executors, bookmark state committed with each tap node's result, and schema discovery; ADR-0016), the MCP integration (the `mcp-call` node type with a client-mode executor, both classic and stateless protocol support, and structured error mapping; ADR-0015), inbound triggers (a webhook receiver for Standard Webhooks, generic HMAC, and the GitHub and Slack provider-specific schemes, plus cron and manual), the shipped `SKILL.md` agent reference, run inspection (`servitor runs`, `servitor run <id>`, `servitor cancel`), and the release flow (`make release`) are built (`servitor run`, `stop`, `dry-run`, `capabilities`, `submit`, `update`, `enable`, `disable`, `trigger`, `runs`, `run`, `cancel`, `secret`), the `transform` node handler and `dedupe_key` evaluation (JSONata via gnata, ADR-0020; `{event, steps}` threaded input, ADR-0021), and the `switch` and `foreach` node handlers with dependency-counter fan-out (ADR-0022, ADR-0023, ADR-0024). Provider-specific webhook receivers for Grist and Atomic, and the curated helpers (grist, slack, github, email send) are not yet built. Open questions, to be resolved as implementation progresses and tracked in ADRs in the `docs/adr/` directory:
 
 - Worker concurrency limits; runs execute as a dependency DAG with fan-out (ADR-0023), but branches run sequentially rather than in parallel.
 - The trigger receiver's framing of the remaining bespoke per-provider signing schemes (Grist and Atomic).
 
-**Target model, not yet built.** The Secret resolution section (ADR-0032, ADR-0033, ADR-0034, ADR-0035, ADR-0036) describes the target secret model, which is not yet implemented. The current build still resolves the full secret set under varlock at boot, as the previous varlock section described. The diff between this SPEC and the pre-secrets-model revision is the implementation checklist for the new model. **Delete this paragraph once the new model is implemented**, so it does not linger describing a transition that has already happened.
+**Secrets model: largely implemented.** The Secret resolution section describes the target secret model (ADR-0032 through ADR-0036). The provider interface, per-node delivery, the `env`, `varlock`, and `onbox` (push-based on-box ciphertext, sealed with `servitor secret seal`) providers, the declared-secrets config and `servitor secret` CLI, the capabilities surface, the varlock boot path removal, and the secret-failure semantics (missing fails fast, source-unreachable retries with backoff, stale retries with a fresh resolve then fails with `secret_auth_failed`) are built. The `onbox` provider uses the non-TPM local-key unlock tier; TPM/KMS sealing of the key (the non-exportable tier) is future work. Not yet built: the resume-from-failure modes (continue/restart/discard), which depend on the suspend/resume machinery of the separate "Suspended waits" idea. **Delete this paragraph once the remaining pieces land**, so it does not linger describing a transition that has already happened.
 
 Contributions welcome once the initial scaffolding is in place.
 

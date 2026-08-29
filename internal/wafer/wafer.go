@@ -117,6 +117,31 @@ func fromRaw(raw map[string]any) (*Wafer, error) {
 	return w, nil
 }
 
+// ReferencedSecrets returns the secret names a Wafer references, from its
+// nodes' `secrets:` lists and its triggers' `secret` fields, de-duplicated. It
+// is what submit validates against the declared secrets (ADR-0035).
+func (w *Wafer) ReferencedSecrets() []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(name string) {
+		if name != "" && !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	for _, n := range w.Nodes {
+		for _, s := range n.Secrets {
+			add(s)
+		}
+	}
+	for _, tr := range w.On {
+		if s, ok := tr.Config["secret"].(string); ok {
+			add(s)
+		}
+	}
+	return out
+}
+
 func copyMap(m map[string]any, skip ...string) map[string]any {
 	out := map[string]any{}
 	skipSet := map[string]bool{}

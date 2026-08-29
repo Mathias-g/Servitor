@@ -11,6 +11,7 @@ import (
 	"github.com/Mathias-g/Servitor/internal/exec"
 	"github.com/Mathias-g/Servitor/internal/honker"
 	"github.com/Mathias-g/Servitor/internal/mcp"
+	"github.com/Mathias-g/Servitor/internal/secret"
 )
 
 func extPath(t *testing.T) string {
@@ -27,6 +28,11 @@ func extPath(t *testing.T) string {
 
 func newWorker(t *testing.T, visS, maxAttempts int, secrets map[string]string) (*Worker, *honker.Store, *honker.Queue) {
 	t.Helper()
+	return newWorkerWithResolver(t, visS, maxAttempts, secret.ResolverFromMap(secrets))
+}
+
+func newWorkerWithResolver(t *testing.T, visS, maxAttempts int, resolver *secret.Resolver) (*Worker, *honker.Store, *honker.Queue) {
+	t.Helper()
 	ext := extPath(t)
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	store, err := honker.Open(dbPath, ext)
@@ -35,8 +41,31 @@ func newWorker(t *testing.T, visS, maxAttempts int, secrets map[string]string) (
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	q := store.Queue("nodes", visS, maxAttempts)
-	w := New(store, q, "worker-1", Config{Secrets: secrets})
+	w := New(store, q, "worker-1", Config{Resolver: resolver})
 	return w, store, q
+}
+
+// flakyProvider fails the first Resolve with failFirst, then succeeds, for
+// testing transient source failures.
+type flakyProvider struct {
+	failFirst error
+	calls     int
+}
+
+func (p *flakyProvider) Resolve(_ context.Context, _, name string) (string, error) {
+	p.calls++
+	if p.calls == 1 && p.failFirst != nil {
+		return "", p.failFirst
+	}
+	return name + "-value", nil
+}
+
+// failProvider always returns err; it is a test helper for a provider whose
+// secret is permanently stale or missing.
+type failProvider struct{ err error }
+
+func (p failProvider) Resolve(context.Context, string, string) (string, error) {
+	return "", p.err
 }
 
 func shellCmd(script string) []string { return []string{"/bin/sh", "-c", script} }
@@ -257,8 +286,13 @@ func TestEnvFilteringToDeclaredSecrets(t *testing.T) {
 	}
 }
 
-func TestMissingDeclaredSecretFailsNode(t *testing.T) {
-	w, _, q := newWorker(t, 30, 3, map[string]string{})
+func TestMissingDeclaredSecretFailsFast(t *testing.T) {
+	// "NOPE" is declared (source "test") but the provider has no value, so it
+	// is missing, not undeclared.
+	reg := secret.NewRegistry()
+	reg.Register("test", secret.MapProvider{})
+	resolver := secret.NewResolver(reg, map[string]string{"NOPE": "test"})
+	w, store, q := newWorkerWithResolver(t, 30, 3, resolver)
 	if _, err := q.Enqueue(NodeJob{
 		RunID: "run-1", WorkflowID: "wf", NodeID: "a", NodeName: "a",
 		NodeType: "shell", Secrets: []string{"NOPE"},
@@ -272,6 +306,93 @@ func TestMissingDeclaredSecretFailsNode(t *testing.T) {
 	}
 	if err := w.handle(context.Background(), job); err == nil {
 		t.Fatal("expected error when a declared secret is missing")
+	}
+
+	// A missing secret is not transient, so it fails fast (no retry): the result
+	// carries the missing_secret code and the claim is dead-lettered, not
+	// re-issued (SPEC: Secret invalidity and rotation).
+	res := claimResultJSON(t, store, "run-1", "a").(map[string]any)
+	if res["code"] != "missing_secret" {
+		t.Fatalf("result code = %v, want missing_secret", res["code"])
+	}
+	if again, err := q.ClaimOne("worker-1"); err == nil && again != nil {
+		t.Fatal("a missing secret must fail fast, not be re-issued for retry")
+	}
+}
+
+func TestUnreachableSourceRetriesThenSucceeds(t *testing.T) {
+	// A provider that returns ErrSourceUnreachable on the first resolve and
+	// succeeds on the second, simulating a source that comes back.
+	prov := &flakyProvider{failFirst: secret.ErrSourceUnreachable}
+	reg := secret.NewRegistry()
+	reg.Register("flaky", prov)
+	resolver := secret.NewResolver(reg, map[string]string{"S": "flaky"})
+	w, store, q := newWorkerWithResolver(t, 30, 3, resolver)
+
+	if _, err := q.Enqueue(NodeJob{
+		RunID: "run-1", WorkflowID: "wf", NodeID: "a", NodeName: "a",
+		NodeType: "shell", Secrets: []string{"S"},
+		Command: shellCmd(`printf '{"ok":true}'`),
+	}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	// First attempt: the source is unreachable, so it must be retried (with
+	// backoff), not failed fast.
+	job, err := q.ClaimOne("worker-1")
+	if err != nil || job == nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := w.handle(context.Background(), job); err == nil {
+		t.Fatal("expected an error while the source is unreachable")
+	}
+	// The retry is scheduled with a 1s backoff; wait past it so the claim is
+	// re-issued, then run the second attempt where the source is back.
+	time.Sleep(2200 * time.Millisecond)
+	job2, err := q.ClaimOne("worker-1")
+	if err != nil || job2 == nil {
+		t.Fatalf("unreachable source must be re-issued for retry, got %v", err)
+	}
+	if err := w.handle(context.Background(), job2); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	res := claimResultJSON(t, store, "run-1", "a").(map[string]any)
+	if res["ok"] != true {
+		t.Fatalf("result = %v, want ok:true after the source came back", res)
+	}
+	if prov.calls != 2 {
+		t.Fatalf("provider consulted %d times, want 2", prov.calls)
+	}
+}
+
+func TestStaleSecretFailsWithAuthErrorWhenExhausted(t *testing.T) {
+	// A provider whose value is stale: it must be retried with a fresh resolve,
+	// and once the secret retry count is exhausted it fails with
+	// secret_auth_failed (SPEC: Secret invalidity and rotation).
+	reg := secret.NewRegistry()
+	reg.Register("stale", failProvider{err: secret.ErrStale})
+	resolver := secret.NewResolver(reg, map[string]string{"S": "stale"})
+	w, store, q := newWorkerWithResolver(t, 30, 3, resolver)
+	w.secretRetries = 1
+
+	if _, err := q.Enqueue(NodeJob{
+		RunID: "run-1", WorkflowID: "wf", NodeID: "a", NodeName: "a",
+		NodeType: "shell", Secrets: []string{"S"},
+		Command: shellCmd(`printf '{"ok":true}'`),
+	}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	// Attempt 1: stale, so retry (attempts 1 < secretRetries 1? no -> 1 >= 1, so
+	// fail). With secretRetries=1 the first failure already fails.
+	job, err := q.ClaimOne("worker-1")
+	if err != nil || job == nil {
+		t.Fatalf("claim: %v", err)
+	}
+	_ = w.handle(context.Background(), job)
+	res := claimResultJSON(t, store, "run-1", "a").(map[string]any)
+	if res["code"] != "secret_auth_failed" {
+		t.Fatalf("result code = %v, want secret_auth_failed", res["code"])
 	}
 }
 
@@ -470,7 +591,8 @@ func TestOnRunCompleteNotFiredForIncompleteRun(t *testing.T) {
 }
 
 func TestSingerTapPersistsBookmarkAcrossRuns(t *testing.T) {
-	w, store, q := newWorker(t, 30, 3, map[string]string{"OUT": filepath.Join(t.TempDir(), "inv.json")})
+	out := filepath.Join(t.TempDir(), "inv.json")
+	w, store, q := newWorker(t, 30, 3, map[string]string{"OUT": out})
 
 	// A fake tap that echoes the --state file it receives to $OUT (a declared
 	// secret), emits one RECORD and a STATE.
@@ -526,7 +648,7 @@ printf '%s\n' '{"type":"STATE","value":{"bookmark":"v1"}}'
 	// Second run of the same workflow/node: the prior bookmark must have been
 	// passed as a --state file (visible in $OUT).
 	runTap("run-2")
-	b, err := os.ReadFile(w.secrets["OUT"])
+	b, err := os.ReadFile(out)
 	if err != nil {
 		t.Fatalf("read state: %v", err)
 	}

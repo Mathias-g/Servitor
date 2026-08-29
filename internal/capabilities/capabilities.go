@@ -9,10 +9,8 @@
 package capabilities
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 
@@ -21,6 +19,7 @@ import (
 	"github.com/Mathias-g/Servitor/internal/integrations"
 	"github.com/Mathias-g/Servitor/internal/mcp"
 	"github.com/Mathias-g/Servitor/internal/registry"
+	"github.com/Mathias-g/Servitor/internal/secret"
 	"github.com/Mathias-g/Servitor/internal/singer"
 )
 
@@ -41,10 +40,13 @@ type entry struct {
 }
 
 // mechanismGroup is one mechanism group in the index: its nodes and triggers.
+// The `secret-resolution` group (ADR-0036) has no nodes or triggers; it lists
+// the available secret sources instead.
 type mechanismGroup struct {
 	Name     string   `yaml:"name"`
-	Nodes    []string `yaml:"nodes"`
-	Triggers []string `yaml:"triggers"`
+	Nodes    []string `yaml:"nodes,omitempty"`
+	Triggers []string `yaml:"triggers,omitempty"`
+	Sources  []string `yaml:"sources,omitempty"`
 }
 
 // index lists the mechanism groups and the types each contains.
@@ -70,6 +72,9 @@ func Write(dir string) error {
 		return err
 	}
 	if err := writeSecrets(dir); err != nil {
+		return err
+	}
+	if err := writeSecretSources(dir); err != nil {
 		return err
 	}
 	if err := writeTaps(dir); err != nil {
@@ -156,32 +161,47 @@ func writeServers(dir string) error {
 	return nil
 }
 
-// secretEntry is one declared secret and whether it is present. Values are
-// never written; only the name and presence, so the report is safe to commit
-// (SPEC: How an agent discovers integrations).
+// secretEntry is one declared secret and its informational metadata (name,
+// account, permissions, expiry). Values are never written; only names and
+// metadata, so the report is safe to commit (ADR-0035, SPEC: How an agent
+// discovers integrations).
 type secretEntry struct {
-	Name    string `yaml:"name"`
-	Present bool   `yaml:"present"`
+	Name        string   `yaml:"name"`
+	Source      string   `yaml:"source"`
+	Account     string   `yaml:"account,omitempty"`
+	Permissions []string `yaml:"permissions,omitempty"`
+	Expiry      string   `yaml:"expiry,omitempty"`
 }
 
 // secretsReport is the on-disk shape of the secrets report.
 type secretsReport struct {
 	Generated bool          `yaml:"generated"`
-	Note      string        `yaml:"note,omitempty"`
 	Secrets   []secretEntry `yaml:"secrets"`
 }
 
 // writeSecrets writes a secrets.yaml reporting the secrets declared in the
-// varlock schema in the working directory (names and presence only, never
-// values). If varlock is unavailable or load fails, it writes a note instead
-// of failing, so `capabilities` still works without varlock.
+// declared integrations config (ADR-0035) in the working directory (names and
+// metadata, never values).
 func writeSecrets(dir string) error {
 	report := secretsReport{Generated: true}
-	entries, note, err := declaredSecrets()
+	cfg, err := integrations.Load("")
 	if err != nil {
-		report.Note = note
-	} else {
-		report.Secrets = entries
+		return fmt.Errorf("capabilities: load integrations config: %w", err)
+	}
+	names := make([]string, 0, len(cfg.Secrets))
+	for name := range cfg.Secrets {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		s := cfg.Secrets[name]
+		report.Secrets = append(report.Secrets, secretEntry{
+			Name:        name,
+			Source:      s.Source,
+			Account:     s.Account,
+			Permissions: s.Permissions,
+			Expiry:      s.Expiry,
+		})
 	}
 	data, err := yaml.Marshal(report)
 	if err != nil {
@@ -191,40 +211,6 @@ func writeSecrets(dir string) error {
 		return fmt.Errorf("capabilities: write secrets.yaml: %w", err)
 	}
 	return nil
-}
-
-// declaredSecrets queries varlock for the declared secrets in the working
-// directory and returns each name and whether a value is present. It returns a
-// note explaining the absence when varlock is not available or cannot resolve.
-func declaredSecrets() (entries []secretEntry, note string, err error) {
-	if _, lerr := exec.LookPath("varlock"); lerr != nil {
-		return nil, "varlock not available; declared secrets could not be enumerated", lerr
-	}
-	out, cerr := exec.Command("varlock", "load", "--format", "json-full").Output()
-	if cerr != nil {
-		return nil, "varlock load failed; declared secrets could not be enumerated", cerr
-	}
-	var full struct {
-		Config map[string]struct {
-			Value       string `json:"value"`
-			IsSensitive bool   `json:"isSensitive"`
-		} `json:"config"`
-	}
-	if uerr := json.Unmarshal(out, &full); uerr != nil {
-		return nil, "could not parse varlock output", uerr
-	}
-	names := make([]string, 0, len(full.Config))
-	for name, c := range full.Config {
-		if c.IsSensitive {
-			names = append(names, name)
-		}
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		c := full.Config[name]
-		entries = append(entries, secretEntry{Name: name, Present: c.Value != ""})
-	}
-	return entries, "", nil
 }
 
 func writeTypes(dir string) error {
@@ -276,6 +262,59 @@ func writeEntry(dir string, e entry) error {
 	return nil
 }
 
+// secretsSource is one available secret source (a valid `source` value for
+// `secrets.yaml`; ADR-0036). Values never appear.
+type secretsSource struct {
+	Name        string `yaml:"name"`
+	Description string `yaml:"description,omitempty"`
+}
+
+// secretSourcesReport is the on-disk shape of the secret-resolution group's
+// report: the available secret sources a deployment can name as a secret's
+// `source`.
+type secretSourcesReport struct {
+	Generated bool            `yaml:"generated"`
+	Sources   []secretsSource `yaml:"sources"`
+}
+
+// writeSecretSources writes the secret-resolution group's sources.yaml (ADR-0036)
+// under the secret-resolution/ directory, enumerating the available secret
+// sources (providers) for `secrets.yaml`'s `source` field.
+func writeSecretSources(dir string) error {
+	report := secretSourcesReport{Generated: true}
+	for _, name := range secret.DefaultRegistry().SourceNames() {
+		report.Sources = append(report.Sources, secretsSource{Name: name, Description: sourceDescription(name)})
+	}
+	data, err := yaml.Marshal(report)
+	if err != nil {
+		return fmt.Errorf("capabilities: marshal secret sources: %w", err)
+	}
+	groupDir := filepath.Join(dir, "secret-resolution")
+	if err := os.MkdirAll(groupDir, 0o755); err != nil {
+		return fmt.Errorf("capabilities: create secret-resolution: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(groupDir, "sources.yaml"), data, 0o644); err != nil {
+		return fmt.Errorf("capabilities: write secret sources: %w", err)
+	}
+	return nil
+}
+
+func sourceDescription(source string) string {
+	switch source {
+	case "env":
+		return "plain environment: the operator exports the value (dev/testing fallback)"
+	case "varlock":
+		return "varlock pull source: loads the resolved set once, serves per node"
+	case "onbox":
+		return "push-based on-box ciphertext: sealed to the box, decrypted locally (recommended)"
+	default:
+		return ""
+	}
+}
+
+// writeIndex builds index.yaml, listing the mechanism groups and the types
+// each contains. The `secret-resolution` group (ADR-0036) is added with the
+// available secret sources, distinct from the node-capability groups.
 func writeIndex(dir string) error {
 	groups := map[string]*mechanismGroup{}
 	var groupNames []string
@@ -293,12 +332,15 @@ func writeIndex(dir string) error {
 		add(tt.MechanismGroup)
 		groups[tt.MechanismGroup].Triggers = append(groups[tt.MechanismGroup].Triggers, tt.Name)
 	}
+	add("secret-resolution")
+	groups["secret-resolution"].Sources = secret.DefaultRegistry().SourceNames()
 	sort.Strings(groupNames)
 	idx := index{Generated: true}
 	for _, name := range groupNames {
 		mech := groups[name]
 		sort.Strings(mech.Nodes)
 		sort.Strings(mech.Triggers)
+		sort.Strings(mech.Sources)
 		idx.MechanismGroups = append(idx.MechanismGroups, *mech)
 	}
 	data, err := yaml.Marshal(idx)

@@ -1,6 +1,6 @@
 # Ideas
 
-Catch-all for promising directions that are not yet decided or built. These are possibilities, not commitments: nothing here is a plan or a decision, and most of it will be discarded. When an idea becomes a real decision it gets an ADR and moves into the SPEC/PLAN; until then it lives here so it is not lost.
+Catch-all for promising directions that are not yet decided or built. These are possibilities, not commitments: nothing here is a plan or a decision, and most of it will be discarded. When an idea becomes a real decision it gets an ADR (the "why") and its behavior is written into the SPEC (the "what"), and the work moves into PLAN; until then it lives here so it is not lost.
 
 ## Dogfooding: let Servitor publish its own capabilities
 

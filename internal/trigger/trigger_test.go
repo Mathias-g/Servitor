@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Mathias-g/Servitor/internal/honker"
+	"github.com/Mathias-g/Servitor/internal/secret"
 	"github.com/Mathias-g/Servitor/internal/wafer"
 	"github.com/Mathias-g/Servitor/internal/worker"
 )
@@ -43,7 +44,7 @@ func newReceiver(t *testing.T, secrets map[string]string) (*Receiver, *honker.St
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	q := store.Queue("nodes", 30, 3)
-	return NewReceiver(store, q, secrets), store, q
+	return NewReceiver(store, q, secret.ResolverFromMap(secrets)), store, q
 }
 
 const wfYAML = `

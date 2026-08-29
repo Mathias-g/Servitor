@@ -15,8 +15,9 @@ import (
 	"github.com/Mathias-g/Servitor/internal/daemon"
 	"github.com/Mathias-g/Servitor/internal/expression"
 	"github.com/Mathias-g/Servitor/internal/gmail"
+	"github.com/Mathias-g/Servitor/internal/integrations"
 	"github.com/Mathias-g/Servitor/internal/protocol"
-	"github.com/Mathias-g/Servitor/internal/varlock"
+	"github.com/Mathias-g/Servitor/internal/secret"
 	"github.com/Mathias-g/Servitor/internal/wafer"
 )
 
@@ -72,6 +73,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return cmdTap(args[1:], stdout, stderr)
 	case "target":
 		return cmdTarget(args[1:], stdout, stderr)
+	case "secret":
+		return cmdSecret(args[1:], stdout, stderr)
 	case "__transform":
 		// Hidden subprocess entrypoint: the worker runs a `transform` node as
 		// a subprocess of the servitor binary itself (ADR-0008), so every node,
@@ -138,31 +141,15 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
-	// Self-healing launch: if this process was not started under varlock,
-	// exec `varlock run --inject vars -- <self> run` so the runner always
-	// boots with secrets resolved (SPEC: Varlock). SelfHeal replaces the
-	// current process with varlock on success (it does not return), so this
-	// branch only runs when the process was already under varlock, varlock is
-	// absent, or the exec failed.
-	if healed, err := varlock.SelfHeal(); healed {
-		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "servitor: %v\n", err)
-			return exitFailure
-		}
-		return exitOK
-	}
-	if !varlock.Under() && !varlock.Available() {
-		_, _ = fmt.Fprintf(stderr, "servitor: warning: varlock not found on PATH; running without secret resolution (nodes that declare secrets will fail)\n")
-	}
-
 	cfg := daemon.Config{
 		Addr:        addr,
 		DBPath:      dbPath,
 		ExtPath:     os.Getenv("HONKER_EXTENSION_PATH"),
 		WebhookAddr: webhookAddr,
-		// Resolved secrets (from varlock, when present) are exposed to the
-		// daemon; per-node filtering decides what a subprocess may see.
-		Secrets: varlock.ResolvedSecrets(),
+		// The runner resolves secrets per node through the provider built from
+		// the declared secrets config (SPEC: Secret resolution, ADR-0035). The
+		// daemon no longer holds the full secret set or boots under varlock.
+		Resolver: buildResolver(stderr),
 		Started: func(a string) {
 			_, _ = fmt.Fprintf(stdout, "servitor: daemon listening on %s (loopback only, ADR-0009)\n", a)
 		},
@@ -173,6 +160,20 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	}
 	_, _ = fmt.Fprintln(stdout, "servitor: daemon stopped")
 	return exitOK
+}
+
+// buildResolver builds the secret resolver from the declared integrations
+// config (ADR-0035): the compiled-in providers (env, varlock) routed by each
+// declared secret's source. A missing config is an empty (valid) config, so the
+// runner works with nothing declared; nodes that reference an undeclared secret
+// then fail at run time.
+func buildResolver(stderr io.Writer) *secret.Resolver {
+	cfg, err := integrations.Load("")
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: warning: %v; running with no declared secrets\n", err)
+		return secret.NewResolver(secret.DefaultRegistry(), nil)
+	}
+	return secret.NewResolver(secret.DefaultRegistry(), cfg.SecretSources())
 }
 
 func cmdStop(args []string, stdout, stderr io.Writer) int {

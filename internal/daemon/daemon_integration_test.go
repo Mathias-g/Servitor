@@ -18,6 +18,7 @@ import (
 
 	"github.com/Mathias-g/Servitor/internal/honker"
 	"github.com/Mathias-g/Servitor/internal/protocol"
+	"github.com/Mathias-g/Servitor/internal/secret"
 	"github.com/Mathias-g/Servitor/internal/worker"
 )
 
@@ -310,7 +311,7 @@ func TestDaemonWebhookReceiver(t *testing.T) {
 			ExtPath:      ext,
 			WebhookAddr:  whAddr,
 			Workers:      1,
-			Secrets:      map[string]string{"WH_SECRET": "s3cret"},
+			Resolver:     secret.ResolverFromMap(map[string]string{"WH_SECRET": "s3cret"}),
 			DrainTimeout: 2 * time.Second,
 			Started:      func(a string) { started <- a },
 		})
