@@ -1,7 +1,7 @@
 VERSION := $(shell cat VERSION)
 LDFLAGS := -X github.com/Mathias-g/Servitor/internal/app.Version=$(VERSION)
 
-.PHONY: all build test check fmt vet lint clean release
+.PHONY: all build test check e2e fmt vet lint clean release
 
 all: build
 
@@ -14,6 +14,12 @@ test:
 
 fmt:
 	gofmt -w $$(find . -name '*.go' -not -path './.git/*')
+
+# e2e boots the real daemon and runs shell/transform workflows end to end
+# against a scratch SQLite file, verifying the subprocess dispatch works for
+# real (not just in unit tests). Requires HONKER_EXTENSION_PATH.
+e2e:
+	scripts/e2e.sh
 
 vet:
 	go vet ./...

@@ -128,8 +128,12 @@ func FromWafer(w *wafer.Wafer, event map[string]any) (*worker.NodeJob, error) {
 			fj.Downstream = append(fj.Downstream, *rj)
 		}
 	}
-	// Build each job's Downstream from its (now complete) dependents.
-	for j := range jobs {
+	// Build each job's Downstream from its (now complete) dependents, in
+	// reverse run order so a node's Downstream is fully built before an earlier
+	// node copies it. Downstream is copied by value into a parent's list, so
+	// copying a node before its own Downstream is complete would leave a stale
+	// empty list (a switch whose leaf branch never runs) (ADR-0023).
+	for j := len(jobs) - 1; j >= 0; j-- {
 		for _, depID := range jobs[j].Dependents {
 			k := idxByName[depID]
 			jobs[j].Downstream = append(jobs[j].Downstream, *jobs[k])

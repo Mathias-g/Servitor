@@ -378,3 +378,49 @@ nodes:
 		t.Fatalf("summarize collect = %+v, want CollectFrom=process_one CollectName=fan", sum)
 	}
 }
+
+func TestFromWaferSwitchCarriesLeafDownstream(t *testing.T) {
+	w, err := wafer.Parse([]byte(`
+name: sw
+triggers: []
+nodes:
+  - type: transform
+    name: normalize
+    expression: '{"value": 42}'
+  - type: switch
+    name: route
+    depends_on: [normalize]
+    expression: "steps.normalize.value > 10 ? 'high' : 'low'"
+    cases:
+      high: report
+      low: report
+  - type: shell
+    name: report
+    depends_on: [route]
+    command: "printf '{\"ok\":true}'"
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	head, err := FromWafer(w, nil)
+	if err != nil {
+		t.Fatalf("FromWafer: %v", err)
+	}
+	// head = normalize; normalize.Downstream[0] = route.
+	route := head.Downstream[0]
+	if route.NodeID != "route" {
+		t.Fatalf("second node = %q, want route", route.NodeID)
+	}
+	if len(route.Dependents) != 1 || route.Dependents[0] != "report" {
+		t.Fatalf("route dependents = %v, want [report]", route.Dependents)
+	}
+	if len(route.Downstream) != 1 || route.Downstream[0].NodeID != "report" {
+		t.Fatalf("route downstream = %d (first=%q), want 1 report job", len(route.Downstream),
+			func() string {
+				if len(route.Downstream) > 0 {
+					return route.Downstream[0].NodeID
+				}
+				return ""
+			}())
+	}
+}
