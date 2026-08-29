@@ -63,7 +63,7 @@ func TestWaferSchema(t *testing.T) {
 	if !ok {
 		t.Fatal("wafer schema missing properties")
 	}
-	for _, key := range []string{"name", "on", "nodes"} {
+	for _, key := range []string{"name", "triggers", "nodes"} {
 		if _, ok := props[key]; !ok {
 			t.Fatalf("wafer schema missing property %q", key)
 		}
@@ -71,7 +71,7 @@ func TestWaferSchema(t *testing.T) {
 }
 
 func TestRolesSeparateTriggerFromNode(t *testing.T) {
-	// A trigger capability (email_received) is valid under `on:` but not
+	// A trigger capability (email_received) is valid under `trigger:` but not
 	// under `nodes:`.
 	if LookupTrigger("email_received") == nil {
 		t.Fatal("email_received should be trigger-usable")
@@ -79,7 +79,7 @@ func TestRolesSeparateTriggerFromNode(t *testing.T) {
 	if LookupNode("email_received") != nil {
 		t.Fatal("email_received should not be node-usable")
 	}
-	// An action node (http) is valid under `nodes:` but not `on:`.
+	// An action node (http) is valid under `nodes:` but not `trigger:`.
 	if LookupNode("http") == nil {
 		t.Fatal("http should be node-usable")
 	}

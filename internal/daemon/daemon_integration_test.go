@@ -120,7 +120,7 @@ func freePort(t *testing.T) string {
 
 const wfShellYAML = `
 name: demo
-on:
+triggers:
   - type: manual
 nodes:
   - type: shell
@@ -202,7 +202,7 @@ func TestDaemonSubmitAndManual(t *testing.T) {
 
 const wfInternalUpstreamYAML = `
 name: up
-on:
+triggers:
   - type: manual
 nodes:
   - type: shell
@@ -212,8 +212,8 @@ nodes:
 
 const wfInternalDownstreamYAML = `
 name: down
-on:
-  - type: internal
+triggers:
+  - type: completed
     workflow: up
 nodes:
   - type: shell
@@ -394,7 +394,7 @@ func TestDaemonWebhookReceiver(t *testing.T) {
 
 const wfWebhookYAML = `
 name: demo
-on:
+triggers:
   - type: standard_webhook
     path: /hooks/demo
     secret: WH_SECRET
@@ -498,7 +498,7 @@ func TestDaemonRunsAndCancel(t *testing.T) {
 
 const wfManualYAML = `
 name: demo
-on:
+triggers:
   - type: manual
 nodes:
   - type: shell
@@ -557,7 +557,7 @@ func TestDaemonUpdate(t *testing.T) {
 
 const wfCronYAML = `
 name: cron-demo
-on:
+triggers:
   - type: cron
     schedule: "*/5 * * * *"
 nodes:
@@ -634,7 +634,7 @@ func TestDaemonCronRegistration(t *testing.T) {
 
 const wfEmailYAML = `
 name: mail-demo
-on:
+triggers:
   - type: email_received
     host: imap.gmail.com
     username: me@company.com

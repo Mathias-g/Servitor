@@ -16,7 +16,7 @@ Servitor is an opinionated take: a small, code-first, agent-friendly workflow ru
 
 Most workflow tools were designed for humans clicking through a builder, with an API bolted on. An agent using such a tool is a second-class citizen: it has to reverse-engineer what the UI assumes, guess at validation rules, and recover from opaque errors. Servitor is designed for agents first:
 
-- **The artifact is the Wafer, not a database row.** A Wafer is the YAML file that defines a whole workflow: triggers (`on:`) that start the run and nodes (`nodes:`) that do the work. Every capability is a trigger, an action node (does work), or a flow node (routes or fans out). Agents read, write, diff, and version-control the same file a human would; there is no "form state" the agent can't see.
+- **The artifact is the Wafer, not a database row.** A Wafer is the YAML file that defines a whole workflow: triggers (`triggers:`) that start the run and nodes (`nodes:`) that do the work. Every capability is a trigger, an action node (does work), or a flow node (routes or fans out). Agents read, write, diff, and version-control the same file a human would; there is no "form state" the agent can't see.
 - **Capability discovery is a first-class operation.** `servitor capabilities` returns every capability (trigger, action node, or flow node, with its role and delivery), every declared secret, and every Singer tap available, each with its JSON Schema and an example rendered from that schema. An agent never has to guess what fields a node takes.
 - **Validation errors are structured, not stringified.** Errors come back as JSON with paths, codes, and suggestions, so a typo like `type: slak` is flagged as `unknown_node_type` with `suggestion: slack`, the way an IDE would catch it.
 - **Dry-run is a real primitive.** `servitor dry-run` resolves the entire workflow and shows the DAG the runner *would* execute, and warns when a declared secret is missing from the environment. Nothing runs, nothing is persisted.
@@ -30,7 +30,7 @@ A workflow is a YAML file (a Wafer) declaring triggers (what causes it to run) a
 
 ```yaml
 name: notify_on_new_lead
-on:
+triggers:
   grist_webhook:
     table: Leads
     event: row_added

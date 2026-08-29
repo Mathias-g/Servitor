@@ -107,7 +107,7 @@ func writeTemp(t *testing.T, content string) string {
 func TestDryRunReadablePlan(t *testing.T) {
 	path := writeTemp(t, `
 name: demo
-on:
+triggers:
   - type: cron
     schedule: "0 * * * *"
 nodes:

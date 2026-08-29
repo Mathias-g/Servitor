@@ -37,7 +37,7 @@ func openStore(t *testing.T) *honker.Store {
 
 const shellYAML = `
 name: demo
-on:
+triggers:
   - type: cron
     schedule: "@every 1s"
 nodes:
@@ -83,7 +83,7 @@ func TestFromWaferBuildsChain(t *testing.T) {
 func TestFromWaferRejectsUnsupportedType(t *testing.T) {
 	w, err := wafer.Parse([]byte(`
 name: demo
-on: []
+triggers: []
 nodes:
   - type: branch
     when: "x"
@@ -99,7 +99,7 @@ nodes:
 func TestFromWaferCarriesDeclaredSecrets(t *testing.T) {
 	w, err := wafer.Parse([]byte(`
 name: demo
-on: []
+triggers: []
 nodes:
   - type: shell
     name: a
@@ -194,7 +194,7 @@ func TestRegisterCronFiresIntoQueue(t *testing.T) {
 func TestTransformCommandWiresSelfInvocation(t *testing.T) {
 	w, err := wafer.Parse([]byte(`
 name: demo
-on: []
+triggers: []
 nodes:
   - type: transform
     name: t
@@ -223,7 +223,7 @@ nodes:
 func TestFromWaferCarriesDedupeKeyExpression(t *testing.T) {
 	w, err := wafer.Parse([]byte(`
 name: demo
-on: []
+triggers: []
 nodes:
   - type: shell
     name: a
@@ -245,7 +245,7 @@ nodes:
 func TestFromWaferBuildsSwitchDAG(t *testing.T) {
 	w, err := wafer.Parse([]byte(`
 name: demo
-on: []
+triggers: []
 nodes:
   - type: transform
     name: check
@@ -332,7 +332,7 @@ func nodeDependsOn(t *testing.T, route *worker.NodeJob, deps ...string) bool {
 func TestFromWaferBuildsForeachDAG(t *testing.T) {
 	w, err := wafer.Parse([]byte(`
 name: demo
-on: []
+triggers: []
 nodes:
   - type: transform
     name: fetch_ids

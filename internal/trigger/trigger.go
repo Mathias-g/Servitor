@@ -177,14 +177,14 @@ func (r *Receiver) Manual(ctx context.Context, name string, inputs map[string]an
 	return nil
 }
 
-// Internal fires a registered, enabled workflow whose `internal` trigger names
-// the workflow that just completed (SPEC: `internal` trigger). The event passed
-// to the downstream run records which workflow and run completed. A workflow
-// whose `internal` trigger names another workflow is left untouched.
-func (r *Receiver) Internal(completedWorkflow, completedRun string) error {
+// Completed fires a registered, enabled workflow whose `completed` trigger
+// names the workflow that just completed (SPEC: `completed` trigger). The event
+// passed to the downstream run records which workflow and run completed. A
+// workflow whose `completed` trigger names another workflow is left untouched.
+func (r *Receiver) Completed(completedWorkflow, completedRun string) error {
 	workflows, err := r.store.ListWorkflows()
 	if err != nil {
-		return fmt.Errorf("trigger: internal list workflows: %w", err)
+		return fmt.Errorf("trigger: completed list workflows: %w", err)
 	}
 	for _, wf := range workflows {
 		if !wf.Enabled {
@@ -195,7 +195,7 @@ func (r *Receiver) Internal(completedWorkflow, completedRun string) error {
 			continue
 		}
 		for _, tr := range w.On {
-			if tr.Type != "internal" {
+			if tr.Type != "completed" {
 				continue
 			}
 			upstream, _ := tr.Config["workflow"].(string)
@@ -203,13 +203,13 @@ func (r *Receiver) Internal(completedWorkflow, completedRun string) error {
 				continue
 			}
 			event := map[string]any{
-				"trigger":  "internal",
+				"trigger":  "completed",
 				"from":     completedWorkflow,
 				"from_run": completedRun,
 			}
-			runID := fmt.Sprintf("%s-internal-%d", w.Name, r.now().UnixNano())
+			runID := fmt.Sprintf("%s-completed-%d", w.Name, r.now().UnixNano())
 			if _, err := runner.StartRun(r.store, r.queue, w, event, runID); err != nil {
-				return fmt.Errorf("trigger: internal %q: %w", w.Name, err)
+				return fmt.Errorf("trigger: completed %q: %w", w.Name, err)
 			}
 		}
 	}

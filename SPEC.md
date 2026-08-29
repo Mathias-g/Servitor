@@ -41,7 +41,7 @@ Most workflow tools were designed for humans clicking through a builder, with an
 
 Designing for agents first changes specific decisions:
 
-- **The artifact is the Wafer, not a database row.** A Wafer is the YAML file that defines a whole workflow: triggers (`on:`) that start the run and nodes (`nodes:`) that do the work. Agents read, write, diff, and version-control the same file a human would. There is no "form state" living somewhere the agent can't see.
+- **The artifact is the Wafer, not a database row.** A Wafer is the YAML file that defines a whole workflow: triggers (`triggers:`) that start the run and nodes (`nodes:`) that do the work. Agents read, write, diff, and version-control the same file a human would. There is no "form state" living somewhere the agent can't see.
 - **Capability discovery is a first-class operation.** `servitor capabilities` returns every capability (trigger, action node, or flow node, with its role and delivery), every declared secret, and every Singer tap available, each with its JSON Schema and an example rendered from that schema. An agent never has to guess what fields a node takes.
 - **Validation errors are structured, not stringified.** Errors are returned as JSON with paths, codes, and suggestions. An agent that submits a workflow with `type: slak` gets back an `unknown_node_type` error with `suggestion: slack`, the way an IDE would flag the typo. (See the Structured validation errors section for the full shape.)
 - **Dry-run is a real primitive.** `servitor dry-run` resolves the entire workflow and returns the DAG the runner *would* execute. No nodes run, no external services are contacted, nothing is persisted. It reports the workflow's declared secret names (redacted, never values) and warns with a `missing_secret` code when one is not resolvable by the configured provider, so an agent can verify structure, secret availability, and node configuration before committing.
@@ -64,7 +64,7 @@ Example Wafer:
 
 ```yaml
 name: notify_on_new_lead
-on:
+triggers:
   grist_webhook:
     table: Leads
     event: row_added
@@ -73,7 +73,6 @@ nodes:
     type: slack
     action: post_message
     channel: "#sales"
-    text: "New lead: ${trigger.payload.fields.name}"
 ```
 
 That's it. Submit it via CLI, enable it, and the next time a row is added to your Grist `Leads` table, a Slack message goes out.
@@ -299,7 +298,7 @@ react. Invalidity is handled reactively, on failure rather than on a schedule:
   exhausted, the node fails with a distinct error (`secret_auth_failed`,
   distinct from `missing_secret`) in the same structured `path`/`code` shape as
   other node errors, written to the run's log, and emitted as an event a
-  workflow can trigger on (reusing the `internal` trigger's completion-callback
+  workflow can trigger on (reusing the `completed` trigger's completion-callback
   plumbing), so the operator can wire up their own notification.
 
 The three failure semantics a provider can return are not handled the same way:
@@ -385,7 +384,7 @@ Agents learn the CLI from a shipped `SKILL.md`, the command reference that teach
 
 ## The Wafer
 
-A Wafer declares a workflow's triggers and nodes. A **trigger** (under `on:`)
+A Wafer declares a workflow's triggers and nodes. A **trigger** (under `triggers:`)
 starts the run; it is not a node. The **nodes** (under `nodes:`) are what the
 workflow does, all part of the run's DAG. Every capability is one of three
 things: a trigger, an action node, or a flow node. An **action node** (for
@@ -428,7 +427,7 @@ The integrations themselves are declared in a local `servitor.integrations.yaml`
 - *(more per-service trigger types as integrations are added)*
 - `cron`. Honker scheduler.
 - `manual`. Invoked via CLI.
-- `internal`. Fired by another workflow's completion. Its `workflow` field names the workflow whose completion fires it; the run's event is `{trigger: "internal", from: <workflow name>, from_run: <completed run id>}`.
+- `completed`. Fired by another workflow's completion. Its `workflow` field names the workflow whose completion fires it; the run's event is `{trigger: "completed", from: <workflow name>, from_run: <completed run id>}`.
 
 #### Using webhook triggers
 
@@ -554,7 +553,7 @@ actions/triggers via `servitor capabilities`.
 1. **Trigger fires.** A webhook arrives, a cron fires, or someone calls `servitor trigger`.
 2. **Event is persisted.** The raw event is written to Honker before any matching happens. Failed events, orphan events, and crash-survival all benefit from this.
 3. **Signature verification.** The receiver verifies the signature against the relevant secret, resolved per use from the provider, in the parent process.
-4. **Workflow matching.** The runner finds workflows whose `on:` block matches the event.
+4. **Workflow matching.** The runner finds workflows whose `trigger:` block matches the event.
 5. **Run enqueued.** A workflow run is created in Honker with the event payload as input. The run's initial node(s) are enqueued in the same transaction.
 6. **Workers claim and execute.** A node executor in the parent process claims a job and checks the node's `dedupe_key` against the dedupe table. It spawns a subprocess with a filtered env containing only the secrets the node declared (every node runs as a subprocess; ADR-0008).
 7. **Node runs.** Node types dispatch to handlers: HTTP, shell, transform, Singer tap, Singer target, integration helpers, and the flow nodes `switch` (route to one branch) and `foreach` (fan a body out over a list). A node writes its result as structured JSON to stdout and exits. A `switch` and `foreach` resolve their decision in a subprocess and then route: the worker fans out the chosen branch / body iterations through the dependency counters (ADR-0022, ADR-0024).

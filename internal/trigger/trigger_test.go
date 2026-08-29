@@ -49,7 +49,7 @@ func newReceiver(t *testing.T, secrets map[string]string) (*Receiver, *honker.St
 
 const wfYAML = `
 name: demo
-on:
+triggers:
   - type: standard_webhook
     path: /hooks/demo
     secret: WEBHOOK_SECRET
@@ -222,7 +222,7 @@ func TestManualTriggersWorkflow(t *testing.T) {
 	r, store, q := newReceiver(t, map[string]string{})
 	register(t, store, `
 name: m
-on:
+triggers:
   - type: manual
 nodes:
   - type: shell
@@ -265,7 +265,7 @@ func TestGithubWebhookVerifiesAndEnqueues(t *testing.T) {
 	r, store, q := newReceiver(t, map[string]string{"GITHUB_SECRET": "ghsecret"})
 	register(t, store, `
 name: gh
-on:
+triggers:
   - type: github_webhook
     path: /hooks/github
     secret: GITHUB_SECRET
@@ -292,7 +292,7 @@ func TestGithubWebhookRejectsBadSignature(t *testing.T) {
 	r, store, q := newReceiver(t, map[string]string{"GITHUB_SECRET": "ghsecret"})
 	register(t, store, `
 name: gh
-on:
+triggers:
   - type: github_webhook
     path: /hooks/github
     secret: GITHUB_SECRET
@@ -319,7 +319,7 @@ func TestSlackWebhookVerifiesAndEnqueues(t *testing.T) {
 	r, store, q := newReceiver(t, map[string]string{"SLACK_SECRET": "slacksecret"})
 	register(t, store, `
 name: sl
-on:
+triggers:
   - type: slack_event
     path: /hooks/slack
     secret: SLACK_SECRET
@@ -348,7 +348,7 @@ func TestSlackUrlVerificationEchoesChallenge(t *testing.T) {
 	r, store, q := newReceiver(t, map[string]string{"SLACK_SECRET": "slacksecret"})
 	register(t, store, `
 name: sl
-on:
+triggers:
   - type: slack_event
     path: /hooks/slack
     secret: SLACK_SECRET
@@ -387,7 +387,7 @@ func TestSlackRejectsStaleTimestamp(t *testing.T) {
 	r, store, q := newReceiver(t, map[string]string{"SLACK_SECRET": "slacksecret"})
 	register(t, store, `
 name: sl
-on:
+triggers:
   - type: slack_event
     path: /hooks/slack
     secret: SLACK_SECRET
@@ -412,11 +412,11 @@ nodes:
 	}
 }
 
-func TestInternalFiresDownstreamWorkflow(t *testing.T) {
+func TestCompletedFiresDownstreamWorkflow(t *testing.T) {
 	r, store, q := newReceiver(t, map[string]string{})
 	register(t, store, `
 name: upstream
-on:
+triggers:
   - type: manual
 nodes:
   - type: shell
@@ -425,16 +425,16 @@ nodes:
 `)
 	register(t, store, `
 name: downstream
-on:
-  - type: internal
+triggers:
+  - type: completed
     workflow: upstream
 nodes:
   - type: shell
     name: a
     command: "true"
 `)
-	if err := r.Internal("upstream", "run-1"); err != nil {
-		t.Fatalf("Internal: %v", err)
+	if err := r.Completed("upstream", "run-1"); err != nil {
+		t.Fatalf("Completed: %v", err)
 	}
 	job, err := q.ClaimOne("worker-1")
 	if err != nil || job == nil {
@@ -448,37 +448,37 @@ nodes:
 		t.Fatalf("enqueued workflow = %q, want downstream", sj.WorkflowID)
 	}
 	ev := sj.Input["event"].(map[string]any)
-	if ev["trigger"] != "internal" || ev["from"] != "upstream" || ev["from_run"] != "run-1" {
-		t.Fatalf("event = %v, want internal/upstream/run-1", ev)
+	if ev["trigger"] != "completed" || ev["from"] != "upstream" || ev["from_run"] != "run-1" {
+		t.Fatalf("event = %v, want completed/upstream/run-1", ev)
 	}
 }
 
-func TestInternalIgnoresOtherWorkflow(t *testing.T) {
+func TestCompletedIgnoresOtherWorkflow(t *testing.T) {
 	r, store, q := newReceiver(t, map[string]string{})
 	register(t, store, `
 name: downstream
-on:
-  - type: internal
+triggers:
+  - type: completed
     workflow: upstream
 nodes:
   - type: shell
     name: a
     command: "true"
 `)
-	if err := r.Internal("other-workflow", "run-1"); err != nil {
-		t.Fatalf("Internal: %v", err)
+	if err := r.Completed("other-workflow", "run-1"); err != nil {
+		t.Fatalf("Completed: %v", err)
 	}
 	if job, _ := q.ClaimOne("worker-1"); job != nil {
 		t.Fatal("run enqueued for a workflow naming a different upstream")
 	}
 }
 
-func TestInternalSkipsDisabledWorkflow(t *testing.T) {
+func TestCompletedSkipsDisabledWorkflow(t *testing.T) {
 	r, store, q := newReceiver(t, map[string]string{})
 	register(t, store, `
 name: downstream
-on:
-  - type: internal
+triggers:
+  - type: completed
     workflow: upstream
 nodes:
   - type: shell
@@ -488,8 +488,8 @@ nodes:
 	if err := store.SetWorkflowEnabled("downstream", false); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
-	if err := r.Internal("upstream", "run-1"); err != nil {
-		t.Fatalf("Internal: %v", err)
+	if err := r.Completed("upstream", "run-1"); err != nil {
+		t.Fatalf("Completed: %v", err)
 	}
 	if job, _ := q.ClaimOne("worker-1"); job != nil {
 		t.Fatal("run enqueued for a disabled workflow")
@@ -500,7 +500,7 @@ func TestEmailReceivedFiresRunPerEmail(t *testing.T) {
 	r, store, q := newReceiver(t, map[string]string{})
 	register(t, store, `
 name: mail
-on:
+triggers:
   - type: email_received
     host: imap.gmail.com
     username: me@company.com
@@ -549,7 +549,7 @@ func TestEmailReceivedSkipsDisabledWorkflow(t *testing.T) {
 	r, store, q := newReceiver(t, map[string]string{})
 	register(t, store, `
 name: mail
-on:
+triggers:
   - type: email_received
     host: imap.gmail.com
     username: me@company.com
@@ -574,7 +574,7 @@ func TestPolledUnknownKindPassesItemThrough(t *testing.T) {
 	r, store, q := newReceiver(t, map[string]string{})
 	register(t, store, `
 name: feed
-on:
+triggers:
   - type: poll
     kind: rss
     schedule: "*/5 * * * *"

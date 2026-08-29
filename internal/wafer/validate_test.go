@@ -17,7 +17,7 @@ func mustJSON(t *testing.T, res Result) string {
 func TestValidWafer(t *testing.T) {
 	doc := []byte(`
 name: my-workflow
-on:
+triggers:
   - type: cron
     schedule: "0 * * * *"
 nodes:

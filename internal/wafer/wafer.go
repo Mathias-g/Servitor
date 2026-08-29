@@ -66,8 +66,8 @@ func fromRaw(raw map[string]any) (*Wafer, error) {
 	if name, ok := raw["name"].(string); ok {
 		w.Name = name
 	}
-	if on, ok := raw["on"].([]any); ok {
-		for _, t := range on {
+	if trigs, ok := raw["triggers"].([]any); ok {
+		for _, t := range trigs {
 			m, ok := t.(map[string]any)
 			if !ok {
 				continue

@@ -47,7 +47,7 @@ func newTestServer(t *testing.T) *protocol.Client {
 
 const validWafer = `
 name: wf
-on:
+triggers:
   - type: manual
 nodes:
   - type: shell
@@ -104,7 +104,7 @@ func TestSubmitRejectsUndeclaredSecret(t *testing.T) {
 
 	wf := `
 name: wf
-on:
+triggers:
   - type: manual
 nodes:
   - type: shell
@@ -121,7 +121,7 @@ nodes:
 	// A Wafer referencing a declared secret submits fine.
 	ok := `
 name: wf
-on:
+triggers:
   - type: manual
 nodes:
   - type: shell

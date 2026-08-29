@@ -155,7 +155,7 @@ type Config struct {
 	MCP MCPRunner
 	// OnRunComplete, if set, is called after a run transitions to completed
 	// (pending reaches zero). It lets the caller fire downstream work, such as
-	// the `internal` trigger (SPEC: `internal` trigger), without coupling the
+	// the `completed` trigger (SPEC: `completed` trigger), without coupling the
 	// worker to the runner or trigger packages.
 	OnRunComplete func(workflowID, runID string)
 	// OnPoll, if set, is called when a `poll` node returns new items (ADR-0027).

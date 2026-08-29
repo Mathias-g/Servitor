@@ -152,7 +152,7 @@ A secret can become invalid at any time, whether it is in active use or idle: it
 - A node whose auth fails (a 401/403, a dropped or rejected connection) fails and reports it to the daemon. The daemon respawns the node's subprocess with a freshly resolved secret, up to the configured retry count. Each retry is a new subprocess spawn with a new resolve; the failed subprocess's value dies with it (the invariant). If the store value rotated, a fresh resolve gets the new one and the retried request succeeds.
 
    This composes safely with `dedupe_key` only under a contract we must record: a node's secret-authenticating call is its first outbound call and fails before any side effect. If auth were hit only on a later call, a retry could redo a side effect the failed subprocess already caused, which is exactly what `dedupe_key` exists to guard against. So the contract is that the auth failure precedes any side effect; retries then never redo one, and a side-effecting node still declares `dedupe_key` as a belt-and-suspenders guard.
-- Retries are bounded: a configured number of attempts before the node fails, so a genuinely bad secret does not loop forever. Initially this is a single global default in the servitor config (for example `secret_retry_count: 3`), applied to all nodes; a per-node or per-secret override can come later if it is ever needed. When retries are exhausted, the node fails with a distinct error, visible in `servitor run <id>` with the same structured `path`/`code` shape as other node errors (a code like `secret_auth_failed`, distinct from `missing_secret`), and written to the run's log. That failure is also emitted as an event a workflow can trigger on, reusing the `internal` trigger's completion-callback plumbing (ADR-0026), so the operator can wire up their own notification through whatever integration they choose: a Slack message, a text, an email, or anything else. The failed-secret event is not a hardcoded notification; it is just another event an agent can react to.
+- Retries are bounded: a configured number of attempts before the node fails, so a genuinely bad secret does not loop forever. Initially this is a single global default in the servitor config (for example `secret_retry_count: 3`), applied to all nodes; a per-node or per-secret override can come later if it is ever needed. When retries are exhausted, the node fails with a distinct error, visible in `servitor run <id>` with the same structured `path`/`code` shape as other node errors (a code like `secret_auth_failed`, distinct from `missing_secret`), and written to the run's log. That failure is also emitted as an event a workflow can trigger on, reusing the `completed` trigger's completion-callback plumbing (ADR-0026), so the operator can wire up their own notification through whatever integration they choose: a Slack message, a text, an email, or anything else. The failed-secret event is not a hardcoded notification; it is just another event an agent can react to.
 
 The three failure semantics a provider can return (piece 1) are not all the same, so they are not handled the same way:
 
@@ -259,7 +259,7 @@ Open questions to settle if this moves toward a decision:
 
 ### Wafers as a diagram
 
-A first-class feature of the app should be rendering Wafers as a visual diagram, the way people are used to seeing workflows on Zapier or similar, built on an existing open-source graph/diagram library rather than from scratch. A Wafer is already a dependency DAG (ADR-0023), so it maps naturally onto a node graph: triggers (the `on:` entries) at the top, steps as nodes, edges for `depends_on`, and the branch/loop structure for `switch` and `foreach`.
+A first-class feature of the app should be rendering Wafers as a visual diagram, the way people are used to seeing workflows on Zapier or similar, built on an existing open-source graph/diagram library rather than from scratch. A Wafer is already a dependency DAG (ADR-0023), so it maps naturally onto a node graph: triggers (the `triggers:` entries) at the top, steps as nodes, edges for `depends_on`, and the branch/loop structure for `switch` and `foreach`.
 
 Two tiers, in order of priority:
 
@@ -287,7 +287,7 @@ A durable `wait` flow node so a run can pause mid-way and resume much later, wit
 A `wait` node with two sources:
 
 - `wait.timer`: resume after a duration or at a cron time. Honker's scheduler is already durable in the same SQLite file and survives restarts, so a one-shot "resume at T" job is the natural mechanism.
-- `wait.signal`: resume when an external event arrives, via one of several reuse paths: a per-run resume webhook (existing webhook receiver + varlock secret), extending the `internal` trigger (which today only *starts* a run) to *resume* a parked run id, and/or `servitor resume <run-id> [payload]` for manual/human input.
+- `wait.signal`: resume when an external event arrives, via one of several reuse paths: a per-run resume webhook (existing webhook receiver + varlock secret), extending the `completed` trigger (which today only *starts* a run) to *resume* a parked run id, and/or `servitor resume <run-id> [payload]` for manual/human input.
 
 ### Why the code already supports it
 
@@ -313,7 +313,7 @@ Suspend is between nodes only, never inside arbitrary code. Compute still runs t
 
 Open questions:
 
-- Whether the resume wake-up path is webhook, `internal` trigger, CLI, or some combination, and how the one-shot resume key is scoped.
+- Whether the resume wake-up path is webhook, `completed` trigger, CLI, or some combination, and how the one-shot resume key is scoped.
 - Whether `wait.timer` uses the existing Honker scheduler or a dedicated delayed-queue construct.
 - How parked runs interact with graceful shutdown / drain (a parked run holds no live work, so it should be trivially drain-safe, but worth confirming).
 

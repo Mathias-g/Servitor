@@ -87,9 +87,9 @@ func validateValue(raw any) Result {
 		res.Errors = append(res.Errors, Issue{Path: "/name", Code: codeTypeMismatch, Message: "field 'name' must be a string", Expected: "string"})
 	}
 
-	// on (optional list of triggers).
-	if on, present := root["on"]; present {
-		res.validateTriggers(on)
+	// trigger (optional list of triggers).
+	if trigs, present := root["triggers"]; present {
+		res.validateTriggers(trigs)
 	}
 
 	// nodes (required, non-empty).

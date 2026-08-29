@@ -297,7 +297,7 @@ var types = []*Capability{
 		Fields:         map[string]*Field{},
 	},
 	{
-		Name:           "internal",
+		Name:           "completed",
 		Desc:           "Fired by another workflow's completion.",
 		Role:           RoleTrigger,
 		Delivery:       DeliveryEvent,

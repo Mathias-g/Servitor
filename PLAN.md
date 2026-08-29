@@ -23,7 +23,7 @@ Everything else runs inside the daemon and is reached through the control protoc
 
 The artifact. Everything else reads, validates, and executes Wafers.
 
-- [x] A Go representation of the Wafer (name, `on:` triggers, `nodes:`).
+- [x] A Go representation of the Wafer (name, `triggers:` triggers, `nodes:`).
 - [x] The JSON Schema for the Wafer format, and per-node and per-trigger JSON Schemas (generated from the registry; surfaced to agents by `capabilities` in Phase 3).
 - [x] Structured validation: errors returned with `path` (JSON Pointer), stable `code`, and `suggestion`; multiple errors at once; `warnings` for things like a side-effecting node missing `dedupe_key` (SPEC: Structured validation errors).
 
@@ -77,10 +77,10 @@ Inbound events.
 
 - [x] HTTP receiver bound for webhooks, signature verification (Standard Webhooks + generic HMAC). Provider-specific receivers (grist/github/slack/atomic/email) are deferred.
 - [x] Event persisted before matching; run enqueued with the event payload as input.
-- [x] Trigger types: `http_webhook`, `standard_webhook`, `cron`, `manual`. Provider-specific types and `internal` are deferred; registration (`submit`/`enable`/`disable`) and manual `trigger` are wired through the control plane.
+- [x] Trigger types: `http_webhook`, `standard_webhook`, `cron`, `manual`. Provider-specific types and `completed` are deferred; registration (`submit`/`enable`/`disable`) and manual `trigger` are wired through the control plane.
 - [x] **Cron triggers wired.** Submitting or enabling a workflow with a `cron` trigger registers a scheduled task on the Honker scheduler; disabling or updating unregisters it. A `cron` trigger fires on its schedule.
 
-**Done when:** a signed webhook is verified, the event persisted, the workflow matched, and a run enqueued. (Done for `standard_webhook`/`http_webhook`/`cron`/`manual`/`internal`; provider-specific and `email_received` remain.)
+**Done when:** a signed webhook is verified, the event persisted, the workflow matched, and a run enqueued. (Done for `standard_webhook`/`http_webhook`/`cron`/`manual`/`completed`; provider-specific and `email_received` remain.)
 
 ## Phase 8: Varlock integration
 
@@ -154,7 +154,7 @@ Secrets (SPEC: Secret resolution, ADR-0032, ADR-0033, ADR-0034, ADR-0035, ADR-00
 - [x] **Declared secrets config + `servitor secret` CLI** (ADR-0035): a `secrets:` section in `servitor.integrations.yaml` (name + source required; account, permissions, expiry optional), managed by `servitor secret add/list/remove`. A secret referenced by a Wafer but not declared refuses to submit/run; declared-but-unused warns.
 - [x] **Capabilities surface** (ADR-0035, ADR-0036): `capabilities` renders `secrets.yaml` (name + account + permissions + expiry, never values) and the `secret-resolution` mechanism group enumerating the available secret sources (the valid `source` values).
 - [x] **Secret invalidity and rotation** (SPEC: Secret invalidity and rotation): reactive retry on auth failure with a fresh resolve (bounded, global `secret_retry_count` default); source-unreachable retries with backoff; secret-missing fails fast; the webhook signing key is verify-only, resolved per use, with no rollover window. (The resume-from-failure modes and the failed-secret event are their own tasks below.)
-- [ ] **Failed-secret event emission** (SPEC: Secret invalidity and rotation): when a secret-authenticated node fails after retries are exhausted, emit an event a workflow can trigger on (reusing the `internal` trigger's completion-callback plumbing) so the operator can wire their own notification. Not idea-blocked, but it depends on the broader run-failure-resolution path (a failed node's run currently does not transition to `failed` or fire the completion callback); build that general resolution together with it.
+- [ ] **Failed-secret event emission** (SPEC: Secret invalidity and rotation): when a secret-authenticated node fails after retries are exhausted, emit an event a workflow can trigger on (reusing the `completed` trigger's completion-callback plumbing) so the operator can wire their own notification. Not idea-blocked, but it depends on the broader run-failure-resolution path (a failed node's run currently does not transition to `failed` or fire the completion callback); build that general resolution together with it.
 - [ ] **Resume-from-failure modes** (SPEC: Secret invalidity and rotation): how "run it again" after a supplied secret behaves, settable globally in the servitor config and per Wafer with a CLI override: `continue` (resume from the failed node), `restart` (re-run from the top, safe only when side-effecting nodes declare `dedupe_key`), `discard` (drop the failed run). **Blocked on the "Suspended waits" idea** (IDEAS.md): these reuse that idea's suspend/resume machinery (a continuation holds the next node's `{event, steps}` input; resuming re-enqueues it), which is not yet in the SPEC/PLAN. Implement this when "Suspended waits" is worked into the SPEC/PLAN.
 
 **Done when:** a node's secret is resolved per node at spawn and dies with its subprocess, the daemon no longer holds the full set or boots under varlock, an agent discovers the available secret sources and names via `capabilities`/`secrets.yaml`, and secret invalidity/rotation behaves per the SPEC. (The resume-from-failure modes and the failed-secret event are separate tasks above and are not part of this phase's done-when.)
@@ -190,7 +190,7 @@ SPEC/PLAN, this task becomes buildable and is picked up then.
 - [x] **Provider-specific webhook receivers (GitHub, Slack).** `github_webhook` verifies HMAC-SHA256 in `X-Hub-Signature-256`; `slack_event` verifies HMAC-SHA256 over `v0:<timestamp>:<body>` in `X-Slack-Signature` with a replay-bounding timestamp window, and answers Slack's `url_verification` handshake.
 - [ ] **Provider-specific webhook receivers (Grist, Atomic).** `grist_webhook` and `atomic_event` are registered as types but `isWebhookType` does not serve them, so they cannot match inbound events yet. Note: Grist's current webhooks authenticate with a static `Authorization` header, not an HMAC, so its receiver needs the scheme clarified before building.
 - [x] **`email_received` trigger (Google Workspace).** Polls a mailbox via a gmail helper subprocess (ADR-0027): the trigger carries `host`/`username`/`secret`/`poll`, a scheduled poll runs the hidden `__email_poll` command, and the daemon fans out one run per new email with the parsed email as the event. Uses pinned emersion/go-imap v1. Future providers are new helpers.
-- [x] **`internal` trigger.** Registered; fired by another workflow's completion (ADR-0026). The worker calls a completion callback when a run finishes; the daemon wires it to the trigger receiver, which starts any enabled workflow whose `internal` trigger names the completed workflow, passing an event of `{trigger, from, from_run}`.
+- [x] **`completed` trigger.** Registered; fired by another workflow's completion (ADR-0026, ADR-0038). The worker calls a completion callback when a run finishes; the daemon wires it to the trigger receiver, which starts any enabled workflow whose `completed` trigger names the completed workflow, passing an event of `{trigger, from, from_run}`.
 - [x] **Secret provider and per-node delivery.** Built in Phase 13: the provider + per-node delivery model (ADR-0032, ADR-0033, ADR-0034, ADR-0035, ADR-0036) with the `env`, `varlock`, and `onbox` providers.
 - [x] **`secret-resolution` mechanism group and `secret` role.** Added with the first secret providers in Phase 13 (ADR-0036); `capabilities` renders the group and the available sources.
 

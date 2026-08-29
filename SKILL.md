@@ -16,7 +16,7 @@ reviewed pull request.
 
 ## The artifact: a Wafer
 
-A Wafer is a YAML file with two parts: **triggers** (`on:`) that start the
+A Wafer is a YAML file with two parts: **triggers** (`triggers:`) that start the
 workflow, and **nodes** (`nodes:`) that run once it does. A node is either an
 **action node** (does work: http, shell, slack) or a **flow node** (routes or
 fans out: switch, foreach). The file is the only
@@ -24,7 +24,7 @@ place workflow state lives; there is no UI or database row to edit.
 
 ```yaml
 name: notify_on_new_lead
-on:
+triggers:
   - type: grist_webhook
     path: /hooks/leads
 nodes:

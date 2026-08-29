@@ -581,11 +581,11 @@ func Run(ctx context.Context, cfg Config) error {
 			w := worker.New(srv.store, queue, fmt.Sprintf("worker-%d", i), worker.Config{
 				Resolver:         cfg.Resolver,
 				SecretRetryCount: cfg.SecretRetryCount,
-				// When a run completes, fire any workflow with an `internal`
-				// trigger naming the completed workflow (SPEC: `internal` trigger).
+				// When a run completes, fire any workflow with a `completed`
+				// trigger naming the completed workflow (SPEC: `completed` trigger).
 				OnRunComplete: func(workflowID, runID string) {
 					if srv.receiver != nil {
-						_ = srv.receiver.Internal(workflowID, runID)
+						_ = srv.receiver.Completed(workflowID, runID)
 					}
 				},
 				// When a `poll` returns new items, start a run per item

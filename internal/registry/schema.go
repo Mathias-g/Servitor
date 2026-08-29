@@ -107,9 +107,9 @@ func WaferSchema() map[string]any {
 		"title":   "Wafer",
 		"type":    "object",
 		"properties": map[string]any{
-			"name":  map[string]any{"type": "string", "description": "The workflow name."},
-			"on":    map[string]any{"type": "array", "items": trigger, "description": "Triggers that start the workflow."},
-			"nodes": map[string]any{"type": "array", "items": node, "minItems": 1, "description": "The nodes the workflow runs."},
+			"name":     map[string]any{"type": "string", "description": "The workflow name."},
+			"triggers": map[string]any{"type": "array", "items": trigger, "description": "Triggers that start the workflow."},
+			"nodes":    map[string]any{"type": "array", "items": node, "minItems": 1, "description": "The nodes the workflow runs."},
 		},
 		"required":             []any{"name", "nodes"},
 		"additionalProperties": false,
