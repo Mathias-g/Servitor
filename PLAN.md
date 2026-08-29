@@ -155,9 +155,27 @@ Secrets (SPEC: Secret resolution, ADR-0032, ADR-0033, ADR-0034, ADR-0035, ADR-00
 - [x] **Capabilities surface** (ADR-0035, ADR-0036): `capabilities` renders `secrets.yaml` (name + account + permissions + expiry, never values) and the `secret-resolution` mechanism group enumerating the available secret sources (the valid `source` values).
 - [x] **Secret invalidity and rotation** (SPEC: Secret invalidity and rotation): reactive retry on auth failure with a fresh resolve (bounded, global `secret_retry_count` default); source-unreachable retries with backoff; secret-missing fails fast; the webhook signing key is verify-only, resolved per use, with no rollover window. (The resume-from-failure modes are a separate task below.)
 - [x] **Failed-secret event emission** (SPEC: Secret invalidity and rotation, ADR-0039): when a secret-authenticated node fails after retries are exhausted, the run is marked failed and emitted as a `failed` event a workflow can trigger on (a distinct `failed` trigger, separate from `completed`), so the operator can wire their own notification. Built on the run-failure-resolution path (a dead-lettered node marks its run failed and fires a failure callback).
-- [ ] **Resume-from-failure modes** (SPEC: Secret invalidity and rotation): how "run it again" after a supplied secret behaves, settable globally in the servitor config and per Wafer with a CLI override: `continue` (resume from the failed node), `restart` (re-run from the top, safe only when side-effecting nodes declare `dedupe_key`), `discard` (drop the failed run). **Blocked on the "Suspended waits" idea** (IDEAS.md): these reuse that idea's suspend/resume machinery (a continuation holds the next node's `{event, steps}` input; resuming re-enqueues it), which is not yet in the SPEC/PLAN. Implement this when "Suspended waits" is worked into the SPEC/PLAN.
+- [ ] **Resume-from-failure modes** (SPEC: Secret invalidity and rotation): how "run it again" after a supplied secret behaves, settable globally in the servitor config and per Wafer with a CLI override: `continue` (resume from the failed node), `restart` (re-run from the top, safe only when side-effecting nodes declare `dedupe_key`), `discard` (drop the failed run). **Depends on the suspend/resume machinery of Phase 14** (ADR-0040): a continuation holds the downstream sub-DAG and `{event, steps}` input, and resuming re-enqueues it. Implement this on top of Phase 14's machinery; `continue` reuses the DAG-shaped continuation directly.
 
 **Done when:** a node's secret is resolved per node at spawn and dies with its subprocess, the daemon no longer holds the full set or boots under varlock, an agent discovers the available secret sources and names via `capabilities`/`secrets.yaml`, and secret invalidity/rotation behaves per the SPEC. (The resume-from-failure modes are a separate task above and are not part of this phase's done-when.)
+
+## Phase 14: Suspended waits (durable wait between nodes)
+
+Durable wait between nodes (SPEC: Execution model step 11, Nodes: `wait`). A
+`wait` flow node parks a run and resumes it later via a timer (Honker queue
+`RunAt`) or a named signal. Four ADRs: the suspend/resume machinery
+(ADR-0040), the `wait` node (ADR-0041), named signals (ADR-0042), and the timer
+mechanism (ADR-0043). Unblocks the Phase 13 resume-from-failure modes, which
+reuse the DAG-shaped continuation.
+
+- [ ] **Suspend/resume machinery** (ADR-0040): park a run in one transaction (a `suspended_continuations` row holding the parked node's downstream sub-DAG and the current `run_deps` state, the new `waiting` run status, ack the wait job's claim); the run-completion guard becomes `pending == 0 && status != waiting`; resume re-enqueues the continuation frontier (pending +1), flips status to `running`, deletes the row. The continuation is DAG-shaped so a `wait` (and later resume-from-failure) can sit before a fan-in or inside a fan-out.
+- [ ] **`wait` node type** (ADR-0041): register the flow node with optional `timer` and `signal`; resolve on whichever fires first; the `{source, payload}` result shape; reject a node with neither source; thread the result forward into downstream `{event, steps}` input.
+- [ ] **Timer mechanism** (ADR-0043): a `RunAt`-carrying `Tx.Enqueue` variant; `timer.after` (duration) and `timer.at` (absolute time) resolved to a `RunAt` at park time; the pending timer job dropped when a signal resolves the wait first.
+- [ ] **Named signals** (ADR-0042): resolve the `signal` JSONata expression at park time; a `send-signal`/`resume` node for one workflow to wake another; `servitor resume <signal-name> [payload]`; buffer a signal that arrives before the park and consume it in the park transaction; a repeat resume is a no-op (atomic compare-and-set on `waiting`); a signal addressing more than one parked run is rejected as ambiguous.
+- [ ] **Inspection and control surface**: `waiting` shown in `servitor runs` / `servitor run <id>`; `servitor cancel` drops parked continuations.
+- [ ] **Tests**: parking/resume atomicity, the `pending == 0 && status != waiting` guard, park inside a fan-out and before a fan-in, first-wins on timer vs signal, buffered pre-park signal, no-op on repeat resume, ambiguous-signal rejection, timer `RunAt` durability across a store reopen, and a `wait` with neither source failing validation.
+
+**Done when:** a `wait` node parks a run and resumes it on a timer or a named signal, the `waiting` status is visible and cancellable, the named signal is authorable and unambiguous, and the Phase 13 resume-from-failure `continue` mode can be built on the same continuation.
 
 ## Cross-cutting
 

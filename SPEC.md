@@ -356,6 +356,7 @@ servitor update <wafer>             # replace a workflow's definition
 servitor enable <name>              # register a workflow's triggers
 servitor disable <name>             # unregister without deleting
 servitor trigger <name> [inputs]    # manual run with optional inputs
+servitor resume <signal-name> [payload]   # resume a parked (waiting) run
 servitor runs                       # list run history
 servitor run <id>                   # inspect one run
 servitor cancel <id>                # stop an in-flight run
@@ -527,6 +528,53 @@ run's DAG branches and loops.
 
 - `switch`. Route to one named branch based on a value. It has an `expression` (JSONata over the node's `{event, steps}` input), a `cases` map of value to the name of a top-level node to route to, and an optional `default`. The chosen branch runs; non-chosen branches are skipped (ADR-0022, ADR-0023). If/else is a two-case switch.
 - `foreach`. Fan a node out over a list. It has an `over` expression (JSONata over the node's `{event, steps}` input yielding the list), an `as` loop-variable name (exposed in each iteration's input, default `item`), and a `body` (the name of a top-level node to run once per element). A downstream node that `depends_on` the body collects the per-iteration results as an array under the foreach node's name in its `{event, steps}` input (ADR-0024).
+- `wait`. Park the run and resume later, between nodes, via a timer or a named
+  signal (ADR-0040, ADR-0041, ADR-0042, ADR-0043). A `wait` is one node with
+  two optional sources and resolves on whichever fires first:
+  - `timer`: resume after a duration or at an absolute time. Two explicit
+    sub-fields: `after` (a duration, for example `48h`, resolved to a resume
+    time at park) and `at` (an absolute time, for example
+    `2026-09-01T10:00:00Z`). Enqueued as a one-shot job on Honker's queue
+    (ADR-0043), durable across restarts.
+  - `signal`: resume when a named signal arrives (ADR-0042). `signal` is a
+    JSONata expression over the run's `{event, steps}` input, resolved at park
+    time to the effective signal name (for example
+    `approval_gate.${event.order_id}`), so distinct work yields distinct names
+    and the sender needs only the business key, never the run id. A signal
+    addressing more than one parked run is rejected as ambiguous. A literal
+    `signal` name (for example `approval_gate`) is legal and means "any run
+    parked on this name". Senders are
+    another workflow's `send-signal` node, `servitor resume <signal-name>
+    [payload]`, or an external service POSTing to an ordinary webhook trigger
+    that starts a small broker workflow.
+
+  The node's result is `{source: "signal" | "timer", payload: <the signal
+  payload, or null on timer>}`. `source` is `"timer"` (not `"timeout"`), because
+  a timed hold is not a failure. `payload` is always present and `null` when the
+  timer fired. The signal payload is opaque data threaded forward as the wait
+  node's step result; it is not re-injected as a new run `event`. A following
+  `switch`/`transform` branches on `steps.<wait>.source` and reads
+  `steps.<wait>.payload`. A node with neither `timer` nor `signal` is a
+  validation error (it would park forever).
+
+  **Race rules.** Signals are neither lost nor doubled, mirroring Temporal's
+  buffered signals (ADR-0042). A signal that arrives before the run parks is
+  buffered, not dropped: it is persisted like an inbound event (SPEC: Execution
+  model step 2), and the `wait` node's park transaction checks for and consumes
+  a buffered signal, resuming immediately if one is present. A second resume is
+  a no-op: once a run is resumed (or a signal consumed), a repeat resume does
+  not re-run anything, via an atomic compare-and-set on the run's `waiting`
+  status. Timer and signal are mutually exclusive by construction: when a signal
+  resolves the wait, the pending timer job is dropped; when the timer fires, any
+  later signal is a no-op.
+
+  **Wafer version drift.** A run parked for months, then the Wafer redeployed
+  with changed nodes (ADR-0040): the continuation is frozen in the job payload
+  at park time, so a parked run resumes with its original definition and new
+  runs use the new wafer. Suspend is between nodes only, never inside a node's
+  own work: each node runs to completion in one subprocess (ADR-0008), only its
+  result survives, and a parked run resumes at the next node with the pre-wait
+  results already saved.
 
 #### Curated integration helpers
 
@@ -561,7 +609,8 @@ actions/triggers via `servitor capabilities`.
 7. **Node runs.** Node types dispatch to handlers: HTTP, shell, transform, Singer tap, Singer target, integration helpers, and the flow nodes `switch` (route to one branch) and `foreach` (fan a body out over a list). A node writes its result as structured JSON to stdout and exits. A `switch` and `foreach` resolve their decision in a subprocess and then route: the worker fans out the chosen branch / body iterations through the dependency counters (ADR-0022, ADR-0024).
 8. **Result committed transactionally.** When a node completes, its writes happen as a single atomic SQLite transaction: the node's result is persisted, the `dedupe_key` record is written (if any), all downstream nodes whose dependencies are now satisfied are enqueued, and the node's own claim is acked, all in one commit. Runs are built as a dependency DAG (ADR-0023): each node carries a count of unsatisfied dependencies, and the completing node decrements each dependent's count and enqueues it only when the count reaches zero (fan-in). A `switch` node enqueues its chosen branch and marks the others skipped; a `foreach` node enqueues one body job per element. The input a downstream node receives is `{event, steps}`, where `steps` is prior results keyed by node name, threaded forward and committed with the result (ADR-0021). (For Singer nodes, the updated bookmark is part of the same commit.) There is no separate scheduler process watching for completions; the worker that just finished the node performs these writes itself. This is non-negotiable because each possible split produces a distinct silent failure: result-without-enqueue stalls the workflow (a node is "done" but successors never run); enqueue-without-ack re-issues the claim on visibility timeout and re-runs the node, fanning out *again* and doubling every downstream side effect; dedupe-without-result causes future retries to skip the node without ever returning a value. The transactional atom is therefore **{result, dedupe_record, downstream_enqueues, claim_ack}**, all in one commit. If implementation pressure ever tempts splitting this transaction, the answer is no; redesign the data model instead.
 9. **Crashes are safe, with a caveat.** If a subprocess dies, the parent records the failure and the executor reclaims through normal retry. If the parent dies mid-job, Honker's visibility timeout re-issues the claim to another runner instance (or to itself on restart). **Crash safety against double-firing of side effects only applies to nodes that declare a `dedupe_key`.** Nodes without one inherit Honker's at-least-once contract: a node whose side effect completes before the result is persisted may be re-issued and the side effect re-performed. The validator warns when a side-effecting node omits `dedupe_key` precisely to make this contract visible to authors.
-10. **Run completes when no work is pending.** Each run tracks a count of in-flight jobs, adjusted in the same atomic commit as each node's completion (a claimed node's ack removes one, each enqueued dependent adds one). A run is marked completed when that count reaches zero. This is the dependency-based completion signal (ADR-0023): it correctly waits for a `foreach`'s body iterations and a fan-in rejoin, and for a linear chain it is the degenerate case. A skipped branch (non-chosen by a `switch`) records itself as skipped and cascades, so a run is never left waiting on a branch that did not run.
+10. **Run completes when no work is pending.** Each run tracks a count of in-flight jobs, adjusted in the same atomic commit as each node's completion (a claimed node's ack removes one, each enqueued dependent adds one). A run is marked completed when that count reaches zero. This is the dependency-based completion signal (ADR-0023): it correctly waits for a `foreach`'s body iterations and a fan-in rejoin, and for a linear chain it is the degenerate case. A skipped branch (non-chosen by a `switch`) records itself as skipped and cascades, so a run is never left waiting on a branch that did not run. A *parked* run (one at a `wait` node) is not complete: the guard is `pending == 0 && status != waiting`.
+11. **A `wait` node parks and resumes the run.** A `wait` node parks the run in one transaction: it writes a `suspended_continuations` row holding the wait node's downstream sub-DAG and the current `run_deps` state for those nodes, sets the run status to `waiting`, and acks the wait job's claim. Parking is between nodes only; each node still runs to completion in one subprocess (ADR-0008). On resume, the continuation frontier is re-enqueued (pending +1), the status flips back to `running`, and the row is deleted; the run picks up at the next node after the wait with the pre-wait results already saved (ADR-0040). A parked run holds no live work, so it is drain-safe and survives restarts.
 
 ---
 
@@ -686,7 +735,7 @@ Early development. The daemon lifecycle, loopback control protocol, Wafer model 
 - Worker concurrency limits; runs execute as a dependency DAG with fan-out (ADR-0023), but branches run sequentially rather than in parallel.
 - The trigger receiver's framing of the remaining bespoke per-provider signing schemes (Grist and Atomic).
 
-**Secrets model: largely implemented.** The Secret resolution section describes the target secret model (ADR-0032 through ADR-0036). The provider interface, per-node delivery, the `env`, `varlock`, and `onbox` (push-based on-box ciphertext, sealed with `servitor secret seal`) providers, the declared-secrets config and `servitor secret` CLI, the capabilities surface, the varlock boot path removal, the secret-failure semantics (missing fails fast, source-unreachable retries with backoff, stale retries with a fresh resolve then fails with `secret_auth_failed`), and the failed-run event (a dead-lettered node marks its run failed and fires the `failed` trigger, ADR-0039) are built. The `onbox` provider uses the non-TPM local-key unlock tier; TPM/KMS sealing of the key (the non-exportable tier) is future work. Not yet built: the resume-from-failure modes (continue/restart/discard), which depend on the suspend/resume machinery of the separate "Suspended waits" idea. **Delete this paragraph once the remaining pieces land**, so it does not linger describing a transition that has already happened.
+**Secrets model: largely implemented.** The Secret resolution section describes the target secret model (ADR-0032 through ADR-0036). The provider interface, per-node delivery, the `env`, `varlock`, and `onbox` (push-based on-box ciphertext, sealed with `servitor secret seal`) providers, the declared-secrets config and `servitor secret` CLI, the capabilities surface, the varlock boot path removal, the secret-failure semantics (missing fails fast, source-unreachable retries with backoff, stale retries with a fresh resolve then fails with `secret_auth_failed`), and the failed-run event (a dead-lettered node marks its run failed and fires the `failed` trigger, ADR-0039) are built. The `onbox` provider uses the non-TPM local-key unlock tier; TPM/KMS sealing of the key (the non-exportable tier) is future work. Not yet built: the resume-from-failure modes (continue/restart/discard), which depend on the suspend/resume machinery of the separate "Suspended waits" feature (SPEC: Execution model step 11, PLAN Phase 14, ADR-0040). **Delete this paragraph once the remaining pieces land**, so it does not linger describing a transition that has already happened.
 
 Contributions welcome once the initial scaffolding is in place.
 
