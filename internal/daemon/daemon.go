@@ -122,6 +122,7 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc(protocol.PathRuns, s.handleRuns)
 	mux.HandleFunc(protocol.PathRun, s.handleRun)
 	mux.HandleFunc(protocol.PathCancel, s.handleCancel)
+	mux.HandleFunc(protocol.PathResume, s.handleResume)
 	s.httpSrv = &http.Server{Handler: mux}
 	return s
 }
@@ -511,6 +512,39 @@ func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// handleResume resumes a parked run by named signal (ADR-0042). The signal name
+// is a query param; the optional JSON payload is the request body. An ambiguous
+// signal (more than one run parked on the name) is rejected, so the author
+// sees their name is not unique.
+func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil || s.queue == nil {
+		http.Error(w, "no store; run the daemon with --db", http.StatusConflict)
+		return
+	}
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		http.Error(w, "missing name", http.StatusBadRequest)
+		return
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "read body", http.StatusBadRequest)
+		return
+	}
+	var payload any
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &payload); err != nil {
+			http.Error(w, "payload must be JSON", http.StatusBadRequest)
+			return
+		}
+	}
+	if err := worker.ResumeBySignal(s.store, s.queue, name, payload); err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	_, _ = io.WriteString(w, "ok\n")
 }
 
 // Run starts the daemon on cfg.Addr and blocks until it is shut down, either by

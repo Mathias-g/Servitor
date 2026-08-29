@@ -184,6 +184,28 @@ var types = []*Capability{
 		},
 	},
 	{
+		Name:           "wait",
+		Desc:           "Park the run and resume it later, via a timer or a named signal, resolving on whichever fires first (ADR-0041).",
+		Role:           RoleFlow,
+		SideEffect:     false,
+		MechanismGroup: Core,
+		Fields: map[string]*Field{
+			"signal": {Type: "string", Desc: "A JSONata expression over the step's `{event, steps}` input resolved at park time to the effective signal name (ADR-0042). A signal resumes the run with the payload; the result reports `source: \"signal\"`.", Examples: []any{"approval_gate.${event.order_id}"}},
+			"timer":  {Type: "object", Desc: "A timer that resumes the run: `after` (a duration, for example `48h`) or `at` (an absolute time). The result reports `source: \"timer\"` (ADR-0043).", Examples: []any{map[string]any{"after": "48h"}}},
+		},
+	},
+	{
+		Name:           "send-signal",
+		Desc:           "Wake a parked run in another workflow by named signal (ADR-0042).",
+		Role:           RoleAction,
+		SideEffect:     false,
+		MechanismGroup: Core,
+		Fields: map[string]*Field{
+			"signal":  {Type: "string", Required: true, Desc: "A JSONata expression over the step's `{event, steps}` input resolving to the effective signal name of the parked run to wake.", Examples: []any{"approval_gate.${event.order_id}"}},
+			"payload": {Type: "any", Desc: "A JSONata expression for the payload delivered to the parked run's wait node result. Omit for no payload.", Examples: []any{map[string]any{"approved": true}}},
+		},
+	},
+	{
 		Name:           "singer-tap",
 		Desc:           "Run a Singer tap and capture records and state.",
 		Role:           RoleAction,

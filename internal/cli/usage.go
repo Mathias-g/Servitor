@@ -31,6 +31,7 @@ Commands:
   runs             list run history
   run <id>         inspect one run
   cancel <id>      stop an in-flight run
+  resume <name>    resume a parked (waiting) run by named signal (ADR-0042)
   stop             drain and shut the daemon down
   mcp add/list/remove  manage declared MCP servers (ADR-0018)
   tap add/list/remove  manage declared Singer taps (ADR-0018)

@@ -84,6 +84,12 @@ func (c *Client) Cancel(ctx context.Context, id string) error {
 	return err
 }
 
+// Resume resumes a parked run by named signal, with an optional JSON payload.
+func (c *Client) Resume(ctx context.Context, name string, payload []byte) error {
+	_, err := c.doBody(ctx, http.MethodPost, PathResume+"?name="+url.QueryEscape(name), payload)
+	return err
+}
+
 func (c *Client) do(ctx context.Context, method, path string, body []byte) (string, error) {
 	return c.doBody(ctx, method, path, body)
 }

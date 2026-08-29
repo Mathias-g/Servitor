@@ -79,6 +79,11 @@ func commandFor(s wafer.Node) ([]string, error) {
 			return nil, fmt.Errorf("node %q: mcp-call requires a `server` name", nodeName(s))
 		}
 		return []string{server}, nil
+	case "wait", "send-signal":
+		// Flow/control nodes handled in the worker (ADR-0041, ADR-0042); they
+		// run no subprocess. commandFor returns an empty argv marker so FromWafer
+		// accepts them and the worker dispatches on NodeType before running.
+		return nil, nil
 	default:
 		return nil, fmt.Errorf("node %q: node type %q has no handler built yet (Phase 6 runs shell; the rest come later)", nodeName(s), s.Type)
 	}

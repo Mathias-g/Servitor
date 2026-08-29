@@ -49,144 +49,6 @@ Why to hold off (the current leaning): the verification is a small, correct, tes
 
 The other Standard Webhooks tools (Verify Webhook, Simulate Request, the receiving-webhooks AI skill) are interactive debugging aids or agent-guidance, not libraries to integrate; the Go library is the only real candidate.
 
-## A stronger secrets model (secret resolution: provider + per-node delivery)
-
-An aspirational vision for how Servitor handles secrets, for when we want to move past the current model. Not a plan or a decision; the trade-offs are real, and we are deliberately recording the shape before committing to it.
-
-### Why the current model is not enough
-
-The current model: `varlock run` resolves the whole secret set into the daemon at boot, and `FilteredEnv` hands each node subprocess only the secrets it declared (exec package). This is good: nodes are scoped to their declared secrets, subprocesses are isolated (ADR-0008), and output is redacted (ADR-0029). But the long-lived daemon process holds every secret in memory for its whole life. A compromised daemon, a core dump, or a memory read exposes the full set. That is not a varlock defect to fix; the daemon legitimately needs values to run nodes. The gap is that it holds *all* of them, for its whole life, from a mechanism that is also too slow to do better (the varlock Node CLI boots in ~290ms per invocation, making per-node resolution infeasible).
-
-The peers (n8n, Activepieces, Windmill) do worse: they encrypt credentials in their own DB with a symmetric key kept in the same runtime env as the ciphertext, and they resolve-and-hold all credentials at the worker level. Servitor should aim well above this, and this vision is that higher bar.
-
-### The organizing principle
-
-Two decisions, deliberately different in how opinionated we are:
-
-- **Generalize the source of secrets (the secret provider).** No one secret store fits everyone (Bitwarden, 1Password, Vault/OpenBao, AWS Secrets Manager, KMS, a local-TPM-sealed file, plain env). Make the store a narrow, pluggable provider behind a single interface, so a deployment keeps the secret store it already has. Do not build a universal plugin registry up front (ADR-0002); add providers as they are actually needed.
-- **Be strict about delivery (the invariant).** Secrets are delivered per node, per subprocess, at the point of execution, scoped to exactly that node's declared names. The daemon does not hold a node's resolved secret past that node's subprocess: the value is gone once the subprocess it was handed to completes. This is a security invariant, not a preference, so it is not a per-provider option: it is the contract Servitor enforces regardless of which provider sits underneath.
-
-This generalizes the thing that should vary (where secrets come from) and pins down the thing that should not (that a subprocess sees only its own secrets, at the moment it needs them, and nothing is held in the daemon).
-
-Generalization happens at several distinct levels, each pluggable so a deployment keeps what it already has:
-
-- **The source of secrets** (which store/provider): Bitwarden, 1Password, Vault/OpenBao, AWS Secrets Manager, KMS, a local-TPM-sealed file, plain env. This is the provider interface (piece 1).
-- **At-rest key custody** (where the decryption capability lives): off-box KMS, on-box TPM/vTPM, or a local key. Each is a supported way to protect secrets at rest, chosen per deployment (piece 3).
-- **The three orthogonal axes** (ingress, storage, unlock): how material reaches the box, where it lives at rest, and how it is unlocked. Any arrangement of these is a valid mechanism under the `secret-resolution` group (capability-model mapping).
-- **Store topology**: one store, or several used simultaneously with per-secret routing and optional failover (piece 1).
-
-The per-node delivery invariant is the one thing *not* generalized; it is fixed for every source, custody, and mechanism.
-
-### How this maps onto the capability model
-
-A secret capability is a distinct **role**, `secret` (a capability that supplies secret material to nodes, not a node or trigger itself). The distinct ways Servitor obtains a secret value at runtime are **mechanisms** under a `secret-resolution` **mechanism group**.
-
-A secret-resolution **mechanism** is one concrete way Servitor obtains a secret value: it is an **arrangement** of the three axes, one option picked on each. The axes are composed *within* a mechanism, in code; they are not independently configured at runtime. A mechanism bundles them into a single, complete resolver.
-
-- **Ingress** — how the secret material reaches the box: **push** (CI/CD delivers it during deploy) or **pull** (Servitor or a provider fetches it from an external store).
-- **Storage** — where the value lives at rest: in an **external store**, as **on-box ciphertext**, or as plaintext in the **environment**.
-- **Unlock** — how the plaintext value is obtained when used: a **store credential** (the store authenticates and returns plaintext, no on-box decryption), a **local key** or **on-box TPM/vTPM** (an on-box key decrypts or unseals on-box ciphertext), an **off-box KMS** call (a credential authorizes the remote KMS to decrypt on-box ciphertext with its non-exportable key), or **none** (already plaintext in the environment).
-
-A few representative arrangements (each one a mechanism) make this concrete:
-
-- **Pull-based external store** — pull ingress, external storage, credential unlock. The store returns plaintext after authenticating; Servitor hands it straight to the node's subprocess (no on-box decryption). Intended for stores that are fast enough to pull from directly per node (for example AWS Secrets Manager).
-- **Push-based on-box ciphertext** — push ingress, on-box ciphertext, unlock by local key, TPM/vTPM, or off-box KMS. CI/CD delivers the material during deploy; Servitor decrypts locally when a node needs it. The recommended option, with TPM/vTPM the preferred unlock.
-- **Pull-based on-box ciphertext** — pull ingress, on-box ciphertext, unlock by local key / TPM/vTPM / off-box KMS. Intended for stores that are too slow to pull from directly per node (for example varlock or Bitwarden, which make slow network round-trips): fetch each value once into the on-box at-rest store, then resolve per node from the local copy so per-node latency stays low. Optionally delete the credential used to pull after the fetch is done.
-- **Environment** — env storage, no unlock. A pragmatic testing/dev fallback, or for platforms that inject secrets as env vars; plaintext, so not the secure ideal.
-
-Preference: the recommended option is **push-based on-box ciphertext with TPM/vTPM unlock** (strongest key custody, no store credentials or runtime store-dependency on the runner). The other arrangements are supported for their niches; ranking their relative security is left to design time, not settled here. Environment is a dev/testing fallback.
-
-The axis options are shared internal components, not per-mechanism reimplementations. A mechanism stays the deployable unit (one provider), but each mechanism calls the same components for the options it uses: one TPM unlock, one KMS call, one on-box ciphertext store, and so on, all in a shared internal library. This keeps the code DRY without making the axes runtime-pluggable seams (which would force maintaining every combination).
-
-The group name carries "secret" so it cannot be mistaken for a general-purpose resolver of non-secret things.
-
-### The pieces
-
-1. **Secret-provider interface (the generalization).** A narrow contract, roughly `Resolve(ctx, nodeName, secretName) -> value`, with caching and expiry as provider properties, and failure semantics that distinguish the source being unreachable, the secret being missing, and the secret being stale/invalid. A provider encapsulates its own mechanism (its own on-box unlock: a local key, TPM/vTPM, or an off-box KMS call; or, for the pull arrangements, a store credential). The recommended provider resolves from the push-delivered on-box at-rest store; pull providers (direct from a fast store, or fetching into the on-box store from a slow one) are additional implementations for those arrangements. The Wafer's existing `secrets:` list already declares names, so the interface slots in where `varlock.ResolvedSecrets()` returns a map today. Multiple providers coexist (per-secret routing, with optional failover).
-
-2. **Strict per-node / per-subprocess delivery and egress (the invariant).** The daemon resolves each secret at the moment its node runs, hands it to that one subprocess's filtered env, and does not hold it past that subprocess: the value is gone once the subprocess completes. A node's secret dies with its subprocess. The egress rule is the same invariant from the other side: a resolved secret may flow only to the declaring node's subprocess, or to an external provider for the purpose of authenticating, and must be eliminated after. The value cannot go anywhere else. This narrows the runtime window to almost nothing and directly closes the "compromised daemon holds the full set" gap. The mechanism must be in-process (a provider/Go SDK), not a per-node CLI, so it is fast (milliseconds) rather than the ~290ms varlock boot.
-
-   One honest limit on this invariant: "gone once the subprocess completes" means the daemon no longer holds a reference and the value dies with the subprocess, not that the bytes are wiped from physical memory. Go strings are immutable and the garbage collector does not zero memory, so there is no way to force a secret's bytes out of RAM; they remain in the heap until the GC reclaims and reuses the region, and are not guaranteed zeroed. What matters for security is reachability: once the daemon drops its reference, no running code in the daemon can reach the value, and the subprocess that held it is gone. A fully memory-compromised process (a core dump or a read of the daemon's heap in that window) could still find stale bytes, but an attacker with that level of memory access can already read the next resolve in plaintext anyway, so this is defense-in-depth we cannot provide in Go, and it is out of scope for the model.
-
-3. **At-rest protection (TPM when available, never plaintext).** Secrets must never be plaintext on disk. TPM is the primary tier and is more broadly available than it used to be: physical TPMs plus virtual TPMs on VPS providers (for example AWS NitroTPM, a free TPM 2.0 device with sealing and measured boot) make it the default on many of the machines Servitor targets. Still provider- and host-dependent, so keep a non-TPM fallback that also holds the line against plaintext: an off-box key (KMS / self-hosted OpenBao transit) or a strong local-key file. Aim above the peers, who put the key in the same env as the ciphertext.
-
-   The key-custody nuance that makes this a real security difference: an **off-box or hardware-bound key is non-exportable** (a KMS key or TPM seal cannot be copied off), so a thief who steals the disk or a backup gets only ciphertext and cannot decrypt it anywhere else. That is the genuine win over the peers, who keep a *copyable* key in the same env as the ciphertext. But it is not a complete boundary: it does not protect the value in the runtime window (the plaintext is in Servitor's memory and the subprocess either way), and it does not stop code already running as Servitor's user from calling the decryption service or TPM to obtain the value on demand. So at-rest key custody protects against disk/backup theft, not against a compromised daemon.
-
-4. **Resolve only what the Wafers use.** The provider is driven by the registered Wafers, so Servitor resolves exactly the union of secrets the workflows actually reference (node `secrets:` lists, trigger/webhook secrets). If the last workflow using `GITHUB_TOKEN` is removed, Servitor stops resolving it. Works naturally with per-node delivery: read only what a node needs when it needs it.
-
-5. **Declared secrets config, discoverable by agents.** The secret sources a deployment uses (which mechanisms/stores, and which secret names exist) are declared by the operator through CI/CD, following the declared-integrations pattern (ADR-0018) rather than authored in Wafers. They live in the same declared-integrations config as a `secrets:` section (a `secrets:` entry is a different shape from an mcp/tap entry, but it is the same file and the same management-CLI pattern; splitting it into a separate file later is easy if it ever outgrows this one). Each declared secret carries its **secret name**, source, and optionally the **account name** it belongs to (for example the gmail address or GitHub org), the **permissions** the operator declared it is authorized for (a secret may have several, for example a gmail send token versus a gmail read token), and an **expiry** (when the value rotates or expires). Only the secret name and source are required; the account name, permissions, and expiry are all optional. `servitor capabilities` renders these into `secrets.yaml` (secret name + account name + permissions + expiry, never values), so an agent authoring a Wafer can discover exactly which secret names are available, which account each belongs to, what each is for, and when it expires, and pick the right one (for example `GMAIL_SEND_TOKEN` for `billing@acme.com` vs for `support@acme.com`). In v1 the account name, permissions, and expiry are **informational only**: they exist so the agent reaches for the right secret, and Servitor does not try to verify that an action node's operation matches a secret's declared permissions or that a secret is within its declared expiry. The Wafer keeps naming secrets by secret name; the operator/CI owns which sources, account names, permissions, and expiries exist. A `servitor secret add/list/remove` CLI manages this section, alongside `servitor mcp`/`tap`/`target`. The authored config is validated against the registered Wafers, warning on drift: a secret declared but used by no Wafer. The other direction is a hard error, not a warning: a secret referenced by a Wafer but not declared in the config refuses to submit or run the Wafer, because the run could never complete. A declared secret whose value is not present in the store at execution time is a separate case: it fails fast at the node that needs it (see "Secret invalidity and rotation").
-
-For example, an entry in the declared secrets config might look like:
-
-```yaml
-secrets:
-  - secret name: GMAIL_SEND_TOKEN
-    source: external-store
-    account name: billing@acme.com
-    permissions: [send]
-    expiry: 2026-09-30
-  - secret name: GMAIL_READ_TOKEN
-    source: external-store
-    account name: support@acme.com
-    permissions: [read]
-```
-
-`servitor capabilities` renders the same fields (name + account name + permissions + expiry, never the value) into `secrets.yaml` for the agent to read.
-
-A note on **least-privilege credentials**: operators should provision per-integration restricted-scope tokens, short-lived and rotated, rather than one master token. Mostly store-provided (Bitwarden Secrets Manager scoped access tokens, 1Password service accounts, Vault policies). Cheap and always worth doing, but it is operator credential-hygiene advice, not a distinct mechanism of this model.
-
-### How the pieces hold together
-
-1 and 2 are the spine: a pluggable source behind a strict per-node delivery + egress invariant. 3 protects at rest; 4 keeps the resolved set minimal and honest with the Wafers; 5 makes the secret set discoverable by agents. Keeping varlock's non-security properties matters too: a schema-driven, agent-visible, file-as-artifact secret definition (names and shapes readable by agents, values never), and structured validation. Those are as much a reason to keep the varlock model as the security is, and they should survive the move off the Node CLI. The credential-proxy + sandbox runtime boundary is a separate, more ambitious idea (see its own entry), not part of this core model.
-
-### What this means versus today
-
-Compared to the current model, the daemon no longer holds the full secret set; each secret is resolved per node (cheaply, in-process) and dies with its subprocess. Compared to the peers, this is a strictly higher bar: they co-locate the key with the ciphertext and resolve-and-hold all credentials at the worker level.
-
-This is also a demotion for varlock. Today varlock resolves the whole secret set into the daemon at boot, which is exactly the mechanism this idea replaces. Under the new model varlock is not on the default path at all (the recommended scheme is push-based on-box ciphertext, which skips it entirely); at most it survives as one optional slow pull origin, fetched once into the on-box at-rest store and then resolved per node from the local copy. That is a real architectural change to a system Servitor currently relies on, so it is a decision to be recorded in the ADR, not a silent byproduct.
-
-### Secret invalidity and rotation
-
-A secret can become invalid at any time, whether it is in active use or idle: it can expire, be revoked, or be rotated to a new value while nothing is running. The per-node delivery invariant makes fresh values free: each node resolves fresh and its value dies with its subprocess, so once a store holds a new value the next resolve picks it up. Two cases remain. A secret can go bad *while idle*: the next node that needs it fails at the moment of use, and a fresh resolve returns the new value once the store is updated. This only needs the resume-from-failure behavior below. The harder case is a long-lived holder (a persistent node connection such as a websocket, and the pull-provider credentials the daemon uses to authenticate out): a value is held across a connection's life, and a fresh resolve cannot reach an already-open connection, so the holder must actively react. Invalidity is handled reactively, on failure rather than on a schedule:
-
-- A node whose auth fails (a 401/403, a dropped or rejected connection) fails and reports it to the daemon. The daemon respawns the node's subprocess with a freshly resolved secret, up to the configured retry count. Each retry is a new subprocess spawn with a new resolve; the failed subprocess's value dies with it (the invariant). If the store value rotated, a fresh resolve gets the new one and the retried request succeeds.
-
-   This composes safely with `dedupe_key` only under a contract we must record: a node's secret-authenticating call is its first outbound call and fails before any side effect. If auth were hit only on a later call, a retry could redo a side effect the failed subprocess already caused, which is exactly what `dedupe_key` exists to guard against. So the contract is that the auth failure precedes any side effect; retries then never redo one, and a side-effecting node still declares `dedupe_key` as a belt-and-suspenders guard.
-- Retries are bounded: a configured number of attempts before the node fails, so a genuinely bad secret does not loop forever. Initially this is a single global default in the servitor config (for example `secret_retry_count: 3`), applied to all nodes; a per-node or per-secret override can come later if it is ever needed. When retries are exhausted, the node fails with a distinct error, visible in `servitor run <id>` with the same structured `path`/`code` shape as other node errors (a code like `secret_auth_failed`, distinct from `missing_secret`), and written to the run's log. That failure is also emitted as an event a workflow can trigger on, as a distinct `failed` trigger (ADR-0039) separate from the `completed` trigger, so the operator can wire up their own notification through whatever integration they choose: a Slack message, a text, an email, or anything else. The failed-secret event is not a hardcoded notification; it is just another event an agent can react to.
-
-The three failure semantics a provider can return (piece 1) are not all the same, so they are not handled the same way:
-
-- **Stale/invalid (auth fails on use)** is the case above: reactive retry with a fresh resolve, bounded. It is transient in the sense that a fresh resolve may get a rotated value, so it is worth retrying.
-- **Source unreachable** (the store/provider is down) is a transient infrastructure failure. Retry with exponential backoff (for example 1s, 2s, 4s, capped) before failing, since the source may come back. If it stays down, fail with a distinct error.
-- **Secret missing** (declared but no value in the store) is not transient, so retrying is pointless; fail fast, no retry, with a `missing_secret`-style error. The operator adds the value and resumes from the failed node.
-
-The webhook receiver is not one of the provider failure semantics, because a webhook signing key is used only to verify inbound messages: it is never used to make an outgoing call, so the reactive "auth fails on use" mechanism does not apply to it. It is still a secret: a stolen key lets an attacker forge signed events and drive the workflows they trigger, so it gets the same at-rest protection as any other secret. It is also resolved per use like any other secret: the receiver resolves the current signing key fresh each time it verifies a message, and the value is held only for that one verification, not for the daemon's life. There is no rollover window (the receiver does not accept an old key during rotation): a message that does not verify with the current key is rejected and logged, and there is no retry, because an inbound webhook is sent once and a rejection is the receiver's only action. Rotation just means the store holds the new value and the next verification picks it up, exactly like a node secret. This removes the only extended-hold window in the model: the daemon's only life-long-held secrets are the pull-provider store/KMS credentials it needs to authenticate outbound.
-
-This keeps the invariant intact: the model never proactively polls for rotation and never holds a value longer than it must. It only re-resolves when a failure makes a fresh value legitimate, which is exactly what the egress rule already permits.
-
-Because Servitor does not pre-check that every node's auth will work before a run starts, a secret can be bad from the start of a run or go bad silently at any point, and it is not known until the DAG reaches the node that needs it. A run can therefore fail partway through its DAG with some nodes completed and others not. Supplying the new secret should resume the run from the failed node, not restart it from the top: restarting would re-run the already-completed nodes, redoing their side effects (and, for nodes without a `dedupe_key`, redoing them unsafely). Resuming from the failure point means the completed nodes are left as they are and only the failed node and its remaining successors run. This reuses the suspend/resume machinery already sketched for parked runs (see "Suspended waits": a continuation holds the next node's `{event, steps}` input, and resuming re-enqueues it), here triggered by a failed node being resupplied with a fresh secret rather than by a `wait` node. The failed node is the continuation point.
-
-What "run it again" means is a configurable behavior, settable globally in the servitor config and per Wafer, with the CLI able to override it for a specific run. The modes:
-
-- **continue**: resume from the failed node, leaving completed nodes and their side effects as they are. The default, and the safe choice for the secret-invalidity case.
-- **restart**: re-run from the top. Redoes completed side effects, so it is only safe for a Wafer whose side-effecting nodes all declare a `dedupe_key`.
-- **discard**: drop the failed run entirely and do not re-run it, cleaning up any partial state.
-
-### Carried forward to the ADR / SPEC
-
-When this idea becomes a real decision and turns into specification, settle the naming: the role is `secret` and the group is `secret-resolution`, but whether those exact names hold once the first real secret capability is built is not yet settled. They will be decided in the ADR that records the decision.
-
-A few points were settled while shaping this entry and should carry into the ADR/SPEC unchanged:
-
-- **Recoverability is not Servitor's problem.** The box holds only derived ciphertext; the origin (the store, or the material CI/CD pushes) lives elsewhere, so losing the box costs nothing durable, you just re-run setup. The non-exportable key protects only against the thief who steals the disk, not against a lost box.
-- **Single server.** Servitor runs on one host, so per-host TPM binding is a non-issue: the ciphertext and the TPM that seals it share the box.
-- **Provisioning is the operator's job.** Setting up TPM/KMS/vTPM is one-time host setup the operator owns, not workflow behavior. `servitor secret add` is management-only metadata (name, source, account, permissions, expiry); value delivery is CI/CD (push) or the store (pull), never a provider-agnostic local seal.
-- **varlock is demoted.** It is not on the default path; at most an optional slow pull origin fetched once into the on-box store. See "What this means versus today".
-- **Webhook key is per-use; no rollover.** The receiver resolves the current signing key fresh per verification. No old-key acceptance window (dropped as over-engineering); the only daemon-held secrets are pull-provider store/KMS credentials.
-- **The zeroization limit.** "Gone after use" means no longer reachable by the daemon, not bytes wiped from RAM (Go cannot zero memory). See piece 2.
-- **The auth-before-side-effect contract.** Retries compose with `dedupe_key` only because a node's auth call is its first outbound call. See "Secret invalidity and rotation".
-- **Redaction composes with per-node delivery.** Redaction scrubs a granted secret value from a node's captured output by scanning that node's filtered env (exec package). Per-node delivery holds a value only while its node runs, which is exactly the window redaction needs, and redaction only ever scrubs values the node was granted. So the new model must keep redaction operating on the running node's filtered env, not on a global secret map, because under per-node delivery there is no global map to redact from. The verbatim-only limit (a transformed secret is not scrubbed) is an open attack surface recorded in THREATS.md, and belongs to the credential-proxy idea, not the core model.
-
 ## Safety primitives and mechanisms (emergency / decommission)
 
 A separate idea that follows from the stronger secrets model, for when an operator detects unauthorized access and needs to react. The point is not to ship a baked-in "delete all secrets" button; it is to provide **primitives and mechanisms** the operator composes into whatever safety behavior fits their keystore setup. This is the same provider/mechanism philosophy as the secrets model, and it slots into that model rather than standing apart from it.
@@ -278,78 +140,59 @@ Revisit the choice when actually building: if it turns out read-only inspection 
 
 Not buildable until Servitor actually publishes the data the app reads and the shape of that published data is defined. The dogfooding idea covers publishing capabilities, and the monitoring idea wants a "see all runs" view, but neither yet specifies a signed, redacted, external-readable feed of run history and outcomes for an app to consume; that feed is the missing prerequisite. Until then this is just a promising direction, kept here so it is not lost.
 
-## Suspended waits: durable wait between nodes (timer and signal)
+## Multiple concurrent parks per run (foreach-body waits)
 
-A durable `wait` flow node so a run can pause mid-way and resume much later, without adopting a durable-execution/replay architecture. The motivation and boundary are compared against Temporal in the context of long-lived workflows; the short version is that Servitor already checkpoints data (each node's `{event, steps}` input and the pending counter), not a running program, so "months later" is just "a queued job with a persisted input" rather than replaying code from an event history. The comparison to Temporal is deliberate: the uses we reached for this (approval waits, timed holds, saga compensation, external-callback waits) are the ones Temporal serves with its timer and signal primitives, so the shape below is checked against what those uses actually need.
+A possible future extension of "Suspended waits" (ADR-0040 through ADR-0043).
+Today a run can park only one `wait` at a time: the continuation is keyed by
+`run_id`, so a second park in the same run overwrites the first. The only shape
+that needs more is a `wait` inside a `foreach` body, where several iterations
+park at once and all must be resumed before the fan-in rejoin completes (for
+example "send N approval requests, wait for all N to sign off, then ship").
 
-### The shape
+Not decided, not in scope; the current one-per-run model is the deliberate
+BSSN choice and covers the common cases. This entry records the shape in case
+that changes.
 
-A single `wait` node that carries both a **timer** and a **signal** source, either optional, and **resolves on whichever fires first**:
+### The use case, narrowly
 
-- `wait.timer`: resume after a duration or at an absolute resume time. Two explicit sub-fields, both optional:
-  - `after`: a duration (for example `48h`), resolved to a `RunAt` at park time (`now + duration`).
-  - `at`: an absolute resume time (for example `2026-09-01T10:00:00Z`), used directly as the `RunAt`.
-  Explicit sub-fields rather than one auto-detected field, so the author never relies on type inference. Honker's queue supports one-shot jobs natively: enqueuing a resume job with `EnqueueOptions{RunAt}` (an absolute unix epoch) makes it claimable at that time, durable in the same SQLite file and surviving restarts, and the worker's claim loop (`ClaimWaker`) sleeps until the soonest future `RunAt` and wakes then. (The Honker *scheduler* is cron-only and is not used for this; the queue's `RunAt` is the mechanism.) The internal `Tx.Enqueue` wrapper needs a `RunAt`-carrying variant.
-- `wait.signal`: resume when a **named signal** arrives. The author names the signal in the Wafer (a first-class field, the same "the artifact is the source of truth" principle as `dedupe_key` and `transform`, ADR-0020/0021): `signal` is a JSONata expression over the run's `{event, steps}` input, resolved at park time to the effective signal name, so an author writes `signal: approval_gate.${event.order_id}` to scope by a business key the run already carries. Senders address a parked run by that name:
-  - another workflow sends it via a small `resume` / `send-signal` node, and/or
-  - `servitor resume <signal-name> [payload]` for manual/human input (an optional run-id form is a small nicety for humans, not a separate mechanism).
-  The runner routes the signal to the run parked on that name, with the payload landing in the wait node's result; when more than one run is parked on the same effective name, the signal is **rejected as ambiguous** (delivered to none of them) and reported, because the author controls the name and a collision is an authoring bug, not something the runner should silently resolve. Because the name lives in the artifact, it is discoverable and the sender needs only the business key, never the parked run's id. Two runs with different business keys resolve to different effective names, so concurrency is unambiguous by construction. A literal `signal: approval_gate` is legal and means "any run parked on this name." External callbacks (a non-Servitor service, a SaaS, a human) do not need a bespoke resume webhook: they POST to an ordinary `http_webhook`/`standard_webhook` trigger, which starts a small broker workflow that sends the named signal, reusing the existing webhook surface instead of adding a per-run one. This replaces the earlier per-run one-shot resume webhook idea.
+Sequential waits never collide: a wait parks, resumes, then the next waits, so
+one-per-run is perfect for a linear chain, a wait before a fan-in, or a wait
+with a fan-out after it. Multiple simultaneous parks come from exactly one
+place: a `foreach` body containing a `wait`, where N iterations park and each
+must be resumed before the rejoin. It is the "wait for all N" fan-out shape.
 
-The "resolves on whichever fires first" behavior is the load-bearing piece, and it is the reason `timer` and `signal` live on one node rather than two. The canonical durable-wait is an approval with a deadline (Temporal's `Workflow.await(timeout, condition)`): wait for the external signal but auto-continue (or auto-fail) when the grace period expires, with the downstream flow able to tell which one happened. Expressing that as two separate nodes would be awkward and unlike Temporal. So a `wait` is one node, and its result records which source resolved it.
+### The alternative that avoids it
 
-The node's **result shape** is therefore a first-class contract, because the downstream flow routes on it. Signals carry data (approve/reject, a payload), and the caller must know whether the wait resolved by signal or by timer. The shape is deliberately small and fixed, and the node does no reshaping of its own:
+"Wait for N" can be modeled without multiple parks per run, the way Temporal
+recommends child workflows: fan out to N separate runs (each run is one unit
+with one wait), then chain them together with the `completed` trigger or a
+collector. Each run keeps its single wait, reusing machinery Servitor already
+has. This is the first answer to the use case.
 
-```
-{source: "signal" | "timer", payload: <the signal payload, or null on timer>}
-```
+### What it would take to support multiple parks
 
-- `source` is `"signal"` when a signal resolved the wait and `"timer"` when the timer did (the value is `"timer"`, not `"timeout"`, because a pure timed hold is not a failure; a downstream `switch` reads `source: "timer"` as "the deadline elapsed").
-- `payload` is always present and `null` when the timer fired.
-- The signal payload is **opaque data**: whatever the sender passed, threaded forward as the wait node's step result. It is not re-injected as a new run `event`, and the wait node does not interpret it. This keeps one input shape (ADR-0021) with no second plumbing for signals, and matches how every node's result is threaded. Users add shape with a downstream `transform` or `switch`, not by growing the wait node.
+Not a one-line fix; it touches the coupled pieces a single park already
+navigates (ADR-0040):
 
-A following `switch`/`transform` branches on `steps.<wait>.source` and extracts `steps.<wait>.payload`, exactly as with any other node's result.
+- **Per-park continuation key.** Key `suspended_continuations` by
+  `(run_id, park_id)` (or `(run_id, node_id, iteration)`) instead of `run_id`
+  alone, so each parked iteration gets its own row instead of overwriting.
+- **Per-park status vs run status.** Today the run has one `waiting` status and
+  `checkRunComplete` guards on `status != waiting`. With several parks the run
+  is `waiting` while any iteration is parked, and each park/resume must manage
+  the shared status correctly rather than flipping it wholesale.
+- **Iteration-scoped signals.** A named signal must address a specific parked
+  iteration, not "the run parked on this name". The effective signal name would
+  have to encode the iteration, or the signal would carry a park id.
+- **`run_deps` and pending consistency.** When one iteration resumes and others
+  stay parked, the fan-in counters and pending count must stay consistent; the
+  rejoin must wait for all iterations to both run *and* resume. This is the
+  subtle part, the same coupling a single park has, multiplied by N.
 
-The **race rules** are pinned so signals are not lost, mirroring Temporal's buffered signals and so callers are not surprised by a gotcha:
-
-- **A signal that arrives before the run parks is buffered, not dropped.** The webhook receiver already persists an inbound event before matching (SPEC: Execution model step 2). A signal is persisted the same way, and the `wait` node's park transaction checks for and consumes a buffered signal; if one is present the wait resumes immediately rather than parking. This closes the race where an external caller fires a callback a moment before the run parks.
-- **A second resume is a no-op.** Once a run is resumed (or a signal consumed), a repeat resume must not re-run anything. This protects against double-delivery (webhook retries, an operator double-click) and is what makes the buffered signal safe. Mechanically it is an atomic compare-and-set on the run's `waiting` status: if the run is no longer `waiting`, the resume is ignored.
-- **Timer and signal are mutually exclusive by construction.** Because of first-wins, only one source can be the cause of resume; the other source's pending work is cleaned up when either fires (the pending `RunAt` timer job is dropped when a signal resolves the wait, and any later signal is a no-op when the timer fires).
-
-### Why the code already supports it
-
-The worker's model makes this small. A `NodeJob` is fully self-contained (worker.go), the completion signal is just a `pending` counter reaching zero (honker runs.go, `checkRunComplete` in worker.go), and all writes go through one atomic `CommitNodeAtom` (honker tx.go). So:
-
-- Processing a `wait` node parks the run in one transaction: write a `suspended_continuations` row holding the continuation (the wait node's downstream sub-DAG and its `{event, steps}` input), set run status to a new `waiting`, and ack the wait job's claim.
-- `checkRunComplete` must not complete a parked run, so its guard becomes `pending == 0 && status != waiting`.
-- On resume: re-enqueue the continuation node (pending +1), flip status to `running`, delete the row. The run picks up at the next node after the wait and continues to completion normally, with the pre-wait results already saved.
-
-This slots into the existing transactional discipline as a new kind of atom.
-
-### The DAG-shaped continuation
-
-Because runs are dependency DAGs (ADR-0023), the continuation is not a single "next node id": a `wait` can sit before a fan-in rejoin (multiple dependents), inside a `foreach` body (several iterations), or in a `switch` branch. The continuation therefore holds the wait node's whole downstream sub-DAG (its `Downstream` tree) plus the current `run_deps` state for those nodes, and the resume re-enqueues the frontier. This is the same machinery the resume-from-failure `continue` mode (SPEC: Secret invalidity and rotation, PLAN Phase 13) reuses: that mode also resumes from an arbitrary point in the DAG, so making the continuation DAG-shaped rather than linear is what keeps it general enough for both.
-
-### What it would take to build
-
-Roughly: one flow node type, one new table, one run status, a guard change, the resume wake-up path(s), and inspection surface (`waiting` shown in `servitor runs` / `servitor run <id>`; `cancel` also drops parked continuations). That is a phase-sized chunk, not an architectural rewrite.
-
-### The one real decision it forces
-
-**Wafer version drift.** A run parked for months, then the Wafer redeployed with changed nodes. The simplest honest answer, consistent with the self-contained-job model: freeze the continuation in the job payload at park time, so a parked run resumes with its original definition and new runs use the new wafer. This is the Servitor equivalent of Temporal's ContinueAsNew-free checkpointing: Servitor freezes the continuation payload rather than rolling over an append-only event history, so very long waits need no extra machinery.
-
-### The boundary that remains
-
-Suspend is **between nodes only, never inside a node's own work**. A run parks at a `wait` node and resumes at the next node: the results of the nodes before the wait are written down and passed forward, so the run picks up right where it left off. What stays out of reach is pausing a single node *mid-way through its own work* and resuming it with its in-memory state intact. Each node runs as a subprocess (ADR-0008) that runs to completion and exits; only its result survives, written down and passed to the next node. So "wait three days" works fine when the wait is between two nodes (the saved results persist, the run resumes at the next step), but a node cannot hold its own half-finished state across a pause. A crashed node simply re-runs from scratch (that is what `dedupe_key` is for). The common long-lived cases (timed holds, approval waits, saga compensation, external-callback waits between discrete steps) are all expressible, because they are waits between steps, not inside a step. This matches Temporal exactly: Temporal's waits live in the orchestrator (workflow code), never inside an activity, and an activity re-runs from scratch on failure.
-
-### A parked run stays inspectable and cancellable
-
-While parked, a run must remain visible and controllable. `servitor runs` and `servitor run <id>` show `waiting`; `servitor cancel` drops parked continuations so a run no one is ever going to resume can be cleaned up. This mirrors Temporal's queries and cancellation on a running workflow.
-
-Open questions:
-
-- How parked runs interact with graceful shutdown / drain (a parked run holds no live work, so it should be trivially drain-safe, but worth confirming).
-
-Not a decision, not in scope yet; recorded here so the shape is not lost.
+Why it is separate: it is not part of the current suspend/resume spine. It is
+independently buildable once the "wait for N" case is real enough to justify
+the coupling, and it is not the recommended first answer to that case (the
+N-runs modeling above is).
 
 ## Agent node (an LLM-driven action node)
 

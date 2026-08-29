@@ -167,3 +167,18 @@ func TestNonOKStatusReturnsError(t *testing.T) {
 	}
 	_ = rec
 }
+
+func TestResumePassesNameQueryAndBody(t *testing.T) {
+	ctx := context.Background()
+	srv, rec := newTestServer(t, http.StatusOK, "")
+	c := clientFor(t, srv)
+	if err := c.Resume(ctx, "gate", []byte(`{"approved":true}`)); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if rec.method != http.MethodPost || rec.path != PathResume+"?name=gate" {
+		t.Fatalf("Resume hit %s %s, want POST %s?name=gate", rec.method, rec.path, PathResume)
+	}
+	if rec.body != `{"approved":true}` {
+		t.Fatalf("Resume body = %q, want the JSON payload", rec.body)
+	}
+}

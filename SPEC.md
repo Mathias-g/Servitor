@@ -714,6 +714,14 @@ Operational and security invariants that are easy to miss or re-litigate.
   evaluated.** The language is JSONata (ADR-0020). When it is evaluated (now, at
   node execution, alongside `transform`) is a separate decision (ADR-0021).
   Do not conflate them when revisiting either.
+- **A run can park only one `wait` at a time.** The continuation is keyed by
+  run id, so a second `wait` in the same run overwrites the first
+  (ADR-0040). Sequential waits (a linear chain, a wait before a fan-in, a wait
+  with a fan-out after it) are fine, since only one is active at a time. A
+  `wait` inside a `foreach` body, where several iterations park at once, is not
+  supported: only the last park would survive. Express "wait for all N" as N
+  separate runs chained by a `completed` trigger instead. See IDEAS.md
+  "Multiple concurrent parks per run".
 
 ---
 
@@ -735,7 +743,9 @@ Early development. The daemon lifecycle, loopback control protocol, Wafer model 
 - Worker concurrency limits; runs execute as a dependency DAG with fan-out (ADR-0023), but branches run sequentially rather than in parallel.
 - The trigger receiver's framing of the remaining bespoke per-provider signing schemes (Grist and Atomic).
 
-**Secrets model: largely implemented.** The Secret resolution section describes the target secret model (ADR-0032 through ADR-0036). The provider interface, per-node delivery, the `env`, `varlock`, and `onbox` (push-based on-box ciphertext, sealed with `servitor secret seal`) providers, the declared-secrets config and `servitor secret` CLI, the capabilities surface, the varlock boot path removal, the secret-failure semantics (missing fails fast, source-unreachable retries with backoff, stale retries with a fresh resolve then fails with `secret_auth_failed`), and the failed-run event (a dead-lettered node marks its run failed and fires the `failed` trigger, ADR-0039) are built. The `onbox` provider uses the non-TPM local-key unlock tier; TPM/KMS sealing of the key (the non-exportable tier) is future work. Not yet built: the resume-from-failure modes (continue/restart/discard), which depend on the suspend/resume machinery of the separate "Suspended waits" feature (SPEC: Execution model step 11, PLAN Phase 14, ADR-0040). **Delete this paragraph once the remaining pieces land**, so it does not linger describing a transition that has already happened.
+**Suspended waits: built.** The durable `wait` flow node (ADR-0040 through ADR-0043) parks a run and resumes it later via a timer (Honker queue `RunAt`, `timer.after` / `timer.at`) or a named signal (an author-defined JSONata `signal` name; senders are a `send-signal` node, `servitor resume <signal-name>`, or a webhook-triggered broker workflow). The run parks as `waiting`, shows in `servitor runs` / `servitor run <id>`, and `servitor cancel` drops the parked continuation. Race rules are pinned: a signal that arrives before the park is buffered, a repeat resume is a no-op, and a signal naming more than one parked run is rejected as ambiguous. A wait inside a `foreach` body (several iterations parking at once) is not supported yet; the continuation is one-per-run.
+
+**Secrets model: largely implemented.** The Secret resolution section describes the target secret model (ADR-0032 through ADR-0036). The provider interface, per-node delivery, the `env`, `varlock`, and `onbox` (push-based on-box ciphertext, sealed with `servitor secret seal`) providers, the declared-secrets config and `servitor secret` CLI, the capabilities surface, the varlock boot path removal, the secret-failure semantics (missing fails fast, source-unreachable retries with backoff, stale retries with a fresh resolve then fails with `secret_auth_failed`), and the failed-run event (a dead-lettered node marks its run failed and fires the `failed` trigger, ADR-0039) are built. The `onbox` provider uses the non-TPM local-key unlock tier; TPM/KMS sealing of the key (the non-exportable tier) is future work. Not yet built: the resume-from-failure modes (continue/restart/discard), which depend on the suspend/resume machinery now built (SPEC: Execution model step 11, ADR-0040). **Delete this paragraph once the remaining pieces land**, so it does not linger describing a transition that has already happened.
 
 Contributions welcome once the initial scaffolding is in place.
 

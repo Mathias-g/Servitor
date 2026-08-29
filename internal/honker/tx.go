@@ -39,6 +39,73 @@ func (t *Tx) Enqueue(queue *Queue, payload any) error {
 	return err
 }
 
+// EnqueueAt enqueues a one-shot job that is claimable at the given absolute
+// unix epoch (ADR-0043). Honker's queue delays the job until runAt; the worker's
+// claim loop sleeps until the soonest future RunAt and wakes then. It commits
+// (or rolls back) with the rest of the transaction.
+func (t *Tx) EnqueueAt(queue *Queue, payload any, runAt int64) error {
+	_, err := queue.q.EnqueueTx(t.tx, payload, hg.EnqueueOptions{RunAt: &runAt})
+	return err
+}
+
+// WithTx runs fn inside a transaction and commits it, rolling back if fn
+// returns an error. It is how a caller composes a set of writes that must
+// commit (or roll back) together, for example the park/resume of a run
+// (SPEC: Execution model step 11).
+func (s *Store) WithTx(fn func(tx *Tx) error) error {
+	tx, err := s.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// WriteResult writes a node's result row inside this transaction.
+func (t *Tx) WriteResult(runID, nodeID string, result any) error {
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		return fmt.Errorf("marshal result: %w", err)
+	}
+	return t.Exec(
+		`INSERT OR REPLACE INTO node_results (run_id, node_id, result) VALUES (?, ?, ?)`,
+		runID, nodeID, string(resultJSON),
+	)
+}
+
+// FanOut performs the dependency fan-out inside this transaction (ADR-0023):
+// it decrements each dependent's remaining count and enqueues only those whose
+// count reached zero, aligning each downstream job by index with its dependent.
+// It returns the number of jobs enqueued, which the caller uses to adjust the
+// run's pending count. This is the same fan-out the completion atom uses,
+// factored out so the resume path can share it.
+func (t *Tx) FanOut(runID string, dependents []string, downstream []Downstream) (int, error) {
+	ready := map[string]bool{}
+	if len(dependents) > 0 {
+		ids, err := t.decrementDependents(runID, dependents)
+		if err != nil {
+			return 0, err
+		}
+		for _, id := range ids {
+			ready[id] = true
+		}
+	}
+	enqueued := 0
+	for i, d := range downstream {
+		if len(dependents) > i && !ready[dependents[i]] {
+			continue
+		}
+		if err := t.Enqueue(d.Queue, d.Payload); err != nil {
+			return 0, fmt.Errorf("enqueue downstream: %w", err)
+		}
+		enqueued++
+	}
+	return enqueued, nil
+}
+
 // Ack marks a claimed job as done inside this transaction. This is the claim
 // ack half of the atom: it only commits if the rest of the transaction does.
 func (t *Tx) Ack(job *Job) error {
@@ -347,5 +414,19 @@ var schemaStmts = []string{
 		node_id  TEXT NOT NULL,
 		remaining INTEGER NOT NULL,
 		PRIMARY KEY (run_id, node_id)
+	)`,
+	`CREATE TABLE IF NOT EXISTS suspended_continuations (
+		run_id       TEXT PRIMARY KEY,
+		workflow_id  TEXT NOT NULL,
+		signal_name  TEXT,
+		run_at       INTEGER,
+		payload      TEXT NOT NULL,
+		created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+	)`,
+	`CREATE TABLE IF NOT EXISTS buffered_signals (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		signal_name TEXT NOT NULL,
+		payload     TEXT NOT NULL,
+		created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 	)`,
 }

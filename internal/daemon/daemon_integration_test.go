@@ -710,3 +710,111 @@ func TestDaemonEmailRegistration(t *testing.T) {
 		t.Fatal("daemon did not shut down")
 	}
 }
+
+// TestDaemonWaitAndResume exercises the suspended-waits path end to end
+// (ADR-0040, ADR-0042): boot a daemon with a worker, submit a workflow with a
+// `wait` node, trigger it so it parks, then resume it by named signal and
+// verify the run completes.
+func TestDaemonWaitAndResume(t *testing.T) {
+	ext := daemonExtPath(t)
+	dbPath := filepath.Join(t.TempDir(), "wait.db")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan string, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, Config{
+			Addr:         "127.0.0.1:0",
+			DBPath:       dbPath,
+			ExtPath:      ext,
+			Workers:      1,
+			DrainTimeout: 2 * time.Second,
+			Started:      func(a string) { started <- a },
+		})
+	}()
+	addr := <-started
+
+	c := protocol.NewClient(addr)
+	waitForHealth(t, c)
+
+	wafer := `name: wf
+triggers:
+  - type: manual
+nodes:
+  - name: w
+    type: wait
+    signal: '"gate"'
+  - name: b
+    type: shell
+    depends_on: [w]
+    command: "printf '{\"ok\":true}'"
+`
+	if msg, err := c.Submit(ctx, []byte(wafer)); err != nil {
+		t.Fatalf("submit: %v (%s)", err, msg)
+	}
+	if err := c.Enable(ctx, "wf"); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	if err := c.Trigger(ctx, "wf", []byte(`{}`)); err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+
+	// Wait for the run to park (status waiting).
+	waitForRunStatus(t, c, "running", honker.RunWaiting)
+
+	// Resume by signal; the run should complete.
+	if err := c.Resume(ctx, "gate", []byte(`{"approved":true}`)); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	waitForRunStatus(t, c, "waiting", honker.RunCompleted)
+
+	cancel()
+	<-done
+}
+
+// waitForHealth polls the daemon health endpoint until it answers.
+func waitForHealth(t *testing.T, c *protocol.Client) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for {
+		if err := c.Health(ctx); err == nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("daemon never became healthy")
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
+// waitForRunStatus polls runs until one run transitions from the given old
+// status to want. It returns when a run reaches want.
+func waitForRunStatus(t *testing.T, c *protocol.Client, old, want string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for {
+		body, err := c.ListRuns(ctx)
+		if err == nil {
+			var runs []struct {
+				ID     string `json:"ID"`
+				Status string `json:"Status"`
+			}
+			if json.Unmarshal([]byte(body), &runs) == nil {
+				for _, r := range runs {
+					if r.Status == want {
+						return
+					}
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for run to become %s (was %s)", want, old)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}

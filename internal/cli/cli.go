@@ -67,6 +67,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return cmdRuns(args[1:], stdout, stderr)
 	case "cancel":
 		return cmdCancel(args[1:], stdout, stderr)
+	case "resume":
+		return cmdResume(args[1:], stdout, stderr)
 	case "mcp":
 		return cmdMCP(args[1:], stdout, stderr)
 	case "tap":
@@ -484,6 +486,40 @@ func cmdCancel(args []string, stdout, stderr io.Writer) int {
 		return exitFailure
 	}
 	_, _ = fmt.Fprintf(stdout, "servitor: cancelled %s\n", rest[0])
+	return exitOK
+}
+
+// cmdResume resumes a parked (waiting) run by named signal, with an optional
+// JSON payload (SPEC: CLI, resume; ADR-0042). A signal with no parked run is
+// buffered so a later wait parks and consumes it; an ambiguous signal (more
+// than one run parked on the name) is rejected.
+func cmdResume(args []string, stdout, stderr io.Writer) int {
+	addr, rest, code := parseAddr(args, "resume", stderr)
+	if code != exitOK {
+		return code
+	}
+	if len(rest) == 0 || rest[0] == "" {
+		_, _ = fmt.Fprintf(stderr, "servitor: usage: servitor resume <signal-name> [json-payload]\n")
+		return exitUsage
+	}
+	name := rest[0]
+	var payload []byte
+	if len(rest) > 1 {
+		payload = []byte(rest[1])
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c := protocol.NewClient(addr)
+	if err := c.Health(ctx); err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: daemon not running at %s\n", addr)
+		return exitNoDaemon
+	}
+	if err := c.Resume(ctx, name, payload); err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: resume: %v\n", err)
+		return exitFailure
+	}
+	_, _ = fmt.Fprintf(stdout, "servitor: sent signal %s\n", name)
 	return exitOK
 }
 

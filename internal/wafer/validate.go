@@ -154,6 +154,21 @@ func (res *Result) validateNode(p string, s any) {
 	}
 	validateConfig(res, st.Name, st.Fields, p, m, "node")
 
+	// A `wait` node with neither a signal nor a timer would park forever
+	// (ADR-0041).
+	if st.Name == "wait" {
+		_, hasSignal := m["signal"]
+		_, hasTimer := m["timer"]
+		if !hasSignal && !hasTimer {
+			res.Errors = append(res.Errors, Issue{
+				Path:     p,
+				Code:     "wait_requires_source",
+				Message:  "a wait node needs at least one of `signal` or `timer`, else it would park forever",
+				Expected: "signal or timer",
+			})
+		}
+	}
+
 	if st.SideEffect {
 		_, hasKey := m["dedupe_key"]
 		if !hasKey {

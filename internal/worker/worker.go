@@ -265,10 +265,21 @@ func (w *Worker) handle(ctx context.Context, claimed *honker.Job) error {
 		return fmt.Errorf("worker: decode job %d: %w", claimed.ID, err)
 	}
 
+	// A one-shot timer firing resumes a parked run (ADR-0043). It is handled
+	// before the cancelled check because the run is `waiting`, not `running`,
+	// when the timer fires. It is a no-op if the run was already resumed.
+	if sj.NodeType == "resume" {
+		_ = resumeRun(w.store, w.queue, sj.RunID, "timer", nil)
+		_, _ = claimed.Ack()
+		return nil
+	}
+
 	// A cancelled (or already finished) run must not continue: ack the job
 	// without running it or enqueueing its successors. This is what actually
-	// stops a cancelled chain even if a node was already claimed.
-	if status, _ := w.store.RunStatus(sj.RunID); status != "" && status != honker.RunRunning {
+	// stops a cancelled chain even if a node was already claimed. A `waiting`
+	// run is not finished: a job claimed for it (for example a sibling branch)
+	// still runs.
+	if status, _ := w.store.RunStatus(sj.RunID); status != "" && status != honker.RunRunning && status != honker.RunWaiting {
 		_, _ = claimed.Ack()
 		return nil
 	}
@@ -277,6 +288,16 @@ func (w *Worker) handle(ctx context.Context, claimed *honker.Job) error {
 	// without executing anything (ADR-0023).
 	if sj.Skip {
 		return w.handleSkip(ctx, sj, claimed)
+	}
+
+	// A `wait` node parks the run (ADR-0041).
+	if sj.NodeType == "wait" {
+		return w.handleWait(ctx, sj, claimed)
+	}
+
+	// A `send-signal` node wakes a parked run in another workflow (ADR-0042).
+	if sj.NodeType == "send-signal" {
+		return w.handleSendSignal(ctx, sj, claimed)
 	}
 
 	// A switch node resolves its branch and routes: chosen branch enqueued
@@ -456,15 +477,24 @@ func (w *Worker) runSwitch(ctx context.Context, sj NodeJob) (string, error) {
 }
 
 // checkRunComplete marks a run completed once its pending job count reaches
-// zero (ADR-0023). It is called after a node (or skip) commits its atom. The
-// pending count is adjusted in the same transaction as the commit, so by the
-// time this runs, pending reflects all in-flight work for the run.
+// zero and the run is not parked (ADR-0023, ADR-0040). It is called after a
+// node (or skip) commits its atom. The pending count is adjusted in the same
+// transaction as the commit, so by the time this runs, pending reflects all
+// in-flight work for the run. A parked (`waiting`) run is not complete even
+// when pending reaches zero.
 func (w *Worker) checkRunComplete(ctx context.Context, sj NodeJob) error {
 	pending, err := w.store.RunPending(sj.RunID)
 	if err != nil {
 		return err
 	}
 	if pending == 0 {
+		status, serr := w.store.RunStatus(sj.RunID)
+		if serr != nil {
+			return serr
+		}
+		if status == honker.RunWaiting {
+			return nil
+		}
 		if err := w.store.SetRunStatus(sj.RunID, honker.RunCompleted); err != nil {
 			return err
 		}

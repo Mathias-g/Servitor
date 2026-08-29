@@ -37,4 +37,8 @@ const (
 
 	// PathCancel cancels an in-flight run (query: id).
 	PathCancel = "/v1/cancel"
+
+	// PathResume resumes a parked run by named signal (query: name; body =
+	// optional JSON payload).
+	PathResume = "/v1/resume"
 )

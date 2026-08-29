@@ -7,12 +7,14 @@ import (
 )
 
 // Run statuses. A run is created as running, becomes completed or failed when
-// its last node finishes, and cancelled when the operator stops it.
+// its last node finishes, cancelled when the operator stops it, and waiting
+// when it is parked at a `wait` node (ADR-0041).
 const (
 	RunRunning   = "running"
 	RunCompleted = "completed"
 	RunFailed    = "failed"
 	RunCancelled = "cancelled"
+	RunWaiting   = "waiting"
 )
 
 // Run is one workflow run, identified by its run id (SPEC: Control plane,
@@ -154,8 +156,10 @@ func (s *Store) RunNodes(id string) ([]NodeOutcome, error) {
 }
 
 // CancelRun stops an in-flight run: it marks the run cancelled and drops any
-// jobs still pending in the queue for that run. A node already claimed and
-// running is stopped by the worker's cancel check rather than here.
+// jobs still pending in the queue for that run, and drops a parked
+// continuation so a run no one is ever going to resume can be cleaned up
+// (ADR-0040). A node already claimed and running is stopped by the worker's
+// cancel check rather than here.
 func (s *Store) CancelRun(id string) error {
 	if err := s.SetRunStatus(id, RunCancelled); err != nil {
 		return err
@@ -167,6 +171,12 @@ func (s *Store) CancelRun(id string) error {
 		id,
 	); err != nil {
 		return fmt.Errorf("honker: cancel run %s: %w", id, err)
+	}
+	// Drop a parked continuation so the run is fully cleaned up.
+	if _, err := s.db.Raw().Exec(
+		`DELETE FROM suspended_continuations WHERE run_id = ?`, id,
+	); err != nil {
+		return fmt.Errorf("honker: cancel run %s (drop continuation): %w", id, err)
 	}
 	return nil
 }

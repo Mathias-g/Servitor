@@ -167,3 +167,37 @@ nodes:
 		t.Fatalf("expected multiple errors at once, got %s", mustJSON(t, res))
 	}
 }
+
+func TestWaitNodeRequiresSignalOrTimer(t *testing.T) {
+	// A wait with neither source must be rejected (ADR-0041).
+	bad := `name: wf
+nodes:
+  - name: w
+    type: wait
+`
+	res := Validate([]byte(bad))
+	if res.Valid() {
+		t.Fatalf("wait with neither source was accepted")
+	}
+	found := false
+	for _, e := range res.Errors {
+		if e.Code == "wait_requires_source" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("errors = %+v, want a wait_requires_source error", res.Errors)
+	}
+
+	// A wait with a timer is fine.
+	good := `name: wf
+nodes:
+  - name: w
+    type: wait
+    timer:
+      after: 48h
+`
+	if r := Validate([]byte(good)); !r.Valid() {
+		t.Fatalf("wait with timer rejected: %+v", r.Errors)
+	}
+}
