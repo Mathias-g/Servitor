@@ -8,6 +8,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/Mathias-g/Servitor/internal/registry"
+	_ "github.com/Mathias-g/Servitor/internal/registry/mechanisms"
 )
 
 // Issue is one structured validation finding, shaped for agents (SPEC:

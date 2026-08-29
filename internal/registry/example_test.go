@@ -1,11 +1,16 @@
-package registry
+package registry_test
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/Mathias-g/Servitor/internal/registry"
+	_ "github.com/Mathias-g/Servitor/internal/registry/mechanisms"
+)
 
 func TestNodeExampleFromExamples(t *testing.T) {
 	// http has examples on url/method/timeout; the example must carry those
 	// sample values so it cannot drift from the schema.
-	ex := LookupNode("http").NodeExample()
+	ex := registry.LookupNode("http").NodeExample()
 	if ex["url"] != "https://api.example.com/things" {
 		t.Fatalf("example url = %v, want the schema example", ex["url"])
 	}
@@ -21,7 +26,7 @@ func TestNodeExampleFromExamples(t *testing.T) {
 }
 
 func TestTriggerExample(t *testing.T) {
-	ex := LookupTrigger("cron").TriggerExample()
+	ex := registry.LookupTrigger("cron").TriggerExample()
 	if ex["schedule"] != "0 * * * *" {
 		t.Fatalf("example schedule = %v, want the schema example", ex["schedule"])
 	}
@@ -33,7 +38,7 @@ func TestTriggerExample(t *testing.T) {
 func TestExampleCoversRequiredFields(t *testing.T) {
 	// Every required field must appear in the derived example, so the example
 	// validates against the schema.
-	for _, st := range Nodes() {
+	for _, st := range registry.Nodes() {
 		ex := st.NodeExample()
 		for name, f := range st.Fields {
 			if f.Required {
@@ -43,7 +48,7 @@ func TestExampleCoversRequiredFields(t *testing.T) {
 			}
 		}
 	}
-	for _, tt := range TriggerTypes() {
+	for _, tt := range registry.TriggerTypes() {
 		ex := tt.TriggerExample()
 		for name, f := range tt.Fields {
 			if f.Required {

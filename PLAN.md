@@ -192,6 +192,43 @@ reuse the DAG-shaped continuation.
 
 **Done when:** a `wait` node parks a run and resumes it on a timer or a named signal, the `waiting` status is visible and cancellable, the named signal is authorable and unambiguous, and the Phase 13 resume-from-failure `continue` mode can be built on the same continuation.
 
+## Phase 15: Self-registering mechanism packages
+
+Splits the mechanism registry and its dispatch so each mechanism lives in its
+own package under a per-group directory and self-registers into the central
+registry (ADR-0045). The goal is a single physical home per mechanism and clean
+deletion: removing a package removes the mechanism with no central references
+left to edit.
+
+- [ ] **Registration surface.** The registry gains a handler type that carries a
+  mechanism's metadata and its dispatch (how a node of that type is spawned and
+  run), plus a `Register` entry point. `commandFor` in the runner and the
+  worker's node-type special cases become lookups into the registry's handler
+  map instead of switches that name each mechanism.
+  - [x] **`Register` entry point.** `registry.Register` adds a capability,
+    idempotent by name; the registry's list is populated only through it
+    (ADR-0045).
+  - [ ] **Dispatch through the registry.** A handler type carrying how a node is
+    spawned and run, and replacing `commandFor` in the runner and the worker's
+    node-type special cases with lookups into the registry's handler map. The
+    metadata half is done; the run-behavior half is the remaining piece.
+- [x] **Group packages.** One directory per mechanism group under the registry
+  (`core`, `webhook`, `singer`, `mcp`, `helper`, `websocket`). Within each, one
+  package per mechanism, each registering its capability and handler. An
+  integration that is its own deletable unit is a subpackage within its group
+  (for example `helper/email`, `helper/grist`).
+- [x] **Migrate existing mechanisms.** Move the current core, webhook, singer,
+  mcp, and email capabilities into the new layout, one group at a time, with
+  `go test ./...` green after each move.
+- [x] **Deletion proof.** A test asserts a capability is present only when its
+  package is imported, so deleting a package removes the capability with no
+  dangling references (ADR-0045 confirmation).
+- [ ] **Future mechanisms follow the layout.** New helpers (grist, slack,
+  github, email send) and future mechanisms are added as packages under their
+  group, not appended to the central registry list. This supersedes the
+  "Curated integration helpers" list in Outstanding work, which is where they
+  are tracked today.
+
 ## Outstanding work
 
 Everything still to do, consolidated from the review of SPEC/ADRs vs the code.

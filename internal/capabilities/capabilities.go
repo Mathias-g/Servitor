@@ -19,6 +19,7 @@ import (
 	"github.com/Mathias-g/Servitor/internal/integrations"
 	"github.com/Mathias-g/Servitor/internal/mcp"
 	"github.com/Mathias-g/Servitor/internal/registry"
+	_ "github.com/Mathias-g/Servitor/internal/registry/mechanisms"
 	"github.com/Mathias-g/Servitor/internal/secret"
 	"github.com/Mathias-g/Servitor/internal/singer"
 )
