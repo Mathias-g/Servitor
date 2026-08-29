@@ -90,6 +90,13 @@ func (c *Client) Resume(ctx context.Context, name string, payload []byte) error 
 	return err
 }
 
+// Rerun re-runs a dead-lettered (failed) run by mode (continue/restart/discard).
+// An empty mode lets the daemon resolve the run's workflow on_failure default.
+func (c *Client) Rerun(ctx context.Context, runID, mode string) error {
+	_, err := c.do(ctx, http.MethodPost, PathRerun+"?run-id="+url.QueryEscape(runID)+"&mode="+url.QueryEscape(mode), nil)
+	return err
+}
+
 func (c *Client) do(ctx context.Context, method, path string, body []byte) (string, error) {
 	return c.doBody(ctx, method, path, body)
 }

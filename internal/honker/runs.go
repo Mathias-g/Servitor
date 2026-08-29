@@ -87,6 +87,18 @@ func (s *Store) SetRunStatus(id, status string) error {
 	return nil
 }
 
+// SetRunPending sets a run's pending job count to n. It is used when a failed
+// run is re-run (continue re-enqueues one node) to reset the in-flight count
+// to reflect the jobs actually re-enqueued, rather than a stale count left from
+// the original run (ADR-0044).
+func (s *Store) SetRunPending(id string, n int) error {
+	_, err := s.db.Raw().Exec(`UPDATE runs SET pending = ? WHERE run_id = ?`, n, id)
+	if err != nil {
+		return fmt.Errorf("honker: set run %s pending %d: %w", id, n, err)
+	}
+	return nil
+}
+
 // RunStatus returns a run's status, or "" when the run is not recorded.
 func (s *Store) RunStatus(id string) (string, error) {
 	var st string

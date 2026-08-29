@@ -338,6 +338,20 @@ CLI able to override it for a specific run:
 - **discard**: drop the failed run entirely and do not re-run it, cleaning up
   any partial state.
 
+Rerun is **general**: it applies to any failed run, whatever the cause of the
+failure (a secret/auth failure, a transient 5xx, a shell command failing, or any
+node dead-lettering after retries). When a node dead-letters, the runner stores
+that node's self-contained job as a failed continuation (so `continue` can
+resume exactly there) and marks the run failed. The behavior is set by `servitor
+rerun <run-id> [--mode continue|restart|discard]`, by a `rerun-failed` node
+(which re-runs the run named by its `run_id` expression, defaulting to
+`event.from_run`, the failed run whose `failed` trigger started the workflow),
+and by a per-Wafer `on_failure` field as the default mode (ADR-0044). A
+`failed` trigger is a normal trigger: it starts a new run of a watcher workflow;
+it does not itself re-run the failed workflow, so it cannot loop on its own (a
+watcher that re-runs a failing workflow repeatedly is the author's responsibility
+to bound).
+
 ## Control plane
 
 The runner is a long-lived daemon. The control plane is a CLI that talks to it, plus the daemon control protocol the CLI is one client of. Everything an agent or human does runs through this interface; there is no separate API. (The decision and rationale are in ADR-0005.)
@@ -357,6 +371,7 @@ servitor enable <name>              # register a workflow's triggers
 servitor disable <name>             # unregister without deleting
 servitor trigger <name> [inputs]    # manual run with optional inputs
 servitor resume <signal-name> [payload]   # resume a parked (waiting) run
+servitor rerun <run-id> [--mode ...]      # re-run a dead-lettered (failed) run
 servitor runs                       # list run history
 servitor run <id>                   # inspect one run
 servitor cancel <id>                # stop an in-flight run
@@ -507,6 +522,31 @@ compute over the run's data.
   are pinned by the operator's declared `command` (for example
   `npx -y atomic-server@1.2.3`), matching how tap and server versions are pinned
   (ADR-0018).
+- `rerun-failed`. Re-run a dead-lettered (failed) run (ADR-0044). Its `run_id`
+  is a JSONata expression over the node's `{event, steps}` input naming the
+  failed run to re-run, and its `mode` is how to re-run (`continue`, `restart`,
+  or `discard`, default `continue`). It is how one workflow re-runs another, for
+  example a watcher fired by a `failed` trigger. It is a control node handled in
+  the worker, not a subprocess.
+
+  `run_id` gives you both the generality (target any run by name) and a
+  zero-config default: when it is omitted it defaults to `event.from_run` (the
+  id of the failed run whose `failed` trigger started this workflow). So the
+  common watcher case needs no config, and an explicit expression re-runs any
+  named run:
+
+  ```yaml
+  # Common case: re-run the failed run that fired this workflow (no run_id).
+  - name: retry_it
+    type: rerun-failed
+    mode: continue
+
+  # General case: re-run any named run by expression.
+  - name: retry_it
+    type: rerun-failed
+    run_id: event.from_run        # or any JSONata expression / name
+    mode: continue
+  ```
 
   `mcp-call` supports both the original MCP protocol (the `initialize` /
   `initialized` handshake) and the stateless revision that carries protocol
@@ -738,14 +778,16 @@ Things deliberately out of scope for v1, kept here so the design doesn't quietly
 
 ## Status
 
-Early development. The daemon lifecycle, loopback control protocol, Wafer model and structured validation, capability discovery (including a `secrets.yaml` reporting declared secret names, account, permissions, and expiry, a `secret-resolution` group enumerating the available secret sources, a `singer/taps.yaml` reporting declared Singer taps, and a `mcp/servers.yaml` reporting declared MCP servers; grouped by mechanism group per ADR-0031, sourced from the declared integrations config per ADR-0018), dry-run DAG resolution (including redacted secret names and a `missing_secret` warning), the Honker durability store (with the transactional atom), node execution (the worker loop, subprocess isolation with env filtering, and the dedupe contract), the secret-resolution model (a pluggable provider with per-node, per-subprocess delivery; the `env` and `varlock` providers; a declared-secrets section in the integrations config and the `servitor secret` CLI; submit rejects a Wafer that references an undeclared secret; the varlock boot path is removed, ADR-0032 through ADR-0036), the Singer integration (the `singer-tap` and `singer-target` executors, bookmark state committed with each tap node's result, and schema discovery; ADR-0016), the MCP integration (the `mcp-call` node type with a client-mode executor, both classic and stateless protocol support, and structured error mapping; ADR-0015), inbound triggers (a webhook receiver for Standard Webhooks, generic HMAC, and the GitHub and Slack provider-specific schemes, plus cron and manual), the shipped `SKILL.md` agent reference, run inspection (`servitor runs`, `servitor run <id>`, `servitor cancel`), and the release flow (`make release`) are built (`servitor run`, `stop`, `dry-run`, `capabilities`, `submit`, `update`, `enable`, `disable`, `trigger`, `runs`, `run`, `cancel`, `secret`), the `transform` node handler and `dedupe_key` evaluation (JSONata via gnata, ADR-0020; `{event, steps}` threaded input, ADR-0021), and the `switch` and `foreach` node handlers with dependency-counter fan-out (ADR-0022, ADR-0023, ADR-0024). Provider-specific webhook receivers for Grist and Atomic, and the curated helpers (grist, slack, github, email send) are not yet built. Open questions, to be resolved as implementation progresses and tracked in ADRs in the `docs/adr/` directory:
+Early development. The daemon lifecycle, loopback control protocol, Wafer model and structured validation, capability discovery (including a `secrets.yaml` reporting declared secret names, account, permissions, and expiry, a `secret-resolution` group enumerating the available secret sources, a `singer/taps.yaml` reporting declared Singer taps, and a `mcp/servers.yaml` reporting declared MCP servers; grouped by mechanism group per ADR-0031, sourced from the declared integrations config per ADR-0018), dry-run DAG resolution (including redacted secret names and a `missing_secret` warning), the Honker durability store (with the transactional atom), node execution (the worker loop, subprocess isolation with env filtering, and the dedupe contract), the secret-resolution model (a pluggable provider with per-node, per-subprocess delivery; the `env` and `varlock` providers; a declared-secrets section in the integrations config and the `servitor secret` CLI; submit rejects a Wafer that references an undeclared secret; the varlock boot path is removed, ADR-0032 through ADR-0036), the Singer integration (the `singer-tap` and `singer-target` executors, bookmark state committed with each tap node's result, and schema discovery; ADR-0016), the MCP integration (the `mcp-call` node type with a client-mode executor, both classic and stateless protocol support, and structured error mapping; ADR-0015), inbound triggers (a webhook receiver for Standard Webhooks, generic HMAC, and the GitHub and Slack provider-specific schemes, plus cron and manual), the shipped `SKILL.md` agent reference, run inspection (`servitor runs`, `servitor run <id>`, `servitor cancel`), and the release flow (`make release`) are built (`servitor run`, `stop`, `dry-run`, `capabilities`, `submit`, `update`, `enable`, `disable`, `trigger`, `runs`, `run`, `cancel`, `resume`, `rerun`, `secret`), the `transform` node handler and `dedupe_key` evaluation (JSONata via gnata, ADR-0020; `{event, steps}` threaded input, ADR-0021), and the `switch` and `foreach` node handlers with dependency-counter fan-out (ADR-0022, ADR-0023, ADR-0024). Provider-specific webhook receivers for Grist and Atomic, and the curated helpers (grist, slack, github, email send) are not yet built. Open questions, to be resolved as implementation progresses and tracked in ADRs in the `docs/adr/` directory:
 
 - Worker concurrency limits; runs execute as a dependency DAG with fan-out (ADR-0023), but branches run sequentially rather than in parallel.
 - The trigger receiver's framing of the remaining bespoke per-provider signing schemes (Grist and Atomic).
 
 **Suspended waits: built.** The durable `wait` flow node (ADR-0040 through ADR-0043) parks a run and resumes it later via a timer (Honker queue `RunAt`, `timer.after` / `timer.at`) or a named signal (an author-defined JSONata `signal` name; senders are a `send-signal` node, `servitor resume <signal-name>`, or a webhook-triggered broker workflow). The run parks as `waiting`, shows in `servitor runs` / `servitor run <id>`, and `servitor cancel` drops the parked continuation. Race rules are pinned: a signal that arrives before the park is buffered, a repeat resume is a no-op, and a signal naming more than one parked run is rejected as ambiguous. A wait inside a `foreach` body (several iterations parking at once) is not supported yet; the continuation is one-per-run.
 
-**Secrets model: largely implemented.** The Secret resolution section describes the target secret model (ADR-0032 through ADR-0036). The provider interface, per-node delivery, the `env`, `varlock`, and `onbox` (push-based on-box ciphertext, sealed with `servitor secret seal`) providers, the declared-secrets config and `servitor secret` CLI, the capabilities surface, the varlock boot path removal, the secret-failure semantics (missing fails fast, source-unreachable retries with backoff, stale retries with a fresh resolve then fails with `secret_auth_failed`), and the failed-run event (a dead-lettered node marks its run failed and fires the `failed` trigger, ADR-0039) are built. The `onbox` provider uses the non-TPM local-key unlock tier; TPM/KMS sealing of the key (the non-exportable tier) is future work. Not yet built: the resume-from-failure modes (continue/restart/discard), which depend on the suspend/resume machinery now built (SPEC: Execution model step 11, ADR-0040). **Delete this paragraph once the remaining pieces land**, so it does not linger describing a transition that has already happened.
+**Rerun: built.** A dead-lettered node saves its self-contained job as a failed continuation and the run is marked failed (ADR-0044). `servitor rerun <run-id> [--mode ...]` re-runs it (`continue` from the failed node, `restart` from the top, `discard` to drop it), and a `rerun-failed` node lets one workflow re-run another (defaulting to `event.from_run`). A per-Wafer `on_failure` field sets the default mode. Rerun is general, applying to any failed run regardless of cause. The global-config layer for the mode is deferred until a servitor config file exists.
+
+**Secrets model: largely implemented.** The Secret resolution section describes the target secret model (ADR-0032 through ADR-0036). The provider interface, per-node delivery, the `env`, `varlock`, and `onbox` (push-based on-box ciphertext, sealed with `servitor secret seal`) providers, the declared-secrets config and `servitor secret` CLI, the capabilities surface, the varlock boot path removal, the secret-failure semantics (missing fails fast, source-unreachable retries with backoff, stale retries with a fresh resolve then fails with `secret_auth_failed`), the failed-run event (a dead-lettered node marks its run failed and fires the `failed` trigger, ADR-0039), and the resume-from-failure modes (continue/restart/discard, `servitor rerun`, a `rerun-failed` node, and a per-Wafer `on_failure` default; ADR-0044) are built. The `onbox` provider uses the non-TPM local-key unlock tier; TPM/KMS sealing of the key (the non-exportable tier) is future work.
 
 Contributions welcome once the initial scaffolding is in place.
 

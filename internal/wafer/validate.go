@@ -45,6 +45,9 @@ const (
 	codeMissingSecret   = "missing_secret"
 )
 
+// rerunModes are the valid values for a rerun mode (ADR-0044).
+var rerunModes = map[string]bool{"continue": true, "restart": true, "discard": true}
+
 // Validate decodes and validates YAML bytes, returning the structured result.
 func Validate(data []byte) Result {
 	var raw any
@@ -85,6 +88,17 @@ func validateValue(raw any) Result {
 		}
 	default:
 		res.Errors = append(res.Errors, Issue{Path: "/name", Code: codeTypeMismatch, Message: "field 'name' must be a string", Expected: "string"})
+	}
+
+	// on_failure (optional): how a failed run of this workflow is re-run
+	// (ADR-0044).
+	if of, present := root["on_failure"]; present {
+		s, ok := of.(string)
+		if !ok {
+			res.Errors = append(res.Errors, Issue{Path: "/on_failure", Code: codeTypeMismatch, Message: "field 'on_failure' must be a string", Expected: "string"})
+		} else if !rerunModes[s] {
+			res.Errors = append(res.Errors, Issue{Path: "/on_failure", Code: "unknown_rerun_mode", Message: fmt.Sprintf("field 'on_failure' must be one of continue, restart, discard, got %q", s), Suggestion: "continue"})
+		}
 	}
 
 	// trigger (optional list of triggers).
@@ -165,6 +179,18 @@ func (res *Result) validateNode(p string, s any) {
 				Code:     "wait_requires_source",
 				Message:  "a wait node needs at least one of `signal` or `timer`, else it would park forever",
 				Expected: "signal or timer",
+			})
+		}
+	}
+
+	// A `rerun-failed` node's `mode` must be a valid rerun mode (ADR-0044).
+	if st.Name == "rerun-failed" {
+		if mode, ok := m["mode"].(string); ok && mode != "" && !rerunModes[mode] {
+			res.Errors = append(res.Errors, Issue{
+				Path:       ptr(p, "mode"),
+				Code:       "unknown_rerun_mode",
+				Message:    fmt.Sprintf("field %q must be one of continue, restart, discard, got %q", "mode", mode),
+				Suggestion: "continue",
 			})
 		}
 	}

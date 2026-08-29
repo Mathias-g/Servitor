@@ -69,6 +69,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return cmdCancel(args[1:], stdout, stderr)
 	case "resume":
 		return cmdResume(args[1:], stdout, stderr)
+	case "rerun":
+		return cmdRerun(args[1:], stdout, stderr)
 	case "mcp":
 		return cmdMCP(args[1:], stdout, stderr)
 	case "tap":
@@ -521,6 +523,53 @@ func cmdResume(args []string, stdout, stderr io.Writer) int {
 	}
 	_, _ = fmt.Fprintf(stdout, "servitor: sent signal %s\n", name)
 	return exitOK
+}
+
+// cmdRerun re-runs a dead-lettered (failed) run by mode (ADR-0044). With no
+// --mode the daemon resolves the run's workflow on_failure default (continue).
+func cmdRerun(args []string, stdout, stderr io.Writer) int {
+	addr := protocol.DefaultAddr
+	mode := ""
+	fs := flag.NewFlagSet("rerun", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.StringVar(&addr, "addr", protocol.DefaultAddr, "loopback address of the daemon")
+	fs.StringVar(&mode, "mode", "", "how to re-run: continue (default), restart, or discard")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return exitOK
+		}
+		return exitUsage
+	}
+	if fs.NArg() != 1 {
+		_, _ = fmt.Fprintf(stderr, "servitor: usage: servitor rerun [--mode continue|restart|discard] <run-id>\n")
+		return exitUsage
+	}
+	runID := fs.Arg(0)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c := protocol.NewClient(addr)
+	if err := c.Health(ctx); err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: daemon not running at %s\n", addr)
+		return exitNoDaemon
+	}
+	if err := c.Rerun(ctx, runID, mode); err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: rerun: %v\n", err)
+		return exitFailure
+	}
+	verb := "rerunning"
+	if mode == "discard" {
+		verb = "discarded"
+	}
+	_, _ = fmt.Fprintf(stdout, "servitor: %s %s (%s)\n", verb, runID, modeName(mode))
+	return exitOK
+}
+
+func modeName(mode string) string {
+	if mode == "" {
+		return "continue"
+	}
+	return mode
 }
 
 // cmdTransformNode is the hidden subprocess entrypoint for a `transform` node

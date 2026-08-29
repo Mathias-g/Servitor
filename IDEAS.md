@@ -323,5 +323,58 @@ Open questions to settle if it moves toward a decision:
 - Whether `mode` (single/queued/parallel/restart) is a gap in our trigger/queue semantics worth naming explicitly.
 - Whether `id` on nodes for cleanup/recovery is a gap.
 
+## Failure modes and rerun policy
+
+A possible extension of the rerun feature (ADR-0044). The rerun machinery lets
+any failed run be `continue`d / `restart`ed / `discard`ed, with the mode chosen
+by the operator or a `rerun-failed` node. Today the cause of the failure is not
+what drives that choice: the worker classifies only the secret-failure causes
+(`missing_secret`, `secret_source_unreachable`, `secret_auth_failed`) to decide
+retry vs fail-fast, and every other failure falls through to the generic retry
+path. This idea asks whether a fuller failure taxonomy should exist, and whether
+the rerun policy should key off it automatically. (The rerun mechanism itself,
+ADR-0044, is built; this is the policy layer on top of it.)
+
+Why it is separate: it is not needed for the general-rerun build (that is one
+mode at a time, decided by the operator). It has real alternatives and design
+questions, so it is a decision in its own right.
+
+### The draft taxonomy
+
+Different causes want different responses; a taxonomy makes the response
+explicit rather than a blanket mode:
+
+- **Transient infrastructure** (source unreachable, 5xx, network): retry with
+  backoff, then auto-`continue` if it stays down, because it is likely to
+  succeed on a later run. The worker already retries source-unreachable with
+  backoff today.
+- **Auth / stale secret**: operator fixes the value, then `continue` from the
+  failed node. This is the case the current SPEC frames resume-from-failure
+  around.
+- **Permanent / config error** (missing secret, bad expression, unknown node
+  type): retrying is pointless; `discard` or fail fast. The worker already
+  treats `missing_secret` as fail-fast.
+- **Business-logic failure** (a shell command genuinely failed, an http call
+  returned a permanent 4xx): `continue` may be fine; `restart` only when
+  side-effecting nodes declare `dedupe_key`.
+
+### How it would compose
+
+A fuller classification in the worker's failure path (extending what
+`recordFailure` already does for secrets) would feed the rerun modes: the mode
+could be chosen automatically from the cause, or the cause could be surfaced so
+an operator or a `rerun-failed` node makes an informed choice.
+
+### Open questions
+
+- How granular the taxonomy: the four above, or finer (per-node-type)?
+- Whether the policy is **automatic** (the runner picks the mode from the
+  cause) or **advisory** (the cause is surfaced, the operator or node chooses).
+- How it composes with `dedupe_key` (a `restart` re-does side effects unless
+  guarded).
+- Whether to auto-`continue` transient failures, and with what backoff/bound,
+  or whether that reintroduces the retry loop the rerun feature is meant to
+  give the operator control over.
+
 ## (Add more ideas here as they come up; delete them when they become ADRs or
 ## are discarded.)

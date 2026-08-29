@@ -818,3 +818,94 @@ func waitForRunStatus(t *testing.T, c *protocol.Client, old, want string) {
 		}
 	}
 }
+
+// TestDaemonRerunContinue exercises the rerun path end to end (ADR-0044): a
+// workflow whose node fails, the run dead-letters and is marked failed, then
+// servitor rerun continues it and it completes.
+func TestDaemonRerunContinue(t *testing.T) {
+	ext := daemonExtPath(t)
+	dbPath := filepath.Join(t.TempDir(), "rerun.db")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan string, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, Config{
+			Addr:         "127.0.0.1:0",
+			DBPath:       dbPath,
+			ExtPath:      ext,
+			Workers:      1,
+			MaxAttempts:  1, // fail fast so the run dead-letters quickly
+			DrainTimeout: 2 * time.Second,
+			Started:      func(a string) { started <- a },
+		})
+	}()
+	addr := <-started
+	c := protocol.NewClient(addr)
+	waitForHealth(t, c)
+
+	// The workflow's first node fails on its first run (creates a marker, then
+	// exits 1), and succeeds on a rerun once the marker exists; the second
+	// depends on it.
+	marker := filepath.Join(t.TempDir(), "marker")
+	cmdA := "if [ ! -f " + marker + " ]; then touch " + marker + " && exit 1; else printf '{\"ok\":true}'; fi"
+	cmdB := `printf '{"ok":true}'`
+	wafer := "name: wf\ntriggers:\n  - type: manual\nnodes:\n  - name: a\n    type: shell\n    command: " +
+		strconv.Quote(cmdA) +
+		"\n  - name: b\n    type: shell\n    depends_on: [a]\n    command: " +
+		strconv.Quote(cmdB) + "\n"
+	if msg, err := c.Submit(ctx, []byte(wafer)); err != nil {
+		t.Fatalf("submit: %v (%s)", err, msg)
+	}
+	if err := c.Enable(ctx, "wf"); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	if err := c.Trigger(ctx, "wf", []byte(`{}`)); err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+
+	// Wait for the run to fail.
+	runID := waitForAnyFailed(t, c)
+	if runID == "" {
+		t.Fatalf("no failed run observed")
+	}
+
+	// The failure saved a continuation; rerun continue re-enqueues node a, which
+	// now succeeds (no secret involved), and the run completes.
+	if err := c.Rerun(ctx, runID, "continue"); err != nil {
+		t.Fatalf("rerun continue: %v", err)
+	}
+	waitForRunStatus(t, c, "failed", honker.RunCompleted)
+
+	cancel()
+	<-done
+}
+
+// waitForAnyFailed polls runs until at least one run is failed, returning its id.
+func waitForAnyFailed(t *testing.T, c *protocol.Client) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for {
+		body, err := c.ListRuns(ctx)
+		if err == nil {
+			var runs []struct {
+				ID     string `json:"ID"`
+				Status string `json:"Status"`
+			}
+			if json.Unmarshal([]byte(body), &runs) == nil {
+				for _, r := range runs {
+					if r.Status == honker.RunFailed {
+						return r.ID
+					}
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}

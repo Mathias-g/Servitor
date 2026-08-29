@@ -41,4 +41,7 @@ const (
 	// PathResume resumes a parked run by named signal (query: name; body =
 	// optional JSON payload).
 	PathResume = "/v1/resume"
+
+	// PathRerun re-runs a dead-lettered (failed) run (query: run-id, mode).
+	PathRerun = "/v1/rerun"
 )

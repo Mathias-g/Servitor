@@ -18,6 +18,11 @@ type Wafer struct {
 	On []Trigger
 	// Nodes are the nodes the workflow runs, in dependency order.
 	Nodes []Node
+	// OnFailure is how a run of this workflow is re-run after it fails
+	// (ADR-0044): continue (from the failed node), restart (from the top), or
+	// discard. It is the default for `servitor rerun <run-id>` when no --mode is
+	// given. Empty means continue.
+	OnFailure string
 }
 
 // Trigger is one trigger config.
@@ -65,6 +70,9 @@ func fromRaw(raw map[string]any) (*Wafer, error) {
 	w := &Wafer{}
 	if name, ok := raw["name"].(string); ok {
 		w.Name = name
+	}
+	if of, ok := raw["on_failure"].(string); ok {
+		w.OnFailure = of
 	}
 	if trigs, ok := raw["triggers"].([]any); ok {
 		for _, t := range trigs {

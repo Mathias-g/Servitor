@@ -233,6 +233,62 @@ func (w *Worker) handleSendSignal(ctx context.Context, sj NodeJob, claimed *honk
 	return w.checkRunComplete(ctx, sj)
 }
 
+// handleRerunFailed re-runs a dead-lettered run by named target (ADR-0044). It
+// resolves the target run id (a `run_id` JSONata expression, defaulting to
+// `event.from_run`, the failed run whose `failed` trigger started this workflow)
+// and the mode (`mode` field, default `continue`), then asks the caller (via
+// OnRerun, typically the daemon) to perform the rerun. It then completes as a
+// normal node, threading a trivial result forward.
+func (w *Worker) handleRerunFailed(ctx context.Context, sj NodeJob, claimed *honker.Job) error {
+	runID := ""
+	if expr, _ := sj.Config["run_id"].(string); expr != "" {
+		v, err := expression.Eval(expr, sj.Input)
+		if err != nil {
+			w.recordFailure(sj, claimed, err)
+			return fmt.Errorf("worker: rerun-failed %s (job %d): %w", sj.NodeID, claimed.ID, err)
+		}
+		runID = stringify(v)
+	} else if ev, ok := sj.Input["event"].(map[string]any); ok {
+		if fr, ok := ev["from_run"].(string); ok {
+			runID = fr
+		}
+	}
+	if runID == "" {
+		err := fmt.Errorf("rerun-failed %s: no target run (set `run_id` or trigger from a `failed` event)", sj.NodeID)
+		w.recordFailure(sj, claimed, err)
+		return fmt.Errorf("worker: %s (job %d): %w", sj.NodeID, claimed.ID, err)
+	}
+	mode := "continue"
+	if m, _ := sj.Config["mode"].(string); m != "" {
+		mode = m
+	}
+	if w.onRerun != nil {
+		if err := w.onRerun(runID, mode); err != nil {
+			w.recordFailure(sj, claimed, err)
+			return fmt.Errorf("worker: rerun-failed %s (job %d): %w", sj.NodeID, claimed.ID, err)
+		}
+	}
+
+	result := map[string]any{"ok": true, "run": runID, "mode": mode}
+	atom := honker.NodeAtom{
+		RunID:      sj.RunID,
+		NodeID:     sj.NodeID,
+		Result:     result,
+		Job:        claimed,
+		Dependents: sj.Dependents,
+	}
+	for i := range sj.Downstream {
+		d := sj.Downstream[i]
+		d.Input = threadInput(sj.Input, sj.NodeName, result)
+		atom.Downstream = append(atom.Downstream, honker.Downstream{Queue: w.queue, Payload: d})
+	}
+	if err := w.store.CommitNodeAtom(atom); err != nil {
+		w.recordFailure(sj, claimed, err)
+		return fmt.Errorf("worker: commit rerun-failed %s (job %d): %w", sj.NodeID, claimed.ID, err)
+	}
+	return w.checkRunComplete(ctx, sj)
+}
+
 // ResumeBySignal delivers a named signal to the parked run parked on that name
 // (ADR-0042). If exactly one run is parked on the name it resumes that run with
 // the payload; if none, it buffers the signal so a later `wait` park consumes

@@ -315,3 +315,104 @@ func TestWaitTimerRunAtSurvivesReopen(t *testing.T) {
 		t.Fatalf("result source = %v, want timer", res["source"])
 	}
 }
+
+func TestRerunFailedNodeCallsOnRerun(t *testing.T) {
+	var gotRun, gotMode string
+	w, store, q := newWorker(t, 30, 3, nil)
+	w.onRerun = func(runID, mode string) error {
+		gotRun = runID
+		gotMode = mode
+		return nil
+	}
+	if err := store.CreateRun("run-watcher", "wf"); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	// A rerun-failed node, triggered by a failed event carrying from_run.
+	node := NodeJob{RunID: "run-watcher", WorkflowID: "wf", NodeID: "r", NodeName: "r",
+		NodeType: "rerun-failed",
+		Config:   map[string]any{},
+		Input:    map[string]any{"event": map[string]any{"trigger": "failed", "from": "demo", "from_run": "demo-123"}, "steps": map[string]any{}},
+	}
+	if _, err := q.Enqueue(node); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	job, _ := q.ClaimOne("worker-1")
+	if err := w.handle(context.Background(), job); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if gotRun != "demo-123" {
+		t.Fatalf("onRerun run = %q, want demo-123 (from event.from_run)", gotRun)
+	}
+	if gotMode != "continue" {
+		t.Fatalf("onRerun mode = %q, want continue (default)", gotMode)
+	}
+}
+
+func TestRerunFailedNodeModeAndRunIDExpr(t *testing.T) {
+	var gotRun, gotMode string
+	w, store, q := newWorker(t, 30, 3, nil)
+	w.onRerun = func(runID, mode string) error {
+		gotRun = runID
+		gotMode = mode
+		return nil
+	}
+	if err := store.CreateRun("run-watcher", "wf"); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	node := NodeJob{RunID: "run-watcher", WorkflowID: "wf", NodeID: "r", NodeName: "r",
+		NodeType: "rerun-failed",
+		Config:   map[string]any{"run_id": `"my-run-9"`, "mode": "restart"},
+		Input:    map[string]any{"event": map[string]any{}, "steps": map[string]any{}},
+	}
+	if _, err := q.Enqueue(node); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	job, _ := q.ClaimOne("worker-1")
+	if err := w.handle(context.Background(), job); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if gotRun != "my-run-9" {
+		t.Fatalf("onRerun run = %q, want my-run-9 (from run_id expr)", gotRun)
+	}
+	if gotMode != "restart" {
+		t.Fatalf("onRerun mode = %q, want restart", gotMode)
+	}
+}
+
+func TestGenericFailureMarksFailedAndSavesContinuation(t *testing.T) {
+	// A non-secret node failure that exhausts attempts must dead-letter, mark
+	// the run failed, and save its continuation so it can be re-run (ADR-0044).
+	ext := extPath(t)
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := honker.Open(dbPath, ext)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	q := store.Queue("nodes", 30, 1)
+	w := New(store, q, "worker-1", Config{MaxAttempts: 1})
+	if err := store.CreateRun("run-1", "wf"); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	// A shell node whose command always fails (non-zero exit, no JSON).
+	if _, err := q.Enqueue(NodeJob{
+		RunID: "run-1", WorkflowID: "wf", NodeID: "a", NodeName: "a",
+		NodeType: "shell", Command: shellCmd(`exit 1`),
+		Input: map[string]any{"event": map[string]any{"trigger": "manual"}, "steps": map[string]any{}},
+	}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	job, _ := q.ClaimOne("worker-1")
+	_ = w.handle(context.Background(), job)
+
+	if st, _ := store.RunStatus("run-1"); st != honker.RunFailed {
+		t.Fatalf("status = %q, want failed (generic dead-letter)", st)
+	}
+	cont, err := store.GetFailedContinuation("run-1")
+	if err != nil || cont == nil {
+		t.Fatalf("failed continuation not saved: %v", err)
+	}
+	if cont.WorkflowID != "wf" {
+		t.Fatalf("continuation workflow = %q, want wf", cont.WorkflowID)
+	}
+}

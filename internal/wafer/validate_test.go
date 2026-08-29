@@ -201,3 +201,42 @@ nodes:
 		t.Fatalf("wait with timer rejected: %+v", r.Errors)
 	}
 }
+
+func TestOnFailureAndRerunModeValidation(t *testing.T) {
+	// on_failure must be a valid rerun mode.
+	bad := `name: wf
+on_failure: bogus
+nodes:
+  - name: a
+    type: shell
+    command: "true"
+`
+	res := Validate([]byte(bad))
+	if res.Valid() {
+		t.Fatalf("invalid on_failure accepted")
+	}
+
+	// A rerun-failed node's mode must be valid.
+	badNode := `name: wf
+nodes:
+  - name: r
+    type: rerun-failed
+    mode: nope
+`
+	if r := Validate([]byte(badNode)); r.Valid() {
+		t.Fatalf("invalid rerun-failed mode accepted")
+	}
+
+	// Valid on_failure and rerun-failed are accepted.
+	good := `name: wf
+on_failure: restart
+nodes:
+  - name: r
+    type: rerun-failed
+    run_id: event.from_run
+    mode: continue
+`
+	if r := Validate([]byte(good)); !r.Valid() {
+		t.Fatalf("valid wafer rejected: %+v", r.Errors)
+	}
+}

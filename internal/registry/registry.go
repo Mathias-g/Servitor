@@ -206,6 +206,17 @@ var types = []*Capability{
 		},
 	},
 	{
+		Name:           "rerun-failed",
+		Desc:           "Re-run a dead-lettered (failed) run, continuing from the failed node, restarting from the top, or discarding it (ADR-0044).",
+		Role:           RoleAction,
+		SideEffect:     false,
+		MechanismGroup: Core,
+		Fields: map[string]*Field{
+			"run_id": {Type: "string", Desc: "A JSONata expression over the step's `{event, steps}` input resolving to the id of the failed run to re-run. Defaults to `event.from_run` (the run whose `failed` trigger started this workflow).", Examples: []any{"event.from_run"}},
+			"mode":   {Type: "string", Desc: "How to re-run: `continue` (from the failed node), `restart` (from the top), or `discard` (drop the failed run). Default `continue`.", Examples: []any{"continue"}},
+		},
+	},
+	{
 		Name:           "singer-tap",
 		Desc:           "Run a Singer tap and capture records and state.",
 		Role:           RoleAction,

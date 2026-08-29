@@ -11,6 +11,7 @@
 package runner
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 
@@ -79,10 +80,11 @@ func commandFor(s wafer.Node) ([]string, error) {
 			return nil, fmt.Errorf("node %q: mcp-call requires a `server` name", nodeName(s))
 		}
 		return []string{server}, nil
-	case "wait", "send-signal":
-		// Flow/control nodes handled in the worker (ADR-0041, ADR-0042); they
-		// run no subprocess. commandFor returns an empty argv marker so FromWafer
-		// accepts them and the worker dispatches on NodeType before running.
+	case "wait", "send-signal", "rerun-failed":
+		// Flow/control nodes handled in the worker (ADR-0041, ADR-0042,
+		// ADR-0044); they run no subprocess. commandFor returns an empty argv
+		// marker so FromWafer accepts them and the worker dispatches on NodeType
+		// before running.
 		return nil, nil
 	default:
 		return nil, fmt.Errorf("node %q: node type %q has no handler built yet (Phase 6 runs shell; the rest come later)", nodeName(s), s.Type)
@@ -213,6 +215,82 @@ func FromWafer(w *wafer.Wafer, event map[string]any) (*worker.NodeJob, error) {
 	}
 	head.Input = map[string]any{"event": event, "steps": map[string]any{}}
 	return head, nil
+}
+
+// Rerun re-runs a dead-lettered (failed) run by mode (ADR-0044). The run must
+// have a saved failed continuation (a node dead-lettered and the run was marked
+// failed):
+//
+//   - "continue": re-enqueue the saved failed node with its original input, so
+//     only the failed node and its remaining successors run. Completed nodes'
+//     results stay in node_results. The default, and the safe choice for the
+//     secret-invalidity case.
+//   - "restart": rebuild the run from the top for the same run id via StartRun,
+//     resetting the run, its dependency counts, and its pending count. Redoes
+//     completed side effects unless they are guarded by dedupe_key.
+//   - "discard": drop the saved continuation, leaving the run failed (a
+//     terminal "not resuming" state).
+func Rerun(store *honker.Store, queue *honker.Queue, runID, mode string) error {
+	cont, err := store.GetFailedContinuation(runID)
+	if err != nil {
+		return err
+	}
+	if cont == nil {
+		return fmt.Errorf("rerun: run %s has no saved continuation (it did not fail, or it was already rerun or discarded)", runID)
+	}
+	switch mode {
+	case "continue":
+		return rerunContinue(store, queue, cont)
+	case "restart":
+		return rerunRestart(store, queue, cont)
+	case "discard":
+		return store.WithTx(func(tx *honker.Tx) error {
+			return tx.DeleteFailedContinuation(runID)
+		})
+	default:
+		return fmt.Errorf("rerun: unknown mode %q", mode)
+	}
+}
+
+// rerunContinue re-enqueues a failed run's saved failed node, setting the run
+// back to running with a fresh pending count, in one transaction (ADR-0044).
+func rerunContinue(store *honker.Store, queue *honker.Queue, cont *honker.FailedContinuation) error {
+	var job worker.NodeJob
+	if err := json.Unmarshal(cont.Payload, &job); err != nil {
+		return fmt.Errorf("rerun: continue %s: decode node: %w", cont.RunID, err)
+	}
+	return store.WithTx(func(tx *honker.Tx) error {
+		if err := tx.SetRunStatusTx(cont.RunID, honker.RunRunning); err != nil {
+			return err
+		}
+		// The one re-enqueued node is the only pending work.
+		if err := tx.Exec(`UPDATE runs SET pending = ? WHERE run_id = ?`, 1, cont.RunID); err != nil {
+			return err
+		}
+		return tx.Enqueue(queue, &job)
+	})
+}
+
+// rerunRestart rebuilds a failed run from the top, for the same run id, using
+// the workflow's current definition and the run's original event (ADR-0044).
+func rerunRestart(store *honker.Store, queue *honker.Queue, cont *honker.FailedContinuation) error {
+	wf, err := store.GetWorkflow(cont.WorkflowID)
+	if err != nil {
+		return fmt.Errorf("rerun: restart %s: %w", cont.RunID, err)
+	}
+	if wf == nil {
+		return fmt.Errorf("rerun: restart %s: workflow %q is not registered", cont.RunID, cont.WorkflowID)
+	}
+	w, perr := wafer.Parse([]byte(wf.Wafer))
+	if perr != nil {
+		return fmt.Errorf("rerun: restart %s: parse workflow: %w", cont.RunID, perr)
+	}
+	// StartRun OR-REPLACEs the run row (pending=1, status=running), re-inits
+	// the dependency counts, and enqueues the head for this run id.
+	if _, err := StartRun(store, queue, w, cont.Event, cont.RunID); err != nil {
+		return fmt.Errorf("rerun: restart %s: %w", cont.RunID, err)
+	}
+	return nil
 }
 
 // StartRun builds a run's head job, records the run, initializes the fan-in

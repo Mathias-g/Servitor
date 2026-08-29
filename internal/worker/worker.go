@@ -146,6 +146,10 @@ type Config struct {
 	// before it fails, independent of the queue's generic MaxAttempts
 	// (SPEC: Secret invalidity and rotation). Zero means 3.
 	SecretRetryCount int
+	// MaxAttempts is the queue's max attempts per job, used to detect when a
+	// non-secret node failure is terminal (dead-lettered) so the run can be
+	// marked failed and saved for rerun (ADR-0044). Zero means 3.
+	MaxAttempts int
 	// Runner runs node subprocesses. Defaults to real subprocesses.
 	Runner NodeRunner
 	// Singer runs singer tap and target subprocesses. Defaults to real
@@ -167,6 +171,11 @@ type Config struct {
 	// kind identifies the source (for example "email") so the caller can turn
 	// each item into a run's event without the worker knowing any provider.
 	OnPoll func(workflowID, kind string, items []any)
+	// OnRerun, if set, is called when a `rerun-failed` node wants to re-run a
+	// dead-lettered run (ADR-0044). runID is the target run, mode is
+	// continue/restart/discard. The caller (typically the daemon) performs the
+	// rerun; an error is recorded as the node's failure.
+	OnRerun func(runID, mode string) error
 }
 
 // Worker claims and executes jobs from a queue, committing each node's
@@ -177,12 +186,14 @@ type Worker struct {
 	workerID      string
 	resolver      *secret.Resolver
 	secretRetries int
+	maxAttempts   int
 	runner        NodeRunner
 	singer        SingerRunner
 	mcp           MCPRunner
 	onDone        func(workflowID, runID string)
 	onFailed      func(workflowID, runID string)
 	onPoll        func(workflowID, kind string, items []any)
+	onRerun       func(runID, mode string) error
 }
 
 // New builds a worker over the store's queue. workerID is used for Honker
@@ -204,18 +215,24 @@ func New(store *honker.Store, queue *honker.Queue, workerID string, cfg Config) 
 	if secretRetries == 0 {
 		secretRetries = 3
 	}
+	maxAttempts := cfg.MaxAttempts
+	if maxAttempts == 0 {
+		maxAttempts = 3
+	}
 	return &Worker{
 		store:         store,
 		queue:         queue,
 		workerID:      workerID,
 		resolver:      cfg.Resolver,
 		secretRetries: secretRetries,
+		maxAttempts:   maxAttempts,
 		runner:        cfg.Runner,
 		singer:        cfg.Singer,
 		mcp:           cfg.MCP,
 		onDone:        cfg.OnRunComplete,
 		onFailed:      cfg.OnRunFailed,
 		onPoll:        cfg.OnPoll,
+		onRerun:       cfg.OnRerun,
 	}
 }
 
@@ -298,6 +315,11 @@ func (w *Worker) handle(ctx context.Context, claimed *honker.Job) error {
 	// A `send-signal` node wakes a parked run in another workflow (ADR-0042).
 	if sj.NodeType == "send-signal" {
 		return w.handleSendSignal(ctx, sj, claimed)
+	}
+
+	// A `rerun-failed` node re-runs a dead-lettered run (ADR-0044).
+	if sj.NodeType == "rerun-failed" {
+		return w.handleRerunFailed(ctx, sj, claimed)
 	}
 
 	// A switch node resolves its branch and routes: chosen branch enqueued
@@ -964,6 +986,7 @@ func (w *Worker) recordFailure(sj NodeJob, claimed *honker.Job, cause error) {
 		w.commitFailed(sj, result)
 		if claimed != nil {
 			if code == "missing_secret" || claimed.Attempts >= int64(w.secretRetries) {
+				w.saveFailedContinuation(sj)
 				_, _ = claimed.Fail(cause.Error())
 				w.resolveRunFailed(sj)
 				return
@@ -981,11 +1004,41 @@ func (w *Worker) recordFailure(sj NodeJob, claimed *honker.Job, cause error) {
 	result := map[string]any{"ok": false, "error": cause.Error()}
 	w.commitFailed(sj, result)
 	if claimed != nil {
+		// A non-secret node failure retries up to the queue's max attempts, then
+		// dead-letters: mark the run failed and save its continuation so it can
+		// be re-run (ADR-0044). The failing node is not acked before this, so
+		// pending is unchanged and the run resolves only here.
+		if claimed.Attempts >= int64(w.maxAttempts) {
+			w.saveFailedContinuation(sj)
+			_, _ = claimed.Fail(cause.Error())
+			w.resolveRunFailed(sj)
+			return
+		}
 		_, _ = claimed.Retry(0, cause.Error())
 	}
 	// The failing node is not acked (it retries), so the run's pending count is
 	// unchanged and the run is neither completed nor failed yet. It resolves
 	// when the node succeeds or is dead-lettered.
+}
+
+// saveFailedContinuation stores a dead-lettered node's self-contained NodeJob
+// and the run's original event, so the run can later be re-run (ADR-0044). It
+// runs before the run is marked failed, so a rerun (continue/restart) has the
+// node to resume from.
+func (w *Worker) saveFailedContinuation(sj NodeJob) {
+	event, _ := sj.Input["event"].(map[string]any)
+	payload, err := json.Marshal(sj)
+	if err != nil {
+		return
+	}
+	_ = w.store.WithTx(func(tx *honker.Tx) error {
+		return tx.WriteFailedContinuation(honker.FailedContinuation{
+			RunID:      sj.RunID,
+			WorkflowID: sj.WorkflowID,
+			Event:      event,
+			Payload:    payload,
+		})
+	})
 }
 
 // commitFailed persists a failed result row and, when the node has a dedupe

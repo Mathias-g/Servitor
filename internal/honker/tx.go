@@ -429,4 +429,11 @@ var schemaStmts = []string{
 		payload     TEXT NOT NULL,
 		created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 	)`,
+	`CREATE TABLE IF NOT EXISTS failed_continuations (
+		run_id      TEXT PRIMARY KEY,
+		workflow_id TEXT NOT NULL,
+		event       TEXT,
+		payload     TEXT NOT NULL,
+		created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+	)`,
 }

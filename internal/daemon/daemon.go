@@ -123,6 +123,7 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc(protocol.PathRun, s.handleRun)
 	mux.HandleFunc(protocol.PathCancel, s.handleCancel)
 	mux.HandleFunc(protocol.PathResume, s.handleResume)
+	mux.HandleFunc(protocol.PathRerun, s.handleRerun)
 	s.httpSrv = &http.Server{Handler: mux}
 	return s
 }
@@ -514,6 +515,49 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// handleRerun re-runs a dead-lettered (failed) run (ADR-0044). The run id is a
+// query param; the mode (continue/restart/discard) is optional and, when empty,
+// resolves to the run's workflow on_failure default (continue if absent).
+func (s *Server) handleRerun(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil || s.queue == nil {
+		http.Error(w, "no store; run the daemon with --db", http.StatusConflict)
+		return
+	}
+	runID := r.URL.Query().Get("run-id")
+	if runID == "" {
+		http.Error(w, "missing run-id", http.StatusBadRequest)
+		return
+	}
+	mode := r.URL.Query().Get("mode")
+	if mode == "" {
+		mode = s.workflowRerunMode(runID)
+	}
+	if err := runner.Rerun(s.store, s.queue, runID, mode); err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	_, _ = io.WriteString(w, "ok\n")
+}
+
+// workflowRerunMode resolves a failed run's rerun mode from its workflow's
+// on_failure field, defaulting to continue (ADR-0044). It returns "continue"
+// when the run or its workflow cannot be resolved.
+func (s *Server) workflowRerunMode(runID string) string {
+	run, err := s.store.GetRun(runID)
+	if err != nil || run == nil {
+		return "continue"
+	}
+	wf, err := s.store.GetWorkflow(run.WorkflowName)
+	if err != nil || wf == nil {
+		return "continue"
+	}
+	w, perr := wafer.Parse([]byte(wf.Wafer))
+	if perr != nil || w.OnFailure == "" {
+		return "continue"
+	}
+	return w.OnFailure
+}
+
 // handleResume resumes a parked run by named signal (ADR-0042). The signal name
 // is a query param; the optional JSON payload is the request body. An ambiguous
 // signal (more than one run parked on the name) is rejected, so the author
@@ -637,6 +681,12 @@ func Run(ctx context.Context, cfg Config) error {
 						_ = srv.receiver.Polled(workflowID, kind, items)
 					}
 				},
+				// When a `rerun-failed` node fires, re-run the named dead-lettered
+				// run (ADR-0044).
+				OnRerun: func(runID, mode string) error {
+					return runner.Rerun(srv.store, srv.queue, runID, mode)
+				},
+				MaxAttempts: cfg.MaxAttempts,
 			})
 			go func() { _ = w.Run(rctx) }()
 		}
