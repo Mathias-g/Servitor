@@ -295,11 +295,12 @@ react. Invalidity is handled reactively, on failure rather than on a schedule:
   a genuinely bad secret does not loop forever. Initially a single global default
   in the servitor config (for example `secret_retry_count: 3`), applied to all
   nodes; a per-node or per-secret override can come later. When retries are
-  exhausted, the node fails with a distinct error (`secret_auth_failed`,
-  distinct from `missing_secret`) in the same structured `path`/`code` shape as
-  other node errors, written to the run's log, and emitted as an event a
-  workflow can trigger on (reusing the `completed` trigger's completion-callback
-  plumbing), so the operator can wire up their own notification.
+   exhausted, the node fails with a distinct error (`secret_auth_failed`,
+   distinct from `missing_secret`) in the same structured `path`/`code` shape as
+   other node errors, written to the run's log, and the run is marked failed
+   and emitted as a `failed` event a workflow can trigger on (a distinct signal
+   from the `completed` trigger, ADR-0039), so the operator can wire up their
+   own notification.
 
 The three failure semantics a provider can return are not handled the same way:
 
@@ -428,6 +429,7 @@ The integrations themselves are declared in a local `servitor.integrations.yaml`
 - `cron`. Honker scheduler.
 - `manual`. Invoked via CLI.
 - `completed`. Fired by another workflow's completion. Its `workflow` field names the workflow whose completion fires it; the run's event is `{trigger: "completed", from: <workflow name>, from_run: <completed run id>}`.
+- `failed`. Fired by another workflow's failure. Its `workflow` field names the workflow whose failure fires it; the run's event is `{trigger: "failed", from: <workflow name>, from_run: <failed run id>}`. A distinct signal from `completed`, which stays success-completion-only (ADR-0039), so the operator can wire a notification to a failed run (for example a failed secret) without `completed` firing spuriously.
 
 #### Using webhook triggers
 
@@ -684,7 +686,7 @@ Early development. The daemon lifecycle, loopback control protocol, Wafer model 
 - Worker concurrency limits; runs execute as a dependency DAG with fan-out (ADR-0023), but branches run sequentially rather than in parallel.
 - The trigger receiver's framing of the remaining bespoke per-provider signing schemes (Grist and Atomic).
 
-**Secrets model: largely implemented.** The Secret resolution section describes the target secret model (ADR-0032 through ADR-0036). The provider interface, per-node delivery, the `env`, `varlock`, and `onbox` (push-based on-box ciphertext, sealed with `servitor secret seal`) providers, the declared-secrets config and `servitor secret` CLI, the capabilities surface, the varlock boot path removal, and the secret-failure semantics (missing fails fast, source-unreachable retries with backoff, stale retries with a fresh resolve then fails with `secret_auth_failed`) are built. The `onbox` provider uses the non-TPM local-key unlock tier; TPM/KMS sealing of the key (the non-exportable tier) is future work. Not yet built: the resume-from-failure modes (continue/restart/discard), which depend on the suspend/resume machinery of the separate "Suspended waits" idea. **Delete this paragraph once the remaining pieces land**, so it does not linger describing a transition that has already happened.
+**Secrets model: largely implemented.** The Secret resolution section describes the target secret model (ADR-0032 through ADR-0036). The provider interface, per-node delivery, the `env`, `varlock`, and `onbox` (push-based on-box ciphertext, sealed with `servitor secret seal`) providers, the declared-secrets config and `servitor secret` CLI, the capabilities surface, the varlock boot path removal, the secret-failure semantics (missing fails fast, source-unreachable retries with backoff, stale retries with a fresh resolve then fails with `secret_auth_failed`), and the failed-run event (a dead-lettered node marks its run failed and fires the `failed` trigger, ADR-0039) are built. The `onbox` provider uses the non-TPM local-key unlock tier; TPM/KMS sealing of the key (the non-exportable tier) is future work. Not yet built: the resume-from-failure modes (continue/restart/discard), which depend on the suspend/resume machinery of the separate "Suspended waits" idea. **Delete this paragraph once the remaining pieces land**, so it does not linger describing a transition that has already happened.
 
 Contributions welcome once the initial scaffolding is in place.
 

@@ -588,6 +588,14 @@ func Run(ctx context.Context, cfg Config) error {
 						_ = srv.receiver.Completed(workflowID, runID)
 					}
 				},
+				// When a run fails, fire any workflow with a `failed` trigger
+				// naming the failed workflow (SPEC: `failed` trigger, ADR-0039),
+				// so the operator can wire a notification to a failed secret.
+				OnRunFailed: func(workflowID, runID string) {
+					if srv.receiver != nil {
+						_ = srv.receiver.Failed(workflowID, runID)
+					}
+				},
 				// When a `poll` returns new items, start a run per item
 				// (ADR-0027). The receiver dispatches on the poll kind.
 				OnPoll: func(workflowID, kind string, items []any) {

@@ -496,6 +496,67 @@ nodes:
 	}
 }
 
+func TestFailedFiresDownstreamWorkflow(t *testing.T) {
+	r, store, q := newReceiver(t, map[string]string{})
+	register(t, store, `
+name: upstream
+triggers:
+  - type: manual
+nodes:
+  - type: shell
+    name: a
+    command: "true"
+`)
+	register(t, store, `
+name: alert
+triggers:
+  - type: failed
+    workflow: upstream
+nodes:
+  - type: shell
+    name: notify
+    command: "true"
+`)
+	if err := r.Failed("upstream", "run-1"); err != nil {
+		t.Fatalf("Failed: %v", err)
+	}
+	job, err := q.ClaimOne("worker-1")
+	if err != nil || job == nil {
+		t.Fatalf("alert run not enqueued: %v", err)
+	}
+	var sj worker.NodeJob
+	if err := job.UnmarshalPayload(&sj); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if sj.WorkflowID != "alert" {
+		t.Fatalf("enqueued workflow = %q, want alert", sj.WorkflowID)
+	}
+	ev := sj.Input["event"].(map[string]any)
+	if ev["trigger"] != "failed" || ev["from"] != "upstream" || ev["from_run"] != "run-1" {
+		t.Fatalf("event = %v, want failed/upstream/run-1", ev)
+	}
+}
+
+func TestFailedIgnoresOtherWorkflow(t *testing.T) {
+	r, store, q := newReceiver(t, map[string]string{})
+	register(t, store, `
+name: alert
+triggers:
+  - type: failed
+    workflow: upstream
+nodes:
+  - type: shell
+    name: notify
+    command: "true"
+`)
+	if err := r.Failed("other-workflow", "run-1"); err != nil {
+		t.Fatalf("Failed: %v", err)
+	}
+	if job, _ := q.ClaimOne("worker-1"); job != nil {
+		t.Fatal("run enqueued for a workflow naming a different upstream")
+	}
+}
+
 func TestEmailReceivedFiresRunPerEmail(t *testing.T) {
 	r, store, q := newReceiver(t, map[string]string{})
 	register(t, store, `

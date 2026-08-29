@@ -304,6 +304,14 @@ var types = []*Capability{
 		MechanismGroup: Core,
 		Fields:         map[string]*Field{"workflow": {Type: "string", Required: true, Desc: "The workflow that fires this.", Examples: []any{"upstream-workflow"}}},
 	},
+	{
+		Name:           "failed",
+		Desc:           "Fired by another workflow's failure.",
+		Role:           RoleTrigger,
+		Delivery:       DeliveryEvent,
+		MechanismGroup: Core,
+		Fields:         map[string]*Field{"workflow": {Type: "string", Required: true, Desc: "The workflow that fires this.", Examples: []any{"upstream-workflow"}}},
+	},
 }
 
 // Types returns all registered capabilities, sorted by name.

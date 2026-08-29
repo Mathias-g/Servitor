@@ -158,6 +158,11 @@ type Config struct {
 	// the `completed` trigger (SPEC: `completed` trigger), without coupling the
 	// worker to the runner or trigger packages.
 	OnRunComplete func(workflowID, runID string)
+	// OnRunFailed, if set, is called after a run fails (a node is dead-lettered
+	// and the run is marked failed). It lets the caller surface a failed-run
+	// signal, such as the failed-secret event (ADR-0039), distinct from the
+	// `completed` trigger.
+	OnRunFailed func(workflowID, runID string)
 	// OnPoll, if set, is called when a `poll` node returns new items (ADR-0027).
 	// kind identifies the source (for example "email") so the caller can turn
 	// each item into a run's event without the worker knowing any provider.
@@ -176,6 +181,7 @@ type Worker struct {
 	singer        SingerRunner
 	mcp           MCPRunner
 	onDone        func(workflowID, runID string)
+	onFailed      func(workflowID, runID string)
 	onPoll        func(workflowID, kind string, items []any)
 }
 
@@ -208,6 +214,7 @@ func New(store *honker.Store, queue *honker.Queue, workerID string, cfg Config) 
 		singer:        cfg.Singer,
 		mcp:           cfg.MCP,
 		onDone:        cfg.OnRunComplete,
+		onFailed:      cfg.OnRunFailed,
 		onPoll:        cfg.OnPoll,
 	}
 }
@@ -466,6 +473,19 @@ func (w *Worker) checkRunComplete(ctx context.Context, sj NodeJob) error {
 		}
 	}
 	return nil
+}
+
+// resolveRunFailed marks a run failed when a node is dead-lettered and fires
+// the failure callback (ADR-0039). A dead-lettered node is the run's last
+// action: nothing else will run, so the run resolves to failed here, not when
+// pending reaches zero. It mirrors checkRunComplete but for the failure path.
+func (w *Worker) resolveRunFailed(sj NodeJob) {
+	if err := w.store.SetRunStatus(sj.RunID, honker.RunFailed); err != nil {
+		return
+	}
+	if w.onFailed != nil {
+		w.onFailed(sj.WorkflowID, sj.RunID)
+	}
 }
 
 // handleForeach runs a foreach node: it resolves the list, sets each rejoin's
@@ -915,6 +935,7 @@ func (w *Worker) recordFailure(sj NodeJob, claimed *honker.Job, cause error) {
 		if claimed != nil {
 			if code == "missing_secret" || claimed.Attempts >= int64(w.secretRetries) {
 				_, _ = claimed.Fail(cause.Error())
+				w.resolveRunFailed(sj)
 				return
 			}
 			if code == "secret_source_unreachable" {

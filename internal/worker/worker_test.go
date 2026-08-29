@@ -396,6 +396,60 @@ func TestStaleSecretFailsWithAuthErrorWhenExhausted(t *testing.T) {
 	}
 }
 
+func TestRunFailedWhenNodeDeadLettered(t *testing.T) {
+	// A stale secret with retries exhausted dead-letters the node, which must
+	// mark the run failed and fire the failure callback (ADR-0039), and must
+	// NOT fire the completion callback.
+	var gotWF, gotRun string
+	failedCalled := false
+	ext := extPath(t)
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := honker.Open(dbPath, ext)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	q := store.Queue("nodes", 30, 3)
+	if err := store.CreateRun("run-1", "wf"); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	reg := secret.NewRegistry()
+	reg.Register("stale", failProvider{err: secret.ErrStale})
+	resolver := secret.NewResolver(reg, map[string]string{"S": "stale"})
+	w := New(store, q, "worker-1", Config{
+		Resolver:         resolver,
+		SecretRetryCount: 1,
+		OnRunComplete:    func(_, _ string) { failedCalled = true },
+		OnRunFailed: func(workflowID, runID string) {
+			gotWF = workflowID
+			gotRun = runID
+		},
+	})
+	if _, err := q.Enqueue(NodeJob{
+		RunID: "run-1", WorkflowID: "wf", NodeID: "a", NodeName: "a",
+		NodeType: "shell", Secrets: []string{"S"},
+		Command: shellCmd(`printf '{"ok":true}'`),
+	}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	job, err := q.ClaimOne("worker-1")
+	if err != nil || job == nil {
+		t.Fatalf("claim: %v", err)
+	}
+	_ = w.handle(context.Background(), job)
+
+	if gotWF != "wf" || gotRun != "run-1" {
+		t.Fatalf("OnRunFailed = (%q, %q), want (wf, run-1)", gotWF, gotRun)
+	}
+	if failedCalled {
+		t.Fatal("OnRunComplete must not fire for a failed run")
+	}
+	status, _ := store.RunStatus("run-1")
+	if status != honker.RunFailed {
+		t.Fatalf("run status = %q, want failed", status)
+	}
+}
+
 func TestVisibilityTimeoutReclaimsUnackedClaim(t *testing.T) {
 	// A short visibility timeout so a worker that "crashes" mid-job loses its
 	// claim and the job is re-issued to another worker (SPEC: Execution model

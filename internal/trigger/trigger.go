@@ -216,6 +216,47 @@ func (r *Receiver) Completed(completedWorkflow, completedRun string) error {
 	return nil
 }
 
+// Failed fires a registered, enabled workflow whose `failed` trigger names the
+// workflow that just failed (ADR-0039). It is the distinct signal for a failed
+// run (for example a failed secret), so the operator can wire a notification
+// to it; it is separate from the `completed` trigger, which stays
+// success-completion-only. The event passed to the downstream run records
+// which workflow and run failed.
+func (r *Receiver) Failed(failedWorkflow, failedRun string) error {
+	workflows, err := r.store.ListWorkflows()
+	if err != nil {
+		return fmt.Errorf("trigger: failed list workflows: %w", err)
+	}
+	for _, wf := range workflows {
+		if !wf.Enabled {
+			continue
+		}
+		w, perr := wafer.Parse([]byte(wf.Wafer))
+		if perr != nil {
+			continue
+		}
+		for _, tr := range w.On {
+			if tr.Type != "failed" {
+				continue
+			}
+			upstream, _ := tr.Config["workflow"].(string)
+			if upstream != failedWorkflow {
+				continue
+			}
+			event := map[string]any{
+				"trigger":  "failed",
+				"from":     failedWorkflow,
+				"from_run": failedRun,
+			}
+			runID := fmt.Sprintf("%s-failed-%d", w.Name, r.now().UnixNano())
+			if _, err := runner.StartRun(r.store, r.queue, w, event, runID); err != nil {
+				return fmt.Errorf("trigger: failed %q: %w", w.Name, err)
+			}
+		}
+	}
+	return nil
+}
+
 // Polled fires a run of the given workflow for each item a `poll` returned
 // (ADR-0027), dispatching on the poll kind to build each run's event. For
 // "email", each item is an email and becomes `event.subject`, `event.from`, and
