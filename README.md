@@ -19,7 +19,7 @@ Most workflow tools were designed for humans clicking through a builder, with an
 - **The artifact is the Wafer, not a database row.** A Wafer is the YAML file that defines a whole workflow: triggers (`triggers:`) that start the run and nodes (`nodes:`) that do the work. Every capability is a trigger, an action node (does work), or a flow node (routes or fans out). Agents read, write, diff, and version-control the same file a human would; there is no "form state" the agent can't see.
 - **Capability discovery is a first-class operation.** `servitor capabilities` returns every capability (trigger, action node, or flow node, with its role and delivery), every declared secret, and every Singer tap available, each with its JSON Schema and an example rendered from that schema. An agent never has to guess what fields a node takes.
 - **Validation errors are structured, not stringified.** Errors come back as JSON with paths, codes, and suggestions, so a typo like `type: slak` is flagged as `unknown_node_type` with `suggestion: slack`, the way an IDE would catch it.
-- **Dry-run is a real primitive.** `servitor dry-run` resolves the entire workflow and shows the DAG the runner *would* execute, and warns when a declared secret is missing from the environment. Nothing runs, nothing is persisted.
+- **Dry-run is a real primitive.** `servitor dry-run` resolves the entire workflow and shows the DAG the runner *would* execute, and warns when a declared secret is not resolvable from its source. Nothing runs, nothing is persisted.
 - **The same CLI serves humans and agents.** No private API the agent doesn't have access to; if a future UI exists, it talks to the same control plane.
 
 These are not nice-to-haves bolted on after the fact; they are why Servitor exists as a separate thing rather than a fork of an existing runner.
@@ -53,17 +53,18 @@ the box:
 - **Go** (the version in `go.mod`), `make`, and a **C compiler** (gcc/clang). The
   build uses cgo: the Honker SQLite extension requires the cgo `mattn/go-sqlite3`
   driver, so the binary is not fully static (ADR-0004).
-- **Varlock** on `PATH`. The runner execs itself under `varlock run` to resolve
-  secrets into its environment. If it is missing, the runner boots anyway but
-  warns that secret resolution is off, and nodes that declare secrets fail.
+- **A way to deliver secrets.** Secrets resolve per node through a pluggable
+  provider; there is no boot-time secret dependency. The recommended mechanism
+  is a push-based on-box ciphertext store, and a plain environment fallback and
+  varlock as an optional pull source are also built in (SPEC: Secret
+  resolution). See step 2 of Getting started.
 - **The Honker SQLite extension** (`libhonker_ext.so`). It is not committed to
   the repo; you download a pinned, checksummed build (ADR-0011). See step 3 of
   Getting started.
 
 ## Getting started
 
-Build it, download the Honker extension, then run it; the runner execs itself
-under varlock to resolve secrets and boots the daemon.
+Build it, download the Honker extension, declare your secrets, then run it.
 
 1. **Build.** Requires Go (the version in `go.mod`), `make`, and a C compiler
    (for cgo):
@@ -74,29 +75,35 @@ under varlock to resolve secrets and boots the daemon.
    `make release <new-version>` (for example `make release 0.2.0`), which bumps
    `VERSION`, rebuilds, and prints the git tag/push commands.
 
-2. **Install varlock and declare secrets.** Varlock is a typed, schema-validated
-   secrets tool (SPEC: Varlock). Install it:
+2. **Declare secrets.** Secrets are resolved per node through a pluggable
+   provider (SPEC: Secret resolution): the Wafer names a secret, and the runner
+   obtains it from that secret's declared source at the moment its node runs.
+   Declare the secrets your integrations need:
 
-       curl -sSfL https://varlock.dev/install.sh | sh -s
-       # or: brew install dmno-dev/tap/varlock
+       ./bin/servitor secret add SLACK_TOKEN onbox
+       ./bin/servitor secret add GH_TOKEN env
 
-   Then declare the secrets your integrations need in a `.env.schema` in the
-   working directory. Each secret is a `KEY=` line with `# @type=...` (and
-   `@sensitive` for secrets) decorators above it:
+   `servitor secret add <name> <source>` writes `servitor.integrations.yaml` in
+   the working directory. Optional metadata (`--account`, `--permissions`,
+   `--expiry`) shows up in `servitor capabilities`, so an agent can reach for
+   the right secret. Three sources are built in:
 
-       # .env.schema
-       # @sensitive @type=string
-       SLACK_TOKEN=
-       # @type=string
-       APP_ENV=development
+   - `onbox` (recommended): push-based on-box ciphertext. Seal each value to
+     the box with `servitor secret seal <name>`, reading it from stdin so it
+     never sits in a file or your shell history:
 
-   The runner resolves these secrets through varlock when it boots, validating
-   them against the schema and injecting them as env vars. Actual secret values
-   live in `.env.local` (git-ignored and encrypted) or come from a varlock
-   plugin / provider (for example 1Password, Infisical, or AWS Secrets Manager);
-   see [varlock.dev](https://varlock.dev) for how to populate them. Servitor
-   itself assumes no particular provider, only that varlock supplies the
-   resolved env vars.
+         echo -n "xoxb-..." | ./bin/servitor secret seal SLACK_TOKEN
+
+     The value is stored as ciphertext under `.servitor/secrets`, never
+     plaintext on disk.
+   - `env`: a plain environment fallback, for development and testing. The
+     variable just needs to be set in the runner's environment.
+   - `varlock`: an optional pull source for deployments that already use
+     [varlock](https://varlock.dev); the runner fetches each value once and
+     serves it per node.
+
+   Run the runner from the same working directory these live in. Servitor
+   itself assumes no particular store; it only resolves what the box declares.
 
 3. **Download the Honker extension.** It is a loadable SQLite extension, pinned
    and checksummed (ADR-0011). The Linux x64 build for the version we pin:
@@ -109,9 +116,8 @@ under varlock to resolve secrets and boots the daemon.
    Point the runner at it with `HONKER_EXTENSION_PATH`. (Other platforms: build
    or fetch the extension for your OS per the Honker docs.)
 
-4. **Run the runner.** `servitor` execs itself under varlock (`--inject vars`)
-   to resolve secrets into its environment, then boots the daemon and owns its
-   SQLite file:
+4. **Run the runner.** `servitor` boots the daemon directly, resolves secrets
+   per node from their declared sources, and owns its SQLite file:
 
        HONKER_EXTENSION_PATH=/opt/servitor/libhonker_ext.so \
          ./bin/servitor run --db ./servitor.db --webhook-addr :8080
@@ -127,8 +133,11 @@ under varlock to resolve secrets and boots the daemon.
        ./bin/servitor enable <name>               # arm its triggers
        ./bin/servitor trigger <name>              # fire a manual run
 
-Inspect results with `servitor runs` and `servitor run <id>`, and stop the
-daemon with `servitor stop`.
+Inspect results with `servitor runs` and `servitor run <id>`. `servitor update`
+replaces a Wafer's definition, `servitor resume <signal-name>` resumes a run
+parked at a `wait` node, `servitor rerun <run-id>` re-runs a failed run,
+`servitor cancel <id>` stops an in-flight run, and `servitor stop` drains and
+shuts the daemon down.
 
 ## Deploying a Wafer
 
