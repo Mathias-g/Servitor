@@ -8,6 +8,18 @@ Build order with dependencies and a clear "done" for each phase. The design live
 
 Current state: the Go project is scaffolded, the enforcement gates are wired (`make check`, adrlint, pre-commit, CI), and the daemon + loopback control protocol, Wafer model/validation, capability discovery, dry-run DAG resolution, Honker integration, node execution (shell, singer-tap, singer-target, mcp-call), triggers/webhooks (http_webhook, standard_webhook, manual), the varlock integration (Phase 8), the secret-resolution model (Phase 13, ADR-0032 through ADR-0036), SKILL.md, run inspection, packaging/release, the Singer integration, the MCP integration, and the declared integrations config (ADR-0018) are built. The daemon owns a WAL SQLite file with the Honker extension loaded; the transactional atom ({result, dedupe, downstream, claim_ack} in one commit) is a tested primitive, and for Singer nodes the bookmark is part of that same commit; the worker loop runs nodes as subprocesses with env filtering and dedupe; inbound webhooks (Standard Webhooks + generic HMAC) and manual triggers are served with event persistence; secrets resolve per node through a pluggable provider (the `env`, `varlock`, and `onbox` sources) with per-node, per-subprocess delivery and the failure semantics of Secret invalidity and rotation, replacing the varlock boot path (Phase 8) which is removed; a `SKILL.md` teaches agents the discover-author-dry-run-PR workflow; the full CLI command set (plus `mcp`/`tap`/`target`/`secret`) is implemented; `make release` drives the release flow (ADR-0012, ADR-0013, ADR-0014); Singer taps/targets run as subprocesses with bookmark state persisted in the same transaction as each node's result (ADR-0016); and MCP servers are declared in a local `servitor.integrations.yaml` and probed at refresh (ADR-0018). Not yet functional: the provider-specific-webhook receivers for Grist and Atomic, and the curated helpers (send side of email included). See "Outstanding work" below. The runner has no workflow registry consulted by the worker for control flow; runs are built from a Wafer into a dependency DAG with dependency-counter fan-out (ADR-0023), and the trigger receiver matches against the stored registered workflows.
 
+## Cross-cutting
+
+Foundational work and cross-phase invariants, built in the early phases and
+kept here because they hold across every phase rather than belonging to any one.
+(They are listed before the phases because they predate them; later phases push
+new work below.)
+
+- [x] Each CLI command implemented per the SPEC's command set and its mapping to daemon operations.
+- [x] Exit codes carry the signal (0 ok, 1 operation failed, 2 usage error, 3 daemon not running).
+- [x] The control plane stays gated and loopback-only throughout (ADR-0009); the deploy path is CI/CD-gated and operator-owned/documented (ADR-0019).
+- [x] Declared integrations config (ADR-0018): replace PATH-prefix discovery with a single declared config (`servitor.integrations.yaml`, per-mechanism sections for MCP servers and Singer taps/targets, each with exact command and env) as the source of what `capabilities` reports, plus a management CLI (`servitor mcp`/`tap`/`target` add/list/remove) that writes entries and delegates the actual software install to the ecosystem's package managers.
+
 ## Phase 1: Daemon and control protocol (foundation)
 
 Everything else runs inside the daemon and is reached through the control protocol.
@@ -179,14 +191,6 @@ reuse the DAG-shaped continuation.
   - [ ] Park inside a `foreach` body (blocked on the continuation-keying deferral above).
 
 **Done when:** a `wait` node parks a run and resumes it on a timer or a named signal, the `waiting` status is visible and cancellable, the named signal is authorable and unambiguous, and the Phase 13 resume-from-failure `continue` mode can be built on the same continuation.
-
-## Cross-cutting
-
-- [x] Each CLI command implemented per the SPEC's command set and its mapping to daemon operations.
-- [x] Exit codes carry the signal (0 ok, 1 operation failed, 2 usage error, 3 daemon not running).
-- [x] The control plane stays gated and loopback-only throughout (ADR-0009); the deploy path is CI/CD-gated and operator-owned/documented (ADR-0019).
-- [ ] Agent authoring reference: committed examples of the Wafer format for every capability (core, singer, mcp-call, curated helpers, webhooks), so an agent sees a valid example without running `capabilities`. The generator is already generic, so this is deferred until the type set stabilizes; until then each new type's registry fields should carry `examples`, and `servitor capabilities` renders them on demand.
-- [x] Declared integrations config (ADR-0018): replace PATH-prefix discovery with a single declared config (`servitor.integrations.yaml`, per-mechanism sections for MCP servers and Singer taps/targets, each with exact command and env) as the source of what `capabilities` reports, plus a management CLI (`servitor mcp`/`tap`/`target` add/list/remove) that writes entries and delegates the actual software install to the ecosystem's package managers.
 
 ## Outstanding work
 
