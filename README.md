@@ -98,7 +98,7 @@ Build it, download the Honker extension, declare your secrets, then run it.
      plaintext on disk.
    - `env`: a plain environment fallback, for development and testing. The
      variable just needs to be set in the runner's environment.
-   - `varlock`: an optional pull source for deployments that already use
+   - `varlock`: an optional pull source backed by
      [varlock](https://varlock.dev); the runner fetches each value once and
      serves it per node.
 
