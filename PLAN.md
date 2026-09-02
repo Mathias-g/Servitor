@@ -306,6 +306,42 @@ split the `mcp` group by transport.
   reference (the config is not engine).
 
 
+## Phase 18: Webhook receivers declared in config (ADR-0049)
+
+Makes webhook symmetric with mcp: two mechanisms by verification scheme
+(`hmac-webhook`, `standard-webhook`), receivers declared in `servitor.config.yaml`
+under a `webhook:` section (path, scheme, secret), and the raw body delivered to
+the workflow, which parses it itself. This replaces the per-service webhook
+types (`grist_webhook`, `github_webhook`, `slack_event`, `atomic_event`) and the
+`http_webhook`/`standard_webhook` names (ADR-0049).
+
+- [ ] **Register the two webhook mechanisms (ADR-0049).** Replace the current
+  per-service webhook packages under `internal/registry/webhook/` with two
+  mechanism folders: `hmac-webhook` (sign the raw body with HMAC-SHA256; header
+  and encoding are config) and `standard-webhook` (the Standard Webhooks
+  envelope: timestamped, replay-bounded, versioned signature). Update the
+  `mechanisms` aggregator and the deletion-proof test.
+- [ ] **Declare webhook receivers in the config (ADR-0049).** Add a `webhook:`
+  section to `servitor.config.yaml` (`internal/config`): each receiver names its
+  `path`, its `scheme` (`hmac` or `standard`), and, when it verifies a
+  signature, a `secret`. A receiver with an unknown `scheme` is rejected. The
+  CLI gains management subcommands (for example `servitor webhook
+  add/list/remove`) mirroring `mcp`/`tap`/`target`/`secret`.
+- [ ] **Resolve a receiver to a mechanism at runtime.** The worker/daemon looks
+  up a webhook trigger's receiver by path from the declared config and runs the
+  matching mechanism (`hmac-webhook` or `standard-webhook`), following the same
+  config-loaded-once pattern as the secret resolver and the MCP connector
+  lookup (THREATS.md). A Wafer's webhook trigger names a receiver path.
+- [ ] **Deliver the raw body.** Both mechanisms deliver the raw body as the
+  run's event; the workflow parses it with a `transform` node. Remove the
+  built-in per-service parsing (GitHub hex HMAC, Slack `v0:` envelope and
+  `url_verification` handshake, Grist and Atomic not-yet-built receivers). The
+  GitHub and Slack HMAC variants become config on `hmac-webhook`.
+- [ ] **Update discovery.** `capabilities` reports the two webhook mechanisms
+  and a `webhook/receivers.yaml` listing the declared receivers, mirroring
+  `singer/taps.yaml` and `mcp/servers.yaml` (ADR-0049, ADR-0018). SPEC's
+  Triggers section is already updated.
+
 ## Outstanding work
 
 Everything still to do, consolidated from the review of SPEC/ADRs vs the code.

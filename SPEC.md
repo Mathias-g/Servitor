@@ -65,17 +65,20 @@ Example Wafer:
 ```yaml
 name: notify_on_new_lead
 triggers:
-  grist_webhook:
-    table: Leads
-    event: row_added
+  - type: hmac-webhook
+    path: /hooks/grist-leads
 nodes:
   - name: post_to_slack
-    type: slack
-    action: post_message
-    channel: "#sales"
+    type: transform
+    expression: |
+      $body := $json($event.body);
+      {"text": "New lead: " & $body.name}
 ```
 
-That's it. Submit it via CLI, enable it, and the next time a row is added to your Grist `Leads` table, a Slack message goes out.
+That's it. Submit it via CLI, enable it, and the next time an HMAC-signed
+request hits `/hooks/grist-leads` (a receiver you declare in the config, named
+after Grist's webhook, ADR-0049), a run fires and its `transform` parses the raw
+body.
 
 ---
 
@@ -149,7 +152,7 @@ Singer nodes and curated helpers can both perform actions against the same exter
 
 What we use it for:
 
-- **A `standard_webhook` trigger type.** Any compliant producer works out of the box with one verification library.
+- **A `standard-webhook` trigger type.** Any compliant producer works out of the box with one verification library.
 - **Forward compatibility.** New services adopting the spec become trigger sources with zero per-service code.
 
 For non-compliant services (Grist, GitHub, Stripe, Slack, etc.), provider-specific trigger types handle their bespoke signing schemes.
@@ -426,7 +429,7 @@ The example is **derived from the schema, not written by hand**: the structural 
 
 This is how "what can this box do and how do I use it" is answered: the agent runs `capabilities`, reads the schemas and their derived examples, and generates a valid Wafer. The pipeline then re-validates the Wafer against the live server's capabilities on deploy (ADR-0009).
 
-`servitor capabilities [dir]` writes files rather than printing, so the schemas never sit in the agent's context: one file per capability (its JSON Schema, role, and delivery, plus a derived example), grouped by **mechanism group** into top-level directories, plus a `secrets.yaml` reporting the declared secrets (name, account, permissions, and expiry, never the values) and an `index.yaml` listing the mechanism groups. A mechanism group (ADR-0031) is a family of mechanisms: `core` (universal primitives and scheduling), `webhook` (inbound HTTP reception), `singer` (record streaming), `mcp` (tool invocation), `helper` (compiled-in wrappers), `secret-resolution` (the available secret sources, the valid `source` values for `secrets.yaml`; ADR-0036), and `websocket` (inbound streaming, future). The individual types within a group are the mechanisms (for example `grist_webhook` and `http_webhook` are both mechanisms under `webhook`). The `secret-resolution` group is different in kind from the node-capability groups: it does not hold Wafer node types, it enumerates the secret providers an agent can name as a secret's `source` (SPEC: Secret resolution, ADR-0036). A service reached by several mechanisms appears in several groups; the type name carries the service (`grist_webhook`, `slack_event`, `tap-grist`). The declared connectors sit with their mechanism group: `singer/taps.yaml` lists the declared Singer taps, and `mcp/servers.yaml` lists the declared MCP servers (ADR-0018), so an agent sees both a capability and what is installed to run against it. The distinction between a standard envelope and a bespoke one (for example `standard_webhook` vs `http_webhook` vs `grist_webhook`) is a per-type detail within a mechanism group, not a separate group.
+`servitor capabilities [dir]` writes files rather than printing, so the schemas never sit in the agent's context: one file per capability (its JSON Schema, role, and delivery, plus a derived example), grouped by **mechanism group** into top-level directories, plus a `secrets.yaml` reporting the declared secrets (name, account, permissions, and expiry, never the values) and an `index.yaml` listing the mechanism groups. A mechanism group (ADR-0031) is a family of mechanisms: `core` (universal primitives and scheduling), `webhook` (inbound HTTP reception), `singer` (record streaming), `mcp` (tool invocation), `helper` (compiled-in wrappers), `secret-resolution` (the available secret sources, the valid `source` values for `secrets.yaml`; ADR-0036), and `websocket` (inbound streaming, future). The individual types within a group are the mechanisms (for example `hmac-webhook` and `standard-webhook` are both mechanisms under `webhook`). The `secret-resolution` group is different in kind from the node-capability groups: it does not hold Wafer node types, it enumerates the secret providers an agent can name as a secret's `source` (SPEC: Secret resolution, ADR-0036). A service reached by several mechanisms appears in several groups; the type name carries the service (`singer-tap`, `mcp-stdio`, `hmac-webhook`). The declared connectors sit with their mechanism group: `singer/taps.yaml` lists the declared Singer taps, `mcp/servers.yaml` lists the declared MCP servers, and `webhook/receivers.yaml` lists the declared webhook receivers (ADR-0018, ADR-0049), so an agent sees both a capability and what is installed to run against it. The distinction between a standard envelope and a bespoke one (for example `standard-webhook` vs `hmac-webhook`) is a per-type detail within a mechanism group, not a separate group.
 
 The mechanism source mirrors this grouping. Each mechanism has its own folder under its mechanism group's directory, and its package lives inside that folder and self-registers its capability and run behavior into the shared registry; the runner dispatches to a mechanism through the registry, never by naming it in a central switch (ADR-0045, ADR-0048). So a mechanism lives at `internal/registry/<group>/<mechanism>/`, for example `helper/email` registers the `email_received` mechanism. The mechanism's folder is the unit of deletion: removing it removes the mechanism from validation and `capabilities` with no central references left to edit. A service reachable by several mechanisms is one mechanism per mechanism group it appears in (for example a Grist helper under `helper/grist` and a Grist MCP mechanism under `mcp/grist`); they are separate code paths and independently removable.
 
@@ -438,14 +441,13 @@ The connectors and secrets are declared in a local `servitor.config.yaml` (ADR-0
 
 ### Triggers
 
-- `http_webhook`. Generic inbound HTTP receiver with configurable HMAC verification.
-- `standard_webhook`. Standard Webhooks-compliant receiver.
-- `grist_webhook`. Grist-specific, knows the payload shape and HMAC scheme.
-- `github_webhook`. GitHub-specific.
-- `slack_event`. Slack events (messages, mentions, and so on).
-- `atomic_event`. Atomic knowledge-base changes. Atomic is a separate, self-hostable project (atomicapp.ai) Servitor integrates with; it is not built as part of Servitor.
+- `hmac-webhook`. Inbound HTTP receiver that verifies HMAC-SHA256 over the raw
+  body and delivers it to the run as the event. The signature header name and
+  encoding are declared per receiver in the config (ADR-0049).
+- `standard-webhook`. Inbound HTTP receiver that verifies the Standard Webhooks
+  envelope (a versioned, timestamped signature with a replay window) and
+  delivers the body to the run (ADR-0049).
 - `email_received`. Inbound email parsed into a structured payload. Its `host`, `username`, and `secret` (a declared secret name) name the mailbox, and its `poll` schedule (default every 5 minutes) polls it for new mail, firing one run per new email. Built for Google Workspace via IMAP (app password); other providers are future helpers.
-- *(more per-service trigger types as mechanisms are added)*
 - `cron`. Honker scheduler.
 - `manual`. Invoked via CLI.
 - `completed`. Fired by another workflow's completion. Its `workflow` field names the workflow whose completion fires it; the run's event is `{trigger: "completed", from: <workflow name>, from_run: <completed run id>}`.
@@ -453,36 +455,32 @@ The connectors and secrets are declared in a local `servitor.config.yaml` (ADR-0
 
 #### Using webhook triggers
 
-All webhook triggers are the same mechanism (inbound HTTP event reception) and
-live under `webhook/` in capabilities; they differ only in which signing scheme
-they verify (SPEC: Triggers, ADR-0017). Pick the type that matches how the
-sender signs:
-
-- **`standard_webhook`** when the sending service speaks Standard Webhooks
-  (it sends `webhook-id`, `webhook-timestamp`, and `webhook-signature` headers).
-  Any compliant producer works with this type.
-- **`http_webhook`** when the service does not use Standard Webhooks but you can
-  configure it to sign the body with an HMAC-SHA256 in the `x-servitor-signature`
-  header. `secret` names the shared key.
-- **A provider-specific type** (`grist_webhook`, `github_webhook`, `slack_event`,
-  `atomic_event`) when that service has a bespoke signing scheme and the receiver
-  for it is built.
-
-Each type takes a `path` (the URL path it receives on) and, when the receiver
+Webhook receivers are declared in the config (ADR-0049), mirroring MCP servers:
+each receiver names its `path`, its `scheme` (`hmac` or `standard`), and, when it
 verifies a signature, a `secret` (the declared secret name holding the shared
-key; see SPEC: Secret resolution). A request that hits a configured `path` is
-persisted before matching (SPEC: Execution model step 2), its signature is
-verified against the secret, and each matching enabled workflow is enqueued
-(SPEC: Execution model step 5).
+key; SPEC: Secret resolution). A Wafer's webhook trigger names a receiver by its
+path, and the mechanism is chosen by the receiver's declared scheme:
 
-Not all webhook types are served yet. `standard_webhook` and `http_webhook` are
-built and verify signatures, as are the `github_webhook` (HMAC-SHA256 in
-`X-Hub-Signature-256`) and `slack_event` (HMAC-SHA256 over `v0:<timestamp>:<body>`
-in `X-Slack-Signature`, with the `url_verification` handshake) receivers. The
-provider-specific webhook types `grist_webhook` and `atomic_event` are
-registered and listed in capabilities but their receivers are not built, so a
-workflow using one will not yet fire. Check the current build state (SPEC: Status)
-before relying on a provider-specific type.
+- **`hmac-webhook`** when the sender signs the raw body with HMAC-SHA256. The
+  receiver config declares the signature header and encoding (hex or base64),
+  so GitHub (HMAC-SHA256 in `X-Hub-Signature-256`, hex) is a config entry, not
+  a separate mechanism.
+- **`standard-webhook`** when the sender speaks Standard Webhooks (it sends
+  `webhook-id`, `webhook-timestamp`, and `webhook-signature` headers), or signs
+  a timestamped envelope with a replay window (Slack is such a scheme via
+  config). Any compliant producer works with this type.
+
+Both mechanisms deliver the **raw body** as the run's event. The workflow parses
+it itself, typically with a `transform` node, so no per-service parsing is
+compiled in (ADR-0049).
+
+A request that hits a configured `path` is persisted before matching (SPEC:
+Execution model step 2), its signature is verified against the receiver's
+declared secret, and each matching enabled workflow is enqueued (SPEC:
+Execution model step 5).
+
+Both `hmac-webhook` and `standard-webhook` receivers are built and verify
+signatures. A receiver declared with an unknown `scheme` is rejected.
 
 #### Using email triggers
 
