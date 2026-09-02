@@ -291,8 +291,14 @@ split the `mcp` group by transport.
   `capabilities`) but its executor is not yet built: running one fails with a
   clear "not yet built" error. The config `url`/`headers` schema is built (a
   URL-only server validates, holds its URL, and is skipped by capabilities
-  discovery rather than mis-probed). Remaining for `mcp-http`: the Streamable
-  HTTP client, the connector registry (URL lookup), and worker dispatch.
+  discovery rather than mis-probed). The mcp-http executor is deferred to its
+  own task below.
+- [ ] **Build the `mcp-http` executor (Streamable HTTP).** The remaining half of
+  the mcp-http mechanism (ADR-0047): the Streamable HTTP client, the connector
+  registry (URL lookup from the config, which now carries `url`/`headers`), and
+  worker dispatch so an `mcp-http` node runs instead of failing with the
+  "not yet built" error. Unblocks the `search` URL-based server in
+  `examples/servitor.config.yaml` (currently skipped by capabilities discovery).
 - [x] **Route the leftover packages (ADR-0046, ADR-0048).** Move
   `internal/email` (a provider-agnostic, multi-consumer, mechanism-agnostic
   `Email` struct) to `internal/components/email`, and move `internal/gmail`
