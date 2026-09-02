@@ -7,16 +7,16 @@ informed: []
 scope:
   - runner
   - capabilities
-  - singer-integration
-  - mcp-integration
+  - singer
+  - mcp
 interface-impact: new
 ---
 
-# ADR-0018: Declared integrations config replaces PATH-prefix discovery
+# ADR-0018: Declared config replaces PATH-prefix discovery
 
 ## Context and problem statement
 
-Servitor runs subprocess integrations (MCP servers, Singer taps and targets)
+Servitor runs subprocess connectors (MCP servers, Singer taps and targets)
 that are installed on the box as separate executables. To tell an authoring
 agent what is available, `servitor capabilities` must enumerate them. One
 approach, which the current build used, is to scan PATH for name prefixes
@@ -45,8 +45,8 @@ with its exact command, rather than infer it from a filename.
 
 ## Considered options
 
-- **Declared integrations config (chosen).** One config file, with a section
-  per mechanism, lists each integration and its exact command and env. A
+- **Declared config (chosen).** One config file, with a section
+  per mechanism, lists each connector and its exact command and env. A
   management CLI (for example `servitor mcp add`) writes entries; the actual
   software install is delegated to the ecosystem's package managers (npx, pipx,
   uv, Meltano). `capabilities` reports only what is declared.
@@ -61,9 +61,9 @@ with its exact command, rather than infer it from a filename.
 
 ## Decision outcome
 
-Chosen option: **a single declared integrations config, declared-only.**
+Chosen option: **a single declared config, declared-only.**
 
-One config file lists every subprocess integration, with a section per
+One config file lists every subprocess connector, with a section per
 mechanism so the mechanism is explicit and nothing is ambiguous:
 
 ```yaml
@@ -82,17 +82,17 @@ singer:
 ```
 
 - The config is the sole source of truth for what is available; there is no PATH
-  scan. `capabilities` reports only declared integrations, probing each once at
+  scan. `capabilities` reports only declared connectors, probing each once at
   refresh for its schemas (Singer via `--about`/`--discover`; MCP via
   `tools/list` with the detected protocol mode).
 - A management CLI (`servitor mcp add`, `servitor tap add`, and their
   list/remove counterparts) makes installing easy: it writes the config entry
   and guides the operator. The actual software install is delegated to the
   ecosystem's package managers.
-- Only local stdio integrations are covered for now; remote MCP servers (URLs)
+- Only local stdio connectors are covered for now; remote MCP servers (URLs)
   are a future addition and not part of this decision.
 
-This decision establishes how integrations are discovered and enumerated,
+This decision establishes how connectors are discovered and enumerated,
 which ADR-0017 leaves to this ADR. It is independent of ADR-0017's mechanism
 grouping, which is unchanged: `capabilities` still groups its output by
 mechanism.
@@ -105,23 +105,23 @@ mechanism.
   advertises what it has.
 - Good: a management CLI makes install easy without hand-editing.
 - Bad: adds a config surface and an install workflow that the prefix scan
-  avoided; the operator must declare an integration before an agent can
+  avoided; the operator must declare a connector before an agent can
   discover it.
 - Neutral: execution is unaffected (the Wafer already names the exact
   server/tap); only discovery changes.
 
 ### Confirmation
 
-`go test ./...` passes. `capabilities` reports only declared integrations and
+`go test ./...` passes. `capabilities` reports only declared connectors and
 groups output by mechanism (`core/`, `webhook/`, `singer/`, `mcp/`, `helper/`),
-each pinned by tests. A test asserts a declared integration appears in the
+each pinned by tests. A test asserts a declared connector appears in the
 report and a non-declared executable does not.
 
 ## Interface notes
 
 Additive and breaking. The `servitor capabilities` output changes: the
 discovered reports (`singer/taps.yaml`, `mcp/servers.yaml`) are now sourced
-from the declared config rather than a PATH scan. A new integrations config file
+from the declared config rather than a PATH scan. A new config file
 and a new management CLI surface (`servitor mcp` / `servitor tap` subcommands)
 are added. The `mcp-call` step type (ADR-0015) and the Singer contract
 (ADR-0016) are unchanged.
@@ -131,5 +131,5 @@ are added. The `mcp-call` step type (ADR-0015) and the Singer contract
 - ADR-0017 (mechanism as organizing principle for capabilities)
 - ADR-0015 (mcp-call step type)
 - ADR-0016 (Singer invocation contract)
-- SPEC: How an agent discovers integrations, What counts as an integration
+- SPEC: How an agent discovers capabilities and connectors
 - IDEAS.md (the exploration this decision grew from)

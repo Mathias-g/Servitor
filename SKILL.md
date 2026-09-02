@@ -84,12 +84,12 @@ role (trigger, action, or flow), and delivery, plus a derived example fragment,
 and an `index.yaml` listing the mechanisms. Read `./capabilities/index.yaml` to
 see what exists, then read the schema for the specific type you need (for example
 `./capabilities/core/shell.yaml`) to learn its required fields and a valid
-example. The declared integrations sit with their mechanism (`singer/taps.yaml`,
+example. The declared connectors sit with their mechanism (`singer/taps.yaml`,
 `mcp/servers.yaml`), so you can see what is available to run against a node
 type. The example is generated from the schema, so it cannot drift from it.
 
 Available MCP servers and Singer taps/targets are declared in a local
-`servitor.integrations.yaml` (ADR-0018), not auto-discovered from PATH. Manage
+`servitor.config.yaml` (ADR-0018), not auto-discovered from PATH. Manage
 them with `servitor mcp`/`tap`/`target` add/remove; the actual software install
 is delegated to the ecosystem's package managers (npx, pipx, uv, Meltano). If a
 node names a server/tap that is not declared, it will not appear here.

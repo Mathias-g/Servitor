@@ -6,7 +6,7 @@ Build order with dependencies and a clear "done" for each phase. The design live
 
 **Partial tasks.** A partially-finished task is split into a done part (`[x]`) and a not-done part (`[ ]`), or the `[x]` line is annotated with what is deferred. Do not leave a task half-done with no marker of what remains; a `[x]` means "its intended scope is done" and a `[ ]` means "not done", with the text saying exactly what is left.
 
-Current state: the Go project is scaffolded, the enforcement gates are wired (`make check`, adrlint, pre-commit, CI), and the daemon + loopback control protocol, Wafer model/validation, capability discovery, dry-run DAG resolution, Honker integration, node execution (shell, singer-tap, singer-target, mcp-call), triggers/webhooks (http_webhook, standard_webhook, manual), the varlock integration (Phase 8), the secret-resolution model (Phase 13, ADR-0032 through ADR-0036), SKILL.md, run inspection, packaging/release, the Singer integration, the MCP integration, and the declared integrations config (ADR-0018) are built. The daemon owns a WAL SQLite file with the Honker extension loaded; the transactional atom ({result, dedupe, downstream, claim_ack} in one commit) is a tested primitive, and for Singer nodes the bookmark is part of that same commit; the worker loop runs nodes as subprocesses with env filtering and dedupe; inbound webhooks (Standard Webhooks + generic HMAC) and manual triggers are served with event persistence; secrets resolve per node through a pluggable provider (the `env`, `varlock`, and `onbox` sources) with per-node, per-subprocess delivery and the failure semantics of Secret invalidity and rotation, replacing the varlock boot path (Phase 8) which is removed; a `SKILL.md` teaches agents the discover-author-dry-run-PR workflow; the full CLI command set (plus `mcp`/`tap`/`target`/`secret`) is implemented; `make release` drives the release flow (ADR-0012, ADR-0013, ADR-0014); Singer taps/targets run as subprocesses with bookmark state persisted in the same transaction as each node's result (ADR-0016); and MCP servers are declared in a local `servitor.integrations.yaml` and probed at refresh (ADR-0018). Not yet functional: the provider-specific-webhook receivers for Grist and Atomic, and the curated helpers (send side of email included). See "Outstanding work" below. The runner has no workflow registry consulted by the worker for control flow; runs are built from a Wafer into a dependency DAG with dependency-counter fan-out (ADR-0023), and the trigger receiver matches against the stored registered workflows.
+Current state: the Go project is scaffolded, the enforcement gates are wired (`make check`, adrlint, pre-commit, CI), and the daemon + loopback control protocol, Wafer model/validation, capability discovery, dry-run DAG resolution, Honker integration, node execution (shell, singer-tap, singer-target, mcp-call), triggers/webhooks (http_webhook, standard_webhook, manual), the varlock integration (Phase 8), the secret-resolution model (Phase 13, ADR-0032 through ADR-0036), SKILL.md, run inspection, packaging/release, the Singer integration, the MCP integration, and the declared integrations config (ADR-0018) are built. The daemon owns a WAL SQLite file with the Honker extension loaded; the transactional atom ({result, dedupe, downstream, claim_ack} in one commit) is a tested primitive, and for Singer nodes the bookmark is part of that same commit; the worker loop runs nodes as subprocesses with env filtering and dedupe; inbound webhooks (Standard Webhooks + generic HMAC) and manual triggers are served with event persistence; secrets resolve per node through a pluggable provider (the `env`, `varlock`, and `onbox` sources) with per-node, per-subprocess delivery and the failure semantics of Secret invalidity and rotation, replacing the varlock boot path (Phase 8) which is removed; a `SKILL.md` teaches agents the discover-author-dry-run-PR workflow; the full CLI command set (plus `mcp`/`tap`/`target`/`secret`) is implemented; `make release` drives the release flow (ADR-0012, ADR-0013, ADR-0014); Singer taps/targets run as subprocesses with bookmark state persisted in the same transaction as each node's result (ADR-0016); and MCP servers are declared in a local `servitor.config.yaml` and probed at refresh (ADR-0018). Not yet functional: the provider-specific-webhook receivers for Grist and Atomic, and the curated helpers (send side of email included). See "Outstanding work" below. The runner has no workflow registry consulted by the worker for control flow; runs are built from a Wafer into a dependency DAG with dependency-counter fan-out (ADR-0023), and the trigger receiver matches against the stored registered workflows.
 
 ## Cross-cutting
 
@@ -260,7 +260,7 @@ a category directory, a mechanism has its own folder inside it, and a mechanism
 package lives in that folder and self-registers exactly one mechanism), and
 split the `mcp` group by transport.
 
-- [ ] **Split the registry into one package per mechanism (ADR-0048).** The
+- [x] **Split the registry into one package per mechanism (ADR-0048).** The
   group-directory packages that register several mechanisms today must become
   one mechanism folder (and package) per mechanism:
   `core` (12 mechanisms: http, shell, transform, switch, foreach, wait,
@@ -270,30 +270,34 @@ split the `mcp` group by transport.
   `webhook/http/`. `singer` (2: tap, target) splits into `singer/tap/` and
   `singer/target/`. `mcp` (1: mcp-call) and `helper/email` (1) already follow
   the model. `go test ./...` stays green after each group moves.
-- [ ] **Update the `mechanisms` aggregator.** `internal/registry/mechanisms/`
+- [x] **Update the `mechanisms` aggregator.** `internal/registry/mechanisms/`
   blank-imports group-level packages; after the split it must import every
   mechanism package instead, or its shape changes. The deletion-proof test
   (a capability is present only when its mechanism package is imported) keeps
   passing.
-- [ ] **Rename the config to `servitor.config.yaml` (ADR-0047).**
+- [x] **Rename the config to `servitor.config.yaml` (ADR-0047).**
   `internal/integrations` becomes `internal/config`, and the file
   `servitor.integrations.yaml` becomes `servitor.config.yaml`. The `Config`,
   `Server`, `Tap`, `Target`, and `Secret` types, `DefaultFile`, the
   `servitor mcp/tap/target/secret` CLI `--file` default, the capabilities
   reports, and all importers and tests update. The `mcp:` section gains a `url`
   variant (plus secret-referenced `headers`) alongside `command`.
-- [ ] **Split the `mcp` group by transport (ADR-0047).** Rename `mcp-call` to
-  `mcp-stdio` (behavior unchanged), and add `mcp-http` (Streamable HTTP to a
+- [x] **Split the `mcp` group by transport (ADR-0047).** Renamed `mcp-call` to
+  `mcp-stdio` (behavior unchanged), and added `mcp-http` (Streamable HTTP to a
   declared `url`, secret-referenced token). Both carry an optional `mode` field
-  (`stateless` or `classic`) that defaults to run-time detection. This touches
-  the registry capability, the worker dispatch, `examples/order-wafers.md`, and
-  the tests that name `mcp-call`.
-- [ ] **Route the leftover packages (ADR-0046, ADR-0048).** Move
+  (`stateless` or `classic`) that defaults to run-time detection. `mcp-stdio`
+  is fully wired (registry, worker dispatch, `examples/order-wafers.md`, tests).
+  `mcp-http` is registered with its schema (so it validates and appears in
+  `capabilities`) but its executor is not yet built: running one fails with a
+  clear "not yet built" error. Remaining for `mcp-http`: the Streamable HTTP
+  client, the connector registry (URL lookup), the config `url`/`headers`
+  schema, and worker dispatch.
+- [x] **Route the leftover packages (ADR-0046, ADR-0048).** Move
   `internal/email` (a provider-agnostic, multi-consumer, mechanism-agnostic
   `Email` struct) to `internal/components/email`, and move `internal/gmail`
   (the Gmail provider for `email_received`) under the mechanism folder, for
   example `internal/registry/helper/email/gmail/`.
-- [ ] **Retire the terms "integration" and "subpackage" from prose and
+- [x] **Retire the terms "integration" and "subpackage" from prose and
   comments (ADR-0048).** Sweep the remaining uses across package docstrings
   (for example `internal/registry/webhook/webhook.go`,
   `internal/registry/helper/email/email.go`, `internal/components/doc.go`) and

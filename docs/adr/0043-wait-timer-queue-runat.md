@@ -6,7 +6,7 @@ consulted: []
 informed: []
 scope:
   - runner
-  - honker-integration
+  - honker
 interface-impact: new
 ---
 

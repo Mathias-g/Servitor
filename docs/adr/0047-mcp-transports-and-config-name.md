@@ -7,7 +7,7 @@ informed: []
 scope:
   - runner
   - capabilities
-  - mcp-integration
+  - mcp
 interface-impact: breaking
 ---
 

@@ -6,7 +6,7 @@ consulted: []
 informed: []
 scope:
   - runner
-  - singer-integration
+  - singer
 interface-impact: none
 ---
 

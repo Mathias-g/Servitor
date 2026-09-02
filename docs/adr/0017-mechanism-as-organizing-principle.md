@@ -7,8 +7,8 @@ informed: []
 scope:
   - runner
   - capabilities
-  - singer-integration
-  - mcp-integration
+  - singer
+  - mcp
 interface-impact: none
 ---
 

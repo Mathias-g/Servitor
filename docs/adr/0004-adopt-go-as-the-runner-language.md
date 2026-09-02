@@ -7,7 +7,7 @@ informed: []
 scope:
   - runner
   - control-plane
-  - honker-integration
+  - honker
   - packaging
 interface-impact: none
 ---

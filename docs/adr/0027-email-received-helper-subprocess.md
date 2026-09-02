@@ -35,7 +35,7 @@ work in-process or reading a config file.
   ADR-0013). A recurring poll must be scheduled through the store, not via a
   file the daemon locates.
 - Best Simple System for Now (ADR-0002): do not build a provider-registry or a
-  shared declared-integration config until a second provider or a send side
+  shared declared config until a second provider or a send side
   justifies it.
 
 ## Considered options
@@ -47,9 +47,9 @@ work in-process or reading a config file.
   command, which uses the provider's helper to connect, fetch new (unseen)
   messages, parse them, and mark them seen. The worker hands the returned emails
   to a callback, and the daemon fans out one run per email.
-- **A declared email integration in `servitor.integrations.yaml`.** Would give
+- **A declared email connector in `servitor.config.yaml`.** Would give
   inbound and future outbound a shared home, but it is shaped for subprocess
-  integrations and would require the daemon to read a config file at runtime,
+  connectors and would require the daemon to read a config file at runtime,
   breaking the store-only invariant. Deferred until a send side or a second
   provider exists.
 - **The daemon polls the mailbox in-process.** Rejected: violates ADR-0008 and

@@ -46,8 +46,8 @@ it was written. It is not a diary of the moment.
 ## Servitor-specific fields
 
 - `scope`: the parts of Servitor the decision touches — e.g. `runner`,
-  `control-plane`, `honker-integration`, `varlock-integration`,
-  `singer-integration`, `webhooks`, `packaging`.
+  `control-plane`, `honker`, `varlock`, `singer`, `mcp`, `webhooks`,
+  `packaging`.
 - `interface-impact`: whether the decision changes a public contract — the
   **Wafer schema**, the **CLI surface**, or the **daemon control protocol**.
   `none`, `new`, or `breaking`. This is the field that matters most, because a

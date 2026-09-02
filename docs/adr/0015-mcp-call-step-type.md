@@ -6,7 +6,7 @@ consulted: []
 informed: []
 scope:
   - runner
-  - mcp-integration
+  - mcp
   - capabilities
 interface-impact: new
 ---

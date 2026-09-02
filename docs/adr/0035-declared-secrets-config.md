@@ -22,13 +22,13 @@ capabilities` renders a `secrets.yaml` reporting the declared secret names and
 whether each is present, sourced from the varlock schema (SPEC: How an agent
 disovers integrations). Under the new model the secret sources a deployment uses
 (which mechanisms and stores, and which secret names exist) are declared by the
-operator, following the declared-integrations pattern (ADR-0018), so they belong
+operator, following the declared-config pattern (ADR-0018), so they belong
 in the same config and the same management-CLI pattern.
 
 ## Decision drivers
 
 - The secret set a deployment uses is the operator's, declared through CI/CD,
-  not authored in Wafers (declared-integrations pattern, ADR-0018).
+  not authored in Wafers (declared-config pattern, ADR-0018).
 - An agent authoring a Wafer must be able to discover which secret names are
   available, which account each belongs to, what each is for, and when it
   expires, so it reaches for the right one (for example `GMAIL_SEND_TOKEN` for
@@ -49,7 +49,7 @@ in the same config and the same management-CLI pattern.
   `secrets.yaml` for agents.
 - **Keep secrets in the varlock schema.** Reject: varlock is no longer the
   mechanism (ADR-0034), and the schema-driven declaration should move to the
-  declared-integrations config it belongs to.
+  declared config it belongs to.
 - **Author secrets in Wafers.** Reject: the operator, not the Wafer author,
   owns which secret sources exist (ADR-0018 pattern); authoring them in Wafers
   scatters the declaration.
@@ -81,7 +81,7 @@ fails fast at the node that needs it (SPEC: Secret invalidity and rotation).
 
 - Good: the secret set is discoverable by agents (the agent-first goal), with
   enough metadata to pick the right secret.
-- Good: the declaration follows the established declared-integrations pattern
+- Good: the declaration follows the established declared-config pattern
   and management-CLI shape; it does not invent a new one.
 - Good: values never reach the agent or the config; only names and metadata do.
 - Bad: adds a config section, a CLI surface, and a validation rule (declared-but
@@ -108,7 +108,7 @@ old `secrets.yaml` shape must adapt to the richer one.
 ## More information
 
 - SPEC: Secret resolution, How an agent discovers integrations
-- ADR-0018 (declared-integrations config, the pattern this extends)
+- ADR-0018 (declared-config file, the pattern this extends)
 - ADR-0032 (provider interface), ADR-0034 (varlock's demotion)
 - ADR-0036 (the secret-resolution mechanism group and secret role)
 - IDEAS.md (the exploration this decision grew from)

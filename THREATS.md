@@ -61,6 +61,30 @@ The common shape: data is data unless a boundary explicitly treats it as code,
 and validation enforces which boundaries may do that. Most of this is static and
 checkable at dry-run, which is where the defense belongs.
 
+### The declared-config "load once at boot" pattern and change detection
+
+Both the secret resolver and (planned) the MCP connector lookup load the
+declared config (`servitor.config.yaml`) into an in-memory registry once at
+daemon boot, then resolve by name at runtime without re-reading the file
+(ADR-0027's store-only invariant). A one-time boot load means a change to the
+config file (a new server, a changed URL, a rotated secret source, a renamed
+tap) is invisible to a running daemon until it restarts. Investigate how the
+resolver and connector lookup should learn about config changes: reload the
+file on a change (file mtime / inotify), re-resolve at a bounded cadence, or
+treat config as immutable-per-daemon-process and require a restart by design.
+Whatever the choice, it applies to both the secret resolver and the MCP
+connector registry, so it should be settled as one pattern, not two. This is
+unresolved; it is not yet a decision or an invariant.
+
+Naming: where more than one resolver/registry exists, each must be named for
+what it resolves or holds, not left generic. The existing one is the secret
+resolver; a connector registry that resolves MCP URLs (and Singer tap/target
+commands) by name should be named for connectors (for example a connector
+resolver or connector registry), not generically "the resolver". The generic
+name is exactly the ambiguity this project has been removing ("what is an
+integration", "which config"). Apply the explicit name when the connector
+lookup is built.
+
 ### Redaction bypassed by derived forms of a secret
 
 Redaction scrubs a secret value from captured subprocess output only when it
