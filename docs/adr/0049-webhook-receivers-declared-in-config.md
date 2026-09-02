@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-09-02
 decision-makers: [maintainer]
 consulted: []
@@ -48,10 +48,10 @@ package, which contradicts the one-genuine-shape principle and the deletion goal
   `slack_event`, ...). Rejected: bakes the service into the mechanism, adds a
   package per service, and is asymmetric with mcp.
 - Option B (chosen): Two mechanisms by verification scheme, receivers declared
-  in config. `hmac-webhook` signs the raw body with HMAC-SHA256 (header and
-  encoding are config); `standard-webhook` verifies the Standard Webhooks
-  envelope (timestamped, replay-bounded). A receiver is a config entry with its
-  `path`, `scheme`, and `secret`.
+  in config. `hmac-webhook` signs the raw body with HMAC-SHA256 (header,
+  encoding, and an optional timestamped form are config); `standard-webhook`
+  verifies the Standard Webhooks envelope (timestamped, replay-bounded). A
+  receiver is a config entry with its `path`, `scheme`, and `secret`.
 - Option C: One generic `webhook` mechanism with a `scheme` field. Rejected:
   the raw-body-HMAC and Standard-Webhooks shapes differ enough (the latter adds
   a timestamp window and signs a structured string) that a reader benefits from
@@ -63,14 +63,17 @@ Chosen option: "Option B".
 
 The `webhook` group holds two mechanisms:
 
-- `hmac-webhook`: verify HMAC-SHA256 over the raw body and deliver it. The
-  signature header name and the encoding (hex or base64) are config, so this
-  covers the old `http_webhook` and `github_webhook` and any service that signs
-  the body with HMAC.
+- `hmac-webhook`: verify HMAC-SHA256 over the raw body (or, for a receiver that
+  declares a timestamp header, over a timestamped, replay-bounded form of it)
+  and deliver the body. The signature header name, the encoding (hex or
+  base64), and an optional version prefix and timestamp header are config, so
+  this covers the old `http_webhook`, `github_webhook`, and `slack_event` (its
+  `v0:` scheme is a timestamped hmac receiver) and any service that signs with
+  HMAC.
 - `standard-webhook`: verify the Standard Webhooks envelope (a versioned,
   timestamped signature over `id.timestamp.body` with a replay window) and
-  deliver the body. This covers the old `standard_webhook`, and by config a
-  service that signs a timestamped envelope like Slack.
+  deliver the body. This covers the old `standard_webhook`; any compliant
+  producer works with this type.
 
 Webhook receivers are declared in `servitor.config.yaml` under a `webhook:`
 section, mirroring how MCP servers are declared under `mcp:` (ADR-0018,
@@ -108,8 +111,13 @@ scheme. The old `http_webhook` and `standard_webhook` become the two mechanisms
 
 `go test ./...` passes. The `webhook` group reports `hmac-webhook` and
 `standard-webhook`; the per-service types no longer appear, pinned by tests. A
-receiver declared in the config with an unknown `scheme` is rejected. A webhook
-delivers the raw body as the run's event.
+receiver declared in the config with an unknown `scheme` is rejected at load. A
+webhook delivers the raw body as the run's event. A webhook trigger's type must
+match the scheme of the receiver declared for its path; a mismatch is rejected
+at submit and never matches at serve time (pinned by tests). The `hmac`
+receiver's signing surface (header, encoding, and an optional timestamped,
+replay-bounded form) means any HMAC signer, raw-body or timestamped, is a
+config entry on `hmac-webhook` rather than a mechanism.
 
 ## Interface notes
 

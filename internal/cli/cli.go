@@ -79,6 +79,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return cmdTarget(args[1:], stdout, stderr)
 	case "secret":
 		return cmdSecret(args[1:], stdout, stderr)
+	case "webhook":
+		return cmdWebhook(args[1:], stdout, stderr)
 	case "__transform":
 		// Hidden subprocess entrypoint: the worker runs a `transform` node as
 		// a subprocess of the servitor binary itself (ADR-0008), so every node,
@@ -154,6 +156,9 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		// the declared secrets config (SPEC: Secret resolution, ADR-0035). The
 		// daemon no longer holds the full secret set or boots under varlock.
 		Resolver: buildResolver(stderr),
+		// The webhook receivers are declared in the config and loaded once at
+		// boot (ADR-0049, THREATS.md), keyed by path.
+		WebhookReceivers: buildWebhookReceivers(stderr),
 		Started: func(a string) {
 			_, _ = fmt.Fprintf(stdout, "servitor: daemon listening on %s (loopback only, ADR-0009)\n", a)
 		},
@@ -178,6 +183,19 @@ func buildResolver(stderr io.Writer) *secret.Resolver {
 		return secret.NewResolver(secret.DefaultRegistry(), nil)
 	}
 	return secret.NewResolver(secret.DefaultRegistry(), cfg.SecretSources())
+}
+
+// buildWebhookReceivers loads the declared webhook receivers from the config
+// (ADR-0049), keyed by path, for the daemon's trigger receiver. A missing or
+// invalid config yields no receivers, with a warning, so the runner boots
+// without webhook reception rather than not at all.
+func buildWebhookReceivers(stderr io.Writer) map[string]*config.WebhookReceiver {
+	cfg, err := config.Load("")
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: warning: %v; running with no webhook receivers\n", err)
+		return nil
+	}
+	return cfg.Webhook
 }
 
 func cmdStop(args []string, stdout, stderr io.Writer) int {

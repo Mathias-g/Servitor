@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Mathias-g/Servitor/internal/components/secret"
+	"github.com/Mathias-g/Servitor/internal/config"
 	"github.com/Mathias-g/Servitor/internal/honker"
 	"github.com/Mathias-g/Servitor/internal/wafer"
 	"github.com/Mathias-g/Servitor/internal/worker"
@@ -34,7 +35,7 @@ func extPath(t *testing.T) string {
 	return p
 }
 
-func newReceiver(t *testing.T, secrets map[string]string) (*Receiver, *honker.Store, *honker.Queue) {
+func newReceiver(t *testing.T, secrets map[string]string, receivers map[string]*config.WebhookReceiver) (*Receiver, *honker.Store, *honker.Queue) {
 	t.Helper()
 	ext := extPath(t)
 	dbPath := filepath.Join(t.TempDir(), "test.db")
@@ -44,15 +45,21 @@ func newReceiver(t *testing.T, secrets map[string]string) (*Receiver, *honker.St
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	q := store.Queue("nodes", 30, 3)
-	return NewReceiver(store, q, secret.ResolverFromMap(secrets)), store, q
+	return NewReceiver(store, q, secret.ResolverFromMap(secrets), receivers), store, q
+}
+
+// openReceiver builds a receiver with no declared webhook receivers and the
+// given secrets, for tests of the non-webhook triggers.
+func openReceiver(t *testing.T, secrets map[string]string) (*Receiver, *honker.Store, *honker.Queue) {
+	t.Helper()
+	return newReceiver(t, secrets, nil)
 }
 
 const wfYAML = `
 name: demo
 triggers:
-  - type: standard_webhook
+  - type: standard-webhook
     path: /hooks/demo
-    secret: WEBHOOK_SECRET
 nodes:
   - type: shell
     name: a
@@ -81,24 +88,27 @@ func standardWebhookSignature(secret, id, ts string, body []byte) string {
 	return "v1," + base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }
 
-// githubSignature computes the GitHub X-Hub-Signature-256 header value for a
-// body.
-func githubSignature(secret string, body []byte) string {
+// hmacRawSignature computes an HMAC-SHA256 signature of the raw body with the
+// given version prefix, hex-encoded: `<prefix>=<hex>`.
+func hmacRawSignature(secret, prefix string, body []byte) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write(body)
-	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+	return prefix + "=" + hex.EncodeToString(mac.Sum(nil))
 }
 
-// slackSignature computes the Slack X-Slack-Signature header value for a body
-// at the given timestamp.
-func slackSignature(secret, ts string, body []byte) string {
+// hmacTimestampedSignature computes an HMAC-SHA256 signature of
+// `<prefix>:<timestamp>:<body>` at the given timestamp, hex-encoded:
+// `<prefix>=<hex>`.
+func hmacTimestampedSignature(secret, prefix, ts string, body []byte) string {
 	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write([]byte("v0:" + ts + ":" + string(body)))
-	return "v0=" + hex.EncodeToString(mac.Sum(nil))
+	_, _ = mac.Write([]byte(prefix + ":" + ts + ":" + string(body)))
+	return prefix + "=" + hex.EncodeToString(mac.Sum(nil))
 }
 
 func TestWebhookPersistsEventAndEnqueuesRun(t *testing.T) {
-	r, store, q := newReceiver(t, map[string]string{"WEBHOOK_SECRET": "s3cret"})
+	r, store, q := newReceiver(t, map[string]string{"WEBHOOK_SECRET": "s3cret"}, map[string]*config.WebhookReceiver{
+		"/hooks/demo": {Scheme: config.SchemeStandard, Secret: "WEBHOOK_SECRET"},
+	})
 	register(t, store, wfYAML)
 
 	now := time.Now()
@@ -132,8 +142,49 @@ func TestWebhookPersistsEventAndEnqueuesRun(t *testing.T) {
 	_ = job
 }
 
+func TestWebhookDeliversRawBodyAsEvent(t *testing.T) {
+	r, store, q := newReceiver(t, map[string]string{"WEBHOOK_SECRET": "s3cret"}, map[string]*config.WebhookReceiver{
+		"/hooks/demo": {Scheme: config.SchemeStandard, Secret: "WEBHOOK_SECRET"},
+	})
+	register(t, store, wfYAML)
+
+	body := []byte(`{"event":"lead_created"}`)
+	ts := strconv.FormatInt(time.Now().Unix(), 10)
+	req := httptest.NewRequest(http.MethodPost, "/hooks/demo", bytes.NewReader(body))
+	req.Header.Set("webhook-id", "evt_1")
+	req.Header.Set("webhook-timestamp", ts)
+	req.Header.Set("webhook-signature", standardWebhookSignature("s3cret", "evt_1", ts, body))
+	rr := httptest.NewRecorder()
+
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	job, err := q.ClaimOne("worker-1")
+	if err != nil || job == nil {
+		t.Fatalf("run not enqueued: %v", err)
+	}
+	var head struct {
+		Input map[string]any `json:"Input"`
+	}
+	if err := json.Unmarshal(job.Payload, &head); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	// The raw body is delivered as event.body (ADR-0049); the workflow parses
+	// it itself with a transform node.
+	ev, _ := head.Input["event"].(map[string]any)
+	if ev["body"] != string(body) {
+		t.Fatalf("event.body = %v, want raw body %q", ev["body"], body)
+	}
+	if ev["path"] != "/hooks/demo" {
+		t.Fatalf("event.path = %v, want /hooks/demo", ev["path"])
+	}
+}
+
 func TestWebhookRejectsBadSignature(t *testing.T) {
-	r, store, q := newReceiver(t, map[string]string{"WEBHOOK_SECRET": "s3cret"})
+	r, store, q := newReceiver(t, map[string]string{"WEBHOOK_SECRET": "s3cret"}, map[string]*config.WebhookReceiver{
+		"/hooks/demo": {Scheme: config.SchemeStandard, Secret: "WEBHOOK_SECRET"},
+	})
 	register(t, store, wfYAML)
 
 	body := []byte(`{"x":1}`)
@@ -164,8 +215,11 @@ func TestWebhookRejectsBadSignature(t *testing.T) {
 }
 
 func TestWebhookNoSecretAllowsOpenReceiver(t *testing.T) {
-	// No secret resolved for the trigger => open receiver, event accepted.
-	r, store, q := newReceiver(t, map[string]string{})
+	// A receiver with no declared secret is an open receiver: the event is
+	// accepted without verification (ADR-0049).
+	r, store, q := newReceiver(t, map[string]string{}, map[string]*config.WebhookReceiver{
+		"/hooks/demo": {Scheme: config.SchemeStandard},
+	})
 	register(t, store, wfYAML)
 
 	body := []byte(`{"x":1}`)
@@ -180,12 +234,12 @@ func TestWebhookNoSecretAllowsOpenReceiver(t *testing.T) {
 	}
 }
 
-func TestWebhookUnmatchedPathStillPersists(t *testing.T) {
-	r, store, _ := newReceiver(t, map[string]string{})
+func TestWebhookUndeclaredPathMatchesNothing(t *testing.T) {
+	r, store, _ := openReceiver(t, map[string]string{})
 	register(t, store, wfYAML)
 
 	body := []byte(`{"x":1}`)
-	req := httptest.NewRequest(http.MethodPost, "/hooks/other", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/hooks/demo", bytes.NewReader(body))
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -200,8 +254,34 @@ func TestWebhookUnmatchedPathStillPersists(t *testing.T) {
 	}
 }
 
+func TestWebhookTypeMismatchDoesNotFire(t *testing.T) {
+	// The receiver declares scheme hmac, but the workflow's trigger type is
+	// standard-webhook (ADR-0049). The mismatch is rejected at submit; at serve
+	// time the trigger never matches, so no run fires.
+	r, store, q := newReceiver(t, map[string]string{"SECRET": "s"}, map[string]*config.WebhookReceiver{
+		"/hooks/demo": {Scheme: config.SchemeHMAC, Secret: "SECRET"},
+	})
+	register(t, store, wfYAML)
+
+	body := []byte(`{"x":1}`)
+	req := httptest.NewRequest(http.MethodPost, "/hooks/demo", bytes.NewReader(body))
+	// A valid signature for the receiver's scheme: verification passes, so any
+	// failure to fire is purely the type/scheme mismatch, not the signature.
+	mac := hmac.New(sha256.New, []byte("s"))
+	_, _ = mac.Write(body)
+	req.Header.Set("x-servitor-signature", base64.StdEncoding.EncodeToString(mac.Sum(nil)))
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if job, _ := q.ClaimOne("worker-1"); job != nil {
+		t.Fatal("run enqueued for a trigger whose type mismatches the receiver scheme")
+	}
+}
+
 func TestDisabledWorkflowDoesNotFire(t *testing.T) {
-	r, store, q := newReceiver(t, map[string]string{})
+	r, store, q := openReceiver(t, map[string]string{})
 	register(t, store, wfYAML)
 	if err := store.SetWorkflowEnabled("demo", false); err != nil {
 		t.Fatalf("disable: %v", err)
@@ -219,7 +299,7 @@ func TestDisabledWorkflowDoesNotFire(t *testing.T) {
 }
 
 func TestManualTriggersWorkflow(t *testing.T) {
-	r, store, q := newReceiver(t, map[string]string{})
+	r, store, q := openReceiver(t, map[string]string{})
 	register(t, store, `
 name: m
 triggers:
@@ -255,28 +335,32 @@ nodes:
 }
 
 func TestManualRejectsUnknownWorkflow(t *testing.T) {
-	r, _, _ := newReceiver(t, map[string]string{})
+	r, _, _ := openReceiver(t, map[string]string{})
 	if err := r.Manual(context.Background(), "nope", nil); err == nil {
 		t.Fatal("expected error for unregistered workflow")
 	}
 }
 
-func TestGithubWebhookVerifiesAndEnqueues(t *testing.T) {
-	r, store, q := newReceiver(t, map[string]string{"GITHUB_SECRET": "ghsecret"})
+func TestHMACWebhookVerifiesAndEnqueues(t *testing.T) {
+	// A raw-body hmac receiver: hex encoding, a "sha256=" version prefix, no
+	// timestamp (ADR-0049). The mechanism sees none of these details; they are
+	// the receiver's config.
+	r, store, q := newReceiver(t, map[string]string{"RAW_SECRET": "rawsecret"}, map[string]*config.WebhookReceiver{
+		"/hooks/raw": {Scheme: config.SchemeHMAC, Secret: "RAW_SECRET", Header: "x-signature", Encoding: "hex", Prefix: "sha256"},
+	})
 	register(t, store, `
-name: gh
+name: raw
 triggers:
-  - type: github_webhook
-    path: /hooks/github
-    secret: GITHUB_SECRET
+  - type: hmac-webhook
+    path: /hooks/raw
 nodes:
   - type: shell
     name: a
     command: "true"
 `)
-	body := []byte(`{"action":"opened","issue":{"number":1}}`)
-	req := httptest.NewRequest(http.MethodPost, "/hooks/github", bytes.NewReader(body))
-	req.Header.Set("X-Hub-Signature-256", githubSignature("ghsecret", body))
+	body := []byte(`{"kind":"update"}`)
+	req := httptest.NewRequest(http.MethodPost, "/hooks/raw", bytes.NewReader(body))
+	req.Header.Set("x-signature", hmacRawSignature("rawsecret", "sha256", body))
 	rr := httptest.NewRecorder()
 
 	r.ServeHTTP(rr, req)
@@ -288,22 +372,23 @@ nodes:
 	}
 }
 
-func TestGithubWebhookRejectsBadSignature(t *testing.T) {
-	r, store, q := newReceiver(t, map[string]string{"GITHUB_SECRET": "ghsecret"})
+func TestHMACWebhookRejectsBadSignature(t *testing.T) {
+	r, store, q := newReceiver(t, map[string]string{"RAW_SECRET": "rawsecret"}, map[string]*config.WebhookReceiver{
+		"/hooks/raw": {Scheme: config.SchemeHMAC, Secret: "RAW_SECRET", Header: "x-signature", Encoding: "hex", Prefix: "sha256"},
+	})
 	register(t, store, `
-name: gh
+name: raw
 triggers:
-  - type: github_webhook
-    path: /hooks/github
-    secret: GITHUB_SECRET
+  - type: hmac-webhook
+    path: /hooks/raw
 nodes:
   - type: shell
     name: a
     command: "true"
 `)
 	body := []byte(`{"x":1}`)
-	req := httptest.NewRequest(http.MethodPost, "/hooks/github", bytes.NewReader(body))
-	req.Header.Set("X-Hub-Signature-256", "sha256=deadbeef")
+	req := httptest.NewRequest(http.MethodPost, "/hooks/raw", bytes.NewReader(body))
+	req.Header.Set("x-signature", "sha256=deadbeef")
 	rr := httptest.NewRecorder()
 
 	r.ServeHTTP(rr, req)
@@ -315,24 +400,28 @@ nodes:
 	}
 }
 
-func TestSlackWebhookVerifiesAndEnqueues(t *testing.T) {
-	r, store, q := newReceiver(t, map[string]string{"SLACK_SECRET": "slacksecret"})
+func TestHMACTimestampedWebhookVerifiesAndEnqueues(t *testing.T) {
+	// A timestamped hmac receiver: the body is signed as
+	// <prefix>:<timestamp>:<body> and replay is bounded. It is an hmac
+	// receiver, not a separate mechanism (ADR-0049).
+	r, store, q := newReceiver(t, map[string]string{"TIMED_SECRET": "timedsecret"}, map[string]*config.WebhookReceiver{
+		"/hooks/timed": {Scheme: config.SchemeHMAC, Secret: "TIMED_SECRET", Header: "x-signature", Encoding: "hex", TimestampHeader: "x-timestamp", Prefix: "v0"},
+	})
 	register(t, store, `
-name: sl
+name: timed
 triggers:
-  - type: slack_event
-    path: /hooks/slack
-    secret: SLACK_SECRET
+  - type: hmac-webhook
+    path: /hooks/timed
 nodes:
   - type: shell
     name: a
     command: "true"
 `)
 	ts := strconv.FormatInt(time.Now().Unix(), 10)
-	body := []byte(`{"type":"message","text":"hi"}`)
-	req := httptest.NewRequest(http.MethodPost, "/hooks/slack", bytes.NewReader(body))
-	req.Header.Set("X-Slack-Request-Timestamp", ts)
-	req.Header.Set("X-Slack-Signature", slackSignature("slacksecret", ts, body))
+	body := []byte(`{"kind":"message","text":"hi"}`)
+	req := httptest.NewRequest(http.MethodPost, "/hooks/timed", bytes.NewReader(body))
+	req.Header.Set("x-timestamp", ts)
+	req.Header.Set("x-signature", hmacTimestampedSignature("timedsecret", "v0", ts, body))
 	rr := httptest.NewRecorder()
 
 	r.ServeHTTP(rr, req)
@@ -344,63 +433,25 @@ nodes:
 	}
 }
 
-func TestSlackUrlVerificationEchoesChallenge(t *testing.T) {
-	r, store, q := newReceiver(t, map[string]string{"SLACK_SECRET": "slacksecret"})
+func TestHMACTimestampedWebhookRejectsStaleTimestamp(t *testing.T) {
+	r, store, q := newReceiver(t, map[string]string{"TIMED_SECRET": "timedsecret"}, map[string]*config.WebhookReceiver{
+		"/hooks/timed": {Scheme: config.SchemeHMAC, Secret: "TIMED_SECRET", Header: "x-signature", Encoding: "hex", TimestampHeader: "x-timestamp", Prefix: "v0"},
+	})
 	register(t, store, `
-name: sl
+name: timed
 triggers:
-  - type: slack_event
-    path: /hooks/slack
-    secret: SLACK_SECRET
-nodes:
-  - type: shell
-    name: a
-    command: "true"
-`)
-	ts := strconv.FormatInt(time.Now().Unix(), 10)
-	body := []byte(`{"token":"t","type":"url_verification","challenge":"abc123"}`)
-	req := httptest.NewRequest(http.MethodPost, "/hooks/slack", bytes.NewReader(body))
-	req.Header.Set("X-Slack-Request-Timestamp", ts)
-	req.Header.Set("X-Slack-Signature", slackSignature("slacksecret", ts, body))
-	rr := httptest.NewRecorder()
-
-	r.ServeHTTP(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
-	}
-	var resp struct {
-		Challenge string `json:"challenge"`
-	}
-	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode challenge response: %v", err)
-	}
-	if resp.Challenge != "abc123" {
-		t.Fatalf("challenge = %q, want abc123", resp.Challenge)
-	}
-	// A verification handshake must not enqueue a run.
-	if job, _ := q.ClaimOne("worker-1"); job != nil {
-		t.Fatal("run enqueued for url_verification handshake")
-	}
-}
-
-func TestSlackRejectsStaleTimestamp(t *testing.T) {
-	r, store, q := newReceiver(t, map[string]string{"SLACK_SECRET": "slacksecret"})
-	register(t, store, `
-name: sl
-triggers:
-  - type: slack_event
-    path: /hooks/slack
-    secret: SLACK_SECRET
+  - type: hmac-webhook
+    path: /hooks/timed
 nodes:
   - type: shell
     name: a
     command: "true"
 `)
 	old := strconv.FormatInt(time.Now().Add(-10*time.Minute).Unix(), 10)
-	body := []byte(`{"type":"message"}`)
-	req := httptest.NewRequest(http.MethodPost, "/hooks/slack", bytes.NewReader(body))
-	req.Header.Set("X-Slack-Request-Timestamp", old)
-	req.Header.Set("X-Slack-Signature", slackSignature("slacksecret", old, body))
+	body := []byte(`{"kind":"message"}`)
+	req := httptest.NewRequest(http.MethodPost, "/hooks/timed", bytes.NewReader(body))
+	req.Header.Set("x-timestamp", old)
+	req.Header.Set("x-signature", hmacTimestampedSignature("timedsecret", "v0", old, body))
 	rr := httptest.NewRecorder()
 
 	r.ServeHTTP(rr, req)
@@ -413,7 +464,7 @@ nodes:
 }
 
 func TestCompletedFiresDownstreamWorkflow(t *testing.T) {
-	r, store, q := newReceiver(t, map[string]string{})
+	r, store, q := openReceiver(t, map[string]string{})
 	register(t, store, `
 name: upstream
 triggers:
@@ -454,7 +505,7 @@ nodes:
 }
 
 func TestCompletedIgnoresOtherWorkflow(t *testing.T) {
-	r, store, q := newReceiver(t, map[string]string{})
+	r, store, q := openReceiver(t, map[string]string{})
 	register(t, store, `
 name: downstream
 triggers:
@@ -474,7 +525,7 @@ nodes:
 }
 
 func TestCompletedSkipsDisabledWorkflow(t *testing.T) {
-	r, store, q := newReceiver(t, map[string]string{})
+	r, store, q := openReceiver(t, map[string]string{})
 	register(t, store, `
 name: downstream
 triggers:
@@ -497,7 +548,7 @@ nodes:
 }
 
 func TestFailedFiresDownstreamWorkflow(t *testing.T) {
-	r, store, q := newReceiver(t, map[string]string{})
+	r, store, q := openReceiver(t, map[string]string{})
 	register(t, store, `
 name: upstream
 triggers:
@@ -538,7 +589,7 @@ nodes:
 }
 
 func TestFailedIgnoresOtherWorkflow(t *testing.T) {
-	r, store, q := newReceiver(t, map[string]string{})
+	r, store, q := openReceiver(t, map[string]string{})
 	register(t, store, `
 name: alert
 triggers:
@@ -558,7 +609,7 @@ nodes:
 }
 
 func TestEmailReceivedFiresRunPerEmail(t *testing.T) {
-	r, store, q := newReceiver(t, map[string]string{})
+	r, store, q := openReceiver(t, map[string]string{})
 	register(t, store, `
 name: mail
 triggers:
@@ -607,7 +658,7 @@ nodes:
 }
 
 func TestEmailReceivedSkipsDisabledWorkflow(t *testing.T) {
-	r, store, q := newReceiver(t, map[string]string{})
+	r, store, q := openReceiver(t, map[string]string{})
 	register(t, store, `
 name: mail
 triggers:
@@ -632,7 +683,7 @@ nodes:
 }
 
 func TestPolledUnknownKindPassesItemThrough(t *testing.T) {
-	r, store, q := newReceiver(t, map[string]string{})
+	r, store, q := openReceiver(t, map[string]string{})
 	register(t, store, `
 name: feed
 triggers:

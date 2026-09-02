@@ -528,3 +528,177 @@ func cmdSecretRemove(args []string, stdout, stderr io.Writer) int {
 	_, _ = fmt.Fprintf(stdout, "servitor: removed secret %q\n", rest[0])
 	return exitOK
 }
+
+// cmdWebhook manages declared webhook receivers (ADR-0049). Each receiver
+// declares the verification scheme (hmac or standard) and the signing details
+// for its path; a Wafer's webhook trigger names a receiver by its path.
+func cmdWebhook(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		_, _ = fmt.Fprintf(stderr, "servitor: usage: servitor webhook <add|list|remove> ...\n")
+		return exitUsage
+	}
+	switch args[0] {
+	case "add":
+		return cmdWebhookAdd(args[1:], stdout, stderr)
+	case "list", "ls":
+		return cmdWebhookList(args[1:], stdout, stderr)
+	case "remove", "rm":
+		return cmdWebhookRemove(args[1:], stdout, stderr)
+	default:
+		_, _ = fmt.Fprintf(stderr, "servitor: webhook: unknown subcommand %q\n", args[0])
+		return exitUsage
+	}
+}
+
+func cmdWebhookAdd(args []string, stdout, stderr io.Writer) int {
+	path := config.DefaultFile
+	header, encoding, timestampHeader, prefix := "", "", "", ""
+	var positionals []string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--file":
+			if i+1 >= len(args) {
+				_, _ = fmt.Fprintf(stderr, "servitor: webhook add: --file needs a value\n")
+				return exitUsage
+			}
+			i++
+			path = args[i]
+		case "--header":
+			if i+1 >= len(args) {
+				_, _ = fmt.Fprintf(stderr, "servitor: webhook add: --header needs a value\n")
+				return exitUsage
+			}
+			i++
+			header = args[i]
+		case "--encoding":
+			if i+1 >= len(args) {
+				_, _ = fmt.Fprintf(stderr, "servitor: webhook add: --encoding needs a value\n")
+				return exitUsage
+			}
+			i++
+			encoding = args[i]
+		case "--timestamp-header":
+			if i+1 >= len(args) {
+				_, _ = fmt.Fprintf(stderr, "servitor: webhook add: --timestamp-header needs a value\n")
+				return exitUsage
+			}
+			i++
+			timestampHeader = args[i]
+		case "--prefix":
+			if i+1 >= len(args) {
+				_, _ = fmt.Fprintf(stderr, "servitor: webhook add: --prefix needs a value\n")
+				return exitUsage
+			}
+			i++
+			prefix = args[i]
+		case "-h", "--help":
+			_, _ = fmt.Fprintf(stderr, "servitor: usage: servitor webhook add <path> <hmac|standard> [secret] [--header H] [--encoding hex|base64] [--timestamp-header T] [--prefix P] [--file path]\n")
+			return exitUsage
+		default:
+			positionals = append(positionals, args[i])
+		}
+	}
+	if len(positionals) < 2 {
+		_, _ = fmt.Fprintf(stderr, "servitor: usage: servitor webhook add <path> <hmac|standard> [secret] [--header H] [--encoding hex|base64] [--timestamp-header T] [--prefix P] [--file path]\n")
+		return exitUsage
+	}
+	scheme := positionals[1]
+	if scheme != config.SchemeHMAC && scheme != config.SchemeStandard {
+		_, _ = fmt.Fprintf(stderr, "servitor: webhook add: unknown scheme %q (must be hmac or standard)\n", scheme)
+		return exitUsage
+	}
+	secret := ""
+	if len(positionals) > 2 {
+		secret = positionals[2]
+	}
+	if encoding != "" && encoding != "hex" && encoding != "base64" {
+		_, _ = fmt.Fprintf(stderr, "servitor: webhook add: --encoding must be hex or base64\n")
+		return exitUsage
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: webhook add: %v\n", err)
+		return exitFailure
+	}
+	cfg.AddWebhookReceiver(positionals[0], &config.WebhookReceiver{
+		Scheme:          scheme,
+		Secret:          secret,
+		Header:          header,
+		Encoding:        encoding,
+		TimestampHeader: timestampHeader,
+		Prefix:          prefix,
+	})
+	if err := config.Save(cfg, path); err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: webhook add: %v\n", err)
+		return exitFailure
+	}
+	_, _ = fmt.Fprintf(stdout, "servitor: declared webhook receiver %q (%s); a Wafer's trigger names it by this path\n", positionals[0], scheme)
+	return exitOK
+}
+
+func cmdWebhookList(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("webhook list", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	path, rest, code := configPath(fs, args)
+	if code != exitOK {
+		return code
+	}
+	if len(rest) > 0 {
+		_, _ = fmt.Fprintf(stderr, "servitor: webhook list: unexpected argument %q\n", rest[0])
+		return exitUsage
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: webhook list: %v\n", err)
+		return exitFailure
+	}
+	for _, p := range cfg.ReceiverPaths() {
+		r := cfg.Webhook[p]
+		_, _ = fmt.Fprintf(stdout, "%s\tscheme=%s", p, r.Scheme)
+		if r.Secret != "" {
+			_, _ = fmt.Fprintf(stdout, "\tsecret=%s", r.Secret)
+		}
+		if r.Header != "" {
+			_, _ = fmt.Fprintf(stdout, "\theader=%s", r.Header)
+		}
+		if r.Encoding != "" {
+			_, _ = fmt.Fprintf(stdout, "\tencoding=%s", r.Encoding)
+		}
+		if r.TimestampHeader != "" {
+			_, _ = fmt.Fprintf(stdout, "\ttimestamp_header=%s", r.TimestampHeader)
+		}
+		if r.Prefix != "" {
+			_, _ = fmt.Fprintf(stdout, "\tprefix=%s", r.Prefix)
+		}
+		_, _ = fmt.Fprintln(stdout)
+	}
+	return exitOK
+}
+
+func cmdWebhookRemove(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("webhook remove", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	path, rest, code := configPath(fs, args)
+	if code != exitOK {
+		return code
+	}
+	if len(rest) != 1 {
+		_, _ = fmt.Fprintf(stderr, "servitor: usage: servitor webhook remove <path>\n")
+		return exitUsage
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: webhook remove: %v\n", err)
+		return exitFailure
+	}
+	if !cfg.RemoveWebhookReceiver(rest[0]) {
+		_, _ = fmt.Fprintf(stderr, "servitor: webhook remove: %q is not declared\n", rest[0])
+		return exitFailure
+	}
+	if err := config.Save(cfg, path); err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: webhook remove: %v\n", err)
+		return exitFailure
+	}
+	_, _ = fmt.Fprintf(stdout, "servitor: removed webhook receiver %q\n", rest[0])
+	return exitOK
+}

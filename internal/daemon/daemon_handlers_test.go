@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/Mathias-g/Servitor/internal/components/secret"
+	"github.com/Mathias-g/Servitor/internal/config"
 	"github.com/Mathias-g/Servitor/internal/honker"
 	"github.com/Mathias-g/Servitor/internal/protocol"
 )
@@ -131,5 +132,75 @@ nodes:
 `
 	if _, err := ctl.Submit(ctx, []byte(ok)); err != nil {
 		t.Fatalf("submit with declared secret: %v", err)
+	}
+}
+
+func TestSubmitRejectsWebhookTypeSchemeMismatch(t *testing.T) {
+	ctx := context.Background()
+	ext := handlerExtPath(t)
+	store, err := honker.Open(filepath.Join(t.TempDir(), "t.db"), ext)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	srv := NewServer(Config{
+		Resolver: secret.ResolverFromMap(map[string]string{"SECRET": "s"}),
+		// The receiver at /hooks/demo is declared as hmac (ADR-0049).
+		WebhookReceivers: map[string]*config.WebhookReceiver{
+			"/hooks/demo": {Scheme: config.SchemeHMAC, Secret: "SECRET"},
+		},
+	})
+	srv.store = store
+	ts := httptest.NewServer(srv.httpSrv.Handler)
+	t.Cleanup(ts.Close)
+	ctl := protocol.NewClient(strings.TrimPrefix(ts.URL, "http://"))
+
+	// A trigger whose type does not match the receiver's scheme is rejected.
+	wrong := `
+name: wf
+triggers:
+  - type: standard-webhook
+    path: /hooks/demo
+nodes:
+  - type: shell
+    name: a
+    command: "true"
+`
+	if _, err := ctl.Submit(ctx, []byte(wrong)); err == nil {
+		t.Fatal("expected submit of a trigger whose type mismatches the receiver scheme to fail")
+	} else if !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("error %q should explain the mismatch", err.Error())
+	}
+
+	// A trigger whose type matches the receiver's scheme submits fine.
+	right := `
+name: wf
+triggers:
+  - type: hmac-webhook
+    path: /hooks/demo
+nodes:
+  - type: shell
+    name: a
+    command: "true"
+`
+	if _, err := ctl.Submit(ctx, []byte(right)); err != nil {
+		t.Fatalf("submit with matching type: %v", err)
+	}
+
+	// A webhook trigger naming a path with no declared receiver is allowed (it
+	// matches nothing; capabilities shows declared receivers).
+	undeclaredPath := `
+name: wf2
+triggers:
+  - type: hmac-webhook
+    path: /hooks/nonexistent
+nodes:
+  - type: shell
+    name: a
+    command: "true"
+`
+	if _, err := ctl.Submit(ctx, []byte(undeclaredPath)); err != nil {
+		t.Fatalf("submit with an undeclared receiver path should be allowed: %v", err)
 	}
 }

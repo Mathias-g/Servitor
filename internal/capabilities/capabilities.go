@@ -84,6 +84,9 @@ func Write(dir string) error {
 	if err := writeServers(dir); err != nil {
 		return err
 	}
+	if err := writeReceivers(dir); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -158,6 +161,67 @@ func writeServers(dir string) error {
 	}
 	if err := os.WriteFile(filepath.Join(dir, registry.MCP, "servers.yaml"), data, 0o644); err != nil {
 		return fmt.Errorf("capabilities: write mcp/servers.yaml: %w", err)
+	}
+	return nil
+}
+
+// receiverReport is one declared webhook receiver and the signing details a
+// workflow author needs: the scheme (which mechanism runs it) and, for hmac
+// receivers, the signature header and encoding. The secret name is reported,
+// never its value (ADR-0035, ADR-0049).
+type receiverEntry struct {
+	Path            string `yaml:"path"`
+	Scheme          string `yaml:"scheme"`
+	Secret          string `yaml:"secret,omitempty"`
+	Header          string `yaml:"header,omitempty"`
+	Encoding        string `yaml:"encoding,omitempty"`
+	TimestampHeader string `yaml:"timestamp_header,omitempty"`
+	Prefix          string `yaml:"prefix,omitempty"`
+}
+
+// receiversReport is the on-disk shape of the available-webhook-receivers
+// report.
+type receiversReport struct {
+	Generated bool            `yaml:"generated"`
+	Note      string          `yaml:"note,omitempty"`
+	Receivers []receiverEntry `yaml:"receivers"`
+}
+
+// writeReceivers writes a receivers.yaml under the webhook/ group reporting
+// the declared webhook receivers (ADR-0049, ADR-0018). It sits beside the
+// hmac-webhook and standard-webhook triggers so an agent sees both the
+// mechanism and what receivers are declared to run against it. Each receiver
+// carries its scheme (the mechanism that runs it) and signing details, so the
+// agent copies them verbatim and never reasons about a sender's signing
+// scheme from memory.
+func writeReceivers(dir string) error {
+	report := receiversReport{Generated: true}
+	cfg, err := config.Load("")
+	if err != nil {
+		report.Note = "could not load config: " + err.Error()
+	} else {
+		for _, path := range cfg.ReceiverPaths() {
+			r := cfg.Webhook[path]
+			report.Receivers = append(report.Receivers, receiverEntry{
+				Path:            path,
+				Scheme:          r.Scheme,
+				Secret:          r.Secret,
+				Header:          r.Header,
+				Encoding:        r.Encoding,
+				TimestampHeader: r.TimestampHeader,
+				Prefix:          r.Prefix,
+			})
+		}
+	}
+	data, err := yaml.Marshal(report)
+	if err != nil {
+		return fmt.Errorf("capabilities: marshal receivers: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, registry.Webhook), 0o755); err != nil {
+		return fmt.Errorf("capabilities: create webhook group: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, registry.Webhook, "receivers.yaml"), data, 0o644); err != nil {
+		return fmt.Errorf("capabilities: write webhook/receivers.yaml: %w", err)
 	}
 	return nil
 }

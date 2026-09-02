@@ -23,9 +23,12 @@ var (
 	validStatus = map[string]bool{
 		"proposed": true, "accepted": true, "deprecated": true,
 	}
-	// supersededRe matches MADR's supersession form: "superseded by ADR-0123"
-	// (see the MADR template, adopted by this project).
-	supersededRe = regexp.MustCompile(`^superseded by ADR-\d{4}$`)
+	// supersededRe matches MADR's supersession form, optionally naming several
+	// ADRs: "superseded by ADR-0123" or "superseded by ADR-0123 and ADR-0456".
+	// An ADR's decisions can split: one superseding ADR overrules part of it and
+	// another re-homes the rest (see AGENTS.md, "Supersession must not discard
+	// surviving decisions"), so the status names every ADR that supersedes it.
+	supersededRe = regexp.MustCompile(`^superseded by ADR-\d{4}( and ADR-\d{4})*$`)
 	validImpact  = map[string]bool{"none": true, "new": true, "breaking": true}
 )
 
@@ -123,7 +126,7 @@ func parseADRs(path string) *adr {
 			switch k {
 			case "status":
 				if !validStatus[v] && !supersededRe.MatchString(v) {
-					fmt.Printf("%s: invalid status %q (want proposed|accepted|deprecated|superseded by ADR-NNNN)\n", path, v)
+					fmt.Printf("%s: invalid status %q (want proposed|accepted|deprecated|superseded by ADR-NNNN[ and ADR-NNNN ...])\n", path, v)
 					os.Exit(1)
 				}
 				a.status = v

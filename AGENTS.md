@@ -138,8 +138,59 @@ The automated checks enforce structure. This covers what they cannot:
 - Numbers are sequential and never reused.
 - ADRs are immutable. To reverse a decision, write a new ADR and set the old one's status to `superseded by ADR-NNNN`.
 - Status lifecycle: `proposed` -> `accepted` -> (`deprecated` | `superseded`).
+
+**What each status means and when to set it.**
+- `proposed` is a decision being made or about to be recorded. It is not a
+  waiting room: an ADR stays proposed only while its decision is genuinely not
+  yet made or the work that pins it has not landed. Do not leave a shipped
+  decision parked at `proposed`; the log should tell a reader at a glance what
+  is live.
+- `accepted` is a made, live decision. An ADR moves from `proposed` to
+  `accepted` when the decision is actually made and (where the ADR changes
+  behavior) the behavior is built and pinned by a test. It stays accepted until
+  a later ADR reverses it.
+- `deprecated` marks an ADR the project no longer stands behind for a reason
+  that is not a decision superseding it (for example a decision that proved
+  unworkable or was abandoned). Rare.
+- `superseded by ADR-NNNN` marks an ADR whose decision a later ADR has
+  reversed, so a reader knows the old rationale is no longer governing. The
+  superseded ADR stays in the log as the record of what was decided and why it
+  changed.
+
+**When to move `proposed` to `accepted`.** In practice, when the work a
+`proposed` ADR describes is done: its phase is built, its tests pass, and the
+SPEC matches the code. This is easy to forget because the ADR's decision is
+made at the same time as the work that realizes it; if you just shipped the
+thing an ADR proposed, flip it to `accepted` in the same change. Do a sweep of
+the log when a phase or a larger piece lands and promote any ADR whose decision
+is now live.
+
+**Supersession must not discard surviving decisions.** An ADR can bundle
+several decisions, and a later ADR may reverse only one of them. Before marking
+an ADR `superseded by ADR-NNNN`, check what the old one decided that still
+stands and where it is re-homed:
+- If the new ADR's own decision directly re-covers all of the old ADR's
+  decisions (the clean case), superseding the old one loses nothing.
+- If the old ADR bundles decisions and only some are overruled, do not blankly
+  supersede the whole file, and do not make the superseding ADR re-capture all
+  the survivors: it records its own decision, not the old one's. Write a new,
+  dedicated ADR for the surviving decisions first, so they carry forward with
+  their own rationale; then the old ADR can be superseded cleanly (its dead
+  decisions overruled by the superseding ADR, its live ones re-homed in the new
+  ADR). If you cannot do that, do not mark it superseded at all. A
+  `superseded` status reads as "everything here is void"; marking it while live
+  decisions inside still govern silently deletes them.
+- **An ADR can be superseded by more than one ADR.** When an old ADR's
+  decisions split, name every superseding ADR in the status, for example
+  `superseded by ADR-0034 and ADR-0050` (0034 overrules the dead part, 0050
+  re-homes the surviving part). A reader then sees the whole picture from the
+  status line. Each superseding ADR's own text states which part it covers.
+- When in doubt, err on the side of not superseding: leaving an ADR `accepted`
+  when a later one overrules part of it is a readable ambiguity, while marking
+  it `superseded` without preserving the rest is a silent loss.
 - A change that breaks the Wafer schema, CLI surface, or daemon protocol requires an ADR with `interface-impact: breaking`.
 - ADRs are for decisions. Do not write one to describe current state, and do not write one for a change that involved no contested choice.
+- **Keep an ADR to a single decision.** One ADR, one decision. Several decisions that are only incidentally shipped together still get separate ADRs. Put multiple decisions in one ADR only when they are genuinely one decision that cannot stand apart: one adopted mechanism whose parts only make sense together (for example a provider interface plus its failure semantics), or a rename that is inseparable from the contract it touches. If a later ADR might reverse one part and not the others, they should not have shared an ADR. The cost of a too-large ADR is paid at supersession time, when a reader has to carve the dead from the living.
 - An ADR records the decision and its durable rationale, not the moment in time it was made. Do not reference the implementation plan's phases or step numbers (for example "Phase 6"), the current state of the codebase, or any other thing that will drift as the project moves. Use the SPEC section the decision concerns (for example "SPEC: Execution model") as the anchor instead. A future reader of an ADR should understand the decision without knowing what the plan looked like on the day it was written.
 
 ### PLAN.md

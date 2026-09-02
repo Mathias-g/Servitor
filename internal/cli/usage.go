@@ -39,13 +39,14 @@ Commands:
   target add/list/remove  manage declared Singer targets (ADR-0018)
   secret add/list/remove  manage declared secrets (ADR-0035)
   secret seal <name>      seal a value (stdin) into the on-box store (onbox source)
+  webhook add/list/remove  manage declared webhook receivers (ADR-0049)
 
 Flags:
   --addr ADDR  loopback address of the daemon (default 127.0.0.1:7365)
   --db PATH    SQLite file the daemon owns (via Honker)
   HONKER_EXTENSION_PATH  path to the Honker extension .so (ADR-0011)
 
-The declared connector commands (mcp/tap/target/secret) edit a local
+The declared connector commands (mcp/tap/target/secret/webhook) edit a local
 servitor.config.yaml and need no daemon; the actual software install is
 delegated to the ecosystem's package managers (npx, pipx, uv, Meltano), and
 secret values are delivered to the declared source, never stored here.

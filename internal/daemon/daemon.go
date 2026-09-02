@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/Mathias-g/Servitor/internal/components/secret"
+	"github.com/Mathias-g/Servitor/internal/config"
 	"github.com/Mathias-g/Servitor/internal/honker"
 	"github.com/Mathias-g/Servitor/internal/protocol"
 	"github.com/Mathias-g/Servitor/internal/runner"
@@ -70,6 +71,11 @@ type Config struct {
 	// Secret resolution, ADR-0032, ADR-0033). It replaces the resolved global
 	// secret map; the runner no longer holds the full set.
 	Resolver *secret.Resolver
+	// WebhookReceivers are the declared webhook receivers from
+	// servitor.config.yaml, keyed by path (ADR-0049). They are loaded once at
+	// boot and passed to the trigger receiver, which verifies inbound webhooks
+	// per receiver. A nil map means no receivers are declared.
+	WebhookReceivers map[string]*config.WebhookReceiver
 	// Workers is how many worker loops to run. When DBPath is set and Workers
 	// is zero, one worker runs; set Workers to 0 with DisableRunner to run
 	// the daemon without executing nodes.
@@ -208,6 +214,26 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request, requireE
 		}
 		if len(undeclared) > 0 {
 			http.Error(w, "workflow references undeclared secret(s): "+strings.Join(undeclared, ", ")+" (declare them with `servitor secret add`)", http.StatusUnprocessableEntity)
+			return
+		}
+	}
+	// A webhook trigger's type must match the scheme of the receiver declared
+	// for its path (ADR-0049). A mismatch would never verify at serve time, so
+	// it is rejected at submit rather than silently deployed. A webhook trigger
+	// whose path has no declared receiver is allowed: it matches nothing, and
+	// `capabilities` shows the declared receivers so the author sees what is
+	// available.
+	for _, tr := range wf.On {
+		if tr.Type != "hmac-webhook" && tr.Type != "standard-webhook" {
+			continue
+		}
+		path, _ := tr.Config["path"].(string)
+		recv := s.cfg.WebhookReceivers[path]
+		if recv == nil {
+			continue
+		}
+		if trigger.SchemeForType(tr.Type) != recv.Scheme {
+			http.Error(w, fmt.Sprintf("webhook trigger type %q does not match the declared receiver %q scheme %q; set the trigger type to %q or fix the receiver", tr.Type, path, recv.Scheme, trigger.TypeForScheme(recv.Scheme)), http.StatusUnprocessableEntity)
 			return
 		}
 	}
@@ -640,7 +666,7 @@ func Run(ctx context.Context, cfg Config) error {
 		// against the same store.
 		queue := store.Queue(cfg.QueueName, cfg.VisibilityTimeoutS, cfg.MaxAttempts)
 		srv.queue = queue
-		srv.receiver = trigger.NewReceiver(store, queue, cfg.Resolver)
+		srv.receiver = trigger.NewReceiver(store, queue, cfg.Resolver, cfg.WebhookReceivers)
 	}
 
 	if cfg.Started != nil {

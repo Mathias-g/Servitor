@@ -37,8 +37,8 @@ func TestWriteProducesGroupedFiles(t *testing.T) {
 		t.Fatalf("expected core/http.yaml: %v", err)
 	}
 	// mechanism grouping: webhook triggers under webhook/.
-	if _, err := os.Stat(filepath.Join(dir, "webhook", "slack_event.yaml")); err != nil {
-		t.Fatalf("expected webhook/slack_event.yaml: %v", err)
+	if _, err := os.Stat(filepath.Join(dir, "webhook", "hmac-webhook.yaml")); err != nil {
+		t.Fatalf("expected webhook/hmac-webhook.yaml: %v", err)
 	}
 	// index exists.
 	if _, err := os.Stat(filepath.Join(dir, "index.yaml")); err != nil {
@@ -85,12 +85,12 @@ func TestIndexListsMechanisms(t *testing.T) {
 	}
 	found = false
 	for _, tr := range webhook.Triggers {
-		if tr == "slack_event" {
+		if tr == "hmac-webhook" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("webhook mechanism should list slack_event trigger, got %v", webhook.Triggers)
+		t.Fatalf("webhook mechanism should list hmac-webhook trigger, got %v", webhook.Triggers)
 	}
 }
 
@@ -247,6 +247,45 @@ esac
 	}
 	if !found {
 		t.Fatalf("taps report = %+v, want tap-fake with customers stream", rep.Taps)
+	}
+}
+
+func TestWriteProducesReceiversReport(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.AddWebhookReceiver("/hooks/raw", &config.WebhookReceiver{
+		Scheme:   config.SchemeHMAC,
+		Secret:   "RAW_SECRET",
+		Header:   "x-signature",
+		Encoding: "hex",
+		Prefix:   "sha256",
+	})
+	cfg.AddWebhookReceiver("/hooks/std", &config.WebhookReceiver{Scheme: config.SchemeStandard, Secret: "WH_SECRET"})
+	writeTestConfig(t, cfg)
+
+	dir := t.TempDir()
+	if err := Write(dir); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "webhook", "receivers.yaml"))
+	if err != nil {
+		t.Fatalf("read webhook/receivers.yaml: %v", err)
+	}
+	rep := receiversReport{}
+	if err := yaml.Unmarshal(data, &rep); err != nil {
+		t.Fatalf("parse webhook/receivers.yaml: %v", err)
+	}
+	if !rep.Generated {
+		t.Fatal("receivers report should be marked generated")
+	}
+	if len(rep.Receivers) != 2 {
+		t.Fatalf("receivers = %+v, want 2", rep.Receivers)
+	}
+	if rep.Receivers[0].Path != "/hooks/raw" || rep.Receivers[0].Scheme != config.SchemeHMAC || rep.Receivers[0].Prefix != "sha256" {
+		t.Fatalf("raw receiver = %+v", rep.Receivers[0])
+	}
+	// The secret name is reported, never a value.
+	if strings.Contains(string(data), "secretvalue") {
+		t.Fatalf("receivers.yaml must never contain a value:\n%s", data)
 	}
 }
 

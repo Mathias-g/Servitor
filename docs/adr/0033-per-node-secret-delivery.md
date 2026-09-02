@@ -72,7 +72,7 @@ Two honest limits are part of this decision, not caveats to hide:
   memory access can read the next resolve in plaintext anyway, so this is
   defense-in-depth the runner cannot provide, and it is out of scope.
 - **Redaction keeps operating on the running node's filtered env.** Redaction
-  (ADR-0029) scrubs a granted secret value from captured output by scanning the
+  (ADR-0050) scrubs a granted secret value from captured output by scanning the
   node's filtered env. Per-node delivery holds a value only while its node runs,
   which is exactly the window redaction needs, and redaction only ever scrubs
   values the node was granted. So the new model must keep redaction operating on
@@ -113,5 +113,5 @@ and how the runner obtains the values.
 - SPEC: Secret resolution, Execution model
 - ADR-0032 (the provider this delivery relies on)
 - ADR-0008 (subprocess-per-step isolation, the boundary this relies on)
-- ADR-0029 (redaction, which composes as described above)
+- ADR-0050 (redaction, which composes as described above)
 - IDEAS.md (the exploration this decision grew from)

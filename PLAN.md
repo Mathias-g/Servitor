@@ -6,7 +6,7 @@ Build order with dependencies and a clear "done" for each phase. The design live
 
 **Partial tasks.** A partially-finished task is split into a done part (`[x]`) and a not-done part (`[ ]`), or the `[x]` line is annotated with what is deferred. Do not leave a task half-done with no marker of what remains; a `[x]` means "its intended scope is done" and a `[ ]` means "not done", with the text saying exactly what is left.
 
-Current state: the Go project is scaffolded, the enforcement gates are wired (`make check`, adrlint, pre-commit, CI), and the daemon + loopback control protocol, Wafer model/validation, capability discovery, dry-run DAG resolution, Honker integration, node execution (shell, singer-tap, singer-target, mcp-call), triggers/webhooks (http_webhook, standard_webhook, manual), the varlock integration (Phase 8), the secret-resolution model (Phase 13, ADR-0032 through ADR-0036), SKILL.md, run inspection, packaging/release, the Singer integration, the MCP integration, and the declared integrations config (ADR-0018) are built. The daemon owns a WAL SQLite file with the Honker extension loaded; the transactional atom ({result, dedupe, downstream, claim_ack} in one commit) is a tested primitive, and for Singer nodes the bookmark is part of that same commit; the worker loop runs nodes as subprocesses with env filtering and dedupe; inbound webhooks (Standard Webhooks + generic HMAC) and manual triggers are served with event persistence; secrets resolve per node through a pluggable provider (the `env`, `varlock`, and `onbox` sources) with per-node, per-subprocess delivery and the failure semantics of Secret invalidity and rotation, replacing the varlock boot path (Phase 8) which is removed; a `SKILL.md` teaches agents the discover-author-dry-run-PR workflow; the full CLI command set (plus `mcp`/`tap`/`target`/`secret`) is implemented; `make release` drives the release flow (ADR-0012, ADR-0013, ADR-0014); Singer taps/targets run as subprocesses with bookmark state persisted in the same transaction as each node's result (ADR-0016); and MCP servers are declared in a local `servitor.config.yaml` and probed at refresh (ADR-0018). Not yet functional: the provider-specific-webhook receivers for Grist and Atomic, and the curated helpers (send side of email included). See "Outstanding work" below. The runner has no workflow registry consulted by the worker for control flow; runs are built from a Wafer into a dependency DAG with dependency-counter fan-out (ADR-0023), and the trigger receiver matches against the stored registered workflows.
+Current state: the Go project is scaffolded, the enforcement gates are wired (`make check`, adrlint, pre-commit, CI), and the daemon + loopback control protocol, Wafer model/validation, capability discovery, dry-run DAG resolution, Honker integration, node execution (shell, singer-tap, singer-target, mcp-call), triggers/webhooks (http_webhook, standard_webhook, manual), the varlock integration (Phase 8), the secret-resolution model (Phase 13, ADR-0032 through ADR-0036), SKILL.md, run inspection, packaging/release, the Singer integration, the MCP integration, and the declared integrations config (ADR-0018) are built. The daemon owns a WAL SQLite file with the Honker extension loaded; the transactional atom ({result, dedupe, downstream, claim_ack} in one commit) is a tested primitive, and for Singer nodes the bookmark is part of that same commit; the worker loop runs nodes as subprocesses with env filtering and dedupe; inbound webhooks (Standard Webhooks + generic HMAC) and manual triggers are served with event persistence; webhook receivers are declared in `servitor.config.yaml` under a `webhook:` section and verified by scheme through the two `hmac-webhook`/`standard-webhook` mechanisms delivering the raw body (Phase 18, ADR-0049); secrets resolve per node through a pluggable provider (the `env`, `varlock`, and `onbox` sources) with per-node, per-subprocess delivery and the failure semantics of Secret invalidity and rotation, replacing the varlock boot path (Phase 8) which is removed; a `SKILL.md` teaches agents the discover-author-dry-run-PR workflow; the full CLI command set (plus `mcp`/`tap`/`target`/`secret`/`webhook`) is implemented; `make release` drives the release flow (ADR-0012, ADR-0013, ADR-0014); Singer taps/targets run as subprocesses with bookmark state persisted in the same transaction as each node's result (ADR-0016); and MCP servers are declared in a local `servitor.config.yaml` and probed at refresh (ADR-0018). Not yet functional: webhook receivers for Grist and Atomic as config entries (their senders' schemes are not yet declared), and the curated helpers (send side of email included). See "Outstanding work" below. The runner has no workflow registry consulted by the worker for control flow; runs are built from a Wafer into a dependency DAG with dependency-counter fan-out (ADR-0023), and the trigger receiver matches against the stored registered workflows.
 
 ## Cross-cutting
 
@@ -154,7 +154,7 @@ Secrets (SPEC: Secret resolution, ADR-0032, ADR-0033, ADR-0034, ADR-0035, ADR-00
 - [x] **A first provider: varlock as a pull source.** Build varlock in first as the pull provider (fetch each value once into the on-box at-rest store, then resolve per node from the local copy). It is not the recommended default, but it is the store already installed and working on this machine, so it is the easiest first implementation to validate the provider interface against. The on-box ciphertext provider (recommended) is built after.
 - [x] **A working provider** for the recommended mechanism, push-based on-box ciphertext (`onbox`): material sealed to the box with `servitor secret seal` (value read from stdin), decrypted locally when a node needs it, at rest never plaintext (AES-GCM ciphertext under a local key in a 0600 store; the non-TPM unlock tier). The unlock key is a local file, so the stored values are ciphertext, not plaintext. Pull arrangements (external store, slow-store-into-on-box) are additional providers built as needed.
 - [ ] **On-box TPM/KMS unlock tier (the non-exportable tier).** Seal the `onbox` store's key with a TPM or an off-box KMS key so the unlock key is non-exportable: a thief who steals the disk gets only ciphertext decryptable nowhere else (SPEC: Secret resolution). Future tier, not idea-blocked; build it when a host with TPM or a chosen KMS is in use.
-- [x] **Per-node, per-subprocess delivery** (ADR-0033): resolve each secret at the moment its node runs, hand it to that one subprocess's filtered env, hold nothing past the subprocess. Redaction keeps operating on the running node's filtered env (ADR-0029). Resolve only what the registered Wafers reference; drop a secret whose last Wafer is removed.
+- [x] **Per-node, per-subprocess delivery** (ADR-0033): resolve each secret at the moment its node runs, hand it to that one subprocess's filtered env, hold nothing past the subprocess. Redaction keeps operating on the running node's filtered env (ADR-0050). Resolve only what the registered Wafers reference; drop a secret whose last Wafer is removed.
 - [x] **Remove the varlock boot path** (ADR-0034): drop the self-healing `varlock run` launch; the runner resolves through the provider instead. Varlock survives only as an optional pull provider, absent from the default. This means stripping the varlock integration from each place it is wired today:
   - Delete the `internal/varlock` package's boot API (`SelfHeal`, `Under`, `Available`, `ResolvedSecrets`), keeping at most a pull-provider implementation.
   - Remove the self-heal block and the `Secrets: varlock.ResolvedSecrets()` wiring in `internal/cli/cli.go`, and its import.
@@ -315,29 +315,33 @@ the workflow, which parses it itself. This replaces the per-service webhook
 types (`grist_webhook`, `github_webhook`, `slack_event`, `atomic_event`) and the
 `http_webhook`/`standard_webhook` names (ADR-0049).
 
-- [ ] **Register the two webhook mechanisms (ADR-0049).** Replace the current
+- [x] **Register the two webhook mechanisms (ADR-0049).** Replace the current
   per-service webhook packages under `internal/registry/webhook/` with two
-  mechanism folders: `hmac-webhook` (sign the raw body with HMAC-SHA256; header
-  and encoding are config) and `standard-webhook` (the Standard Webhooks
-  envelope: timestamped, replay-bounded, versioned signature). Update the
-  `mechanisms` aggregator and the deletion-proof test.
-- [ ] **Declare webhook receivers in the config (ADR-0049).** Add a `webhook:`
+  mechanism folders: `hmac-webhook` (sign the raw body with HMAC-SHA256, or a
+  timestamped, replay-bounded form of it; header, encoding, timestamp header,
+  and version prefix are receiver config) and `standard-webhook` (the Standard
+  Webhooks envelope: timestamped, replay-bounded, versioned signature). Update
+  the `mechanisms` aggregator and the deletion-proof test.
+- [x] **Declare webhook receivers in the config (ADR-0049).** Add a `webhook:`
   section to `servitor.config.yaml` (`internal/config`): each receiver names its
   `path`, its `scheme` (`hmac` or `standard`), and, when it verifies a
-  signature, a `secret`. A receiver with an unknown `scheme` is rejected. The
-  CLI gains management subcommands (for example `servitor webhook
+  signature, a `secret`, plus the `hmac` signing config (header, encoding,
+  timestamp_header, prefix). A receiver with an unknown `scheme` is rejected at
+  load. The CLI gains management subcommands (`servitor webhook
   add/list/remove`) mirroring `mcp`/`tap`/`target`/`secret`.
-- [ ] **Resolve a receiver to a mechanism at runtime.** The worker/daemon looks
+- [x] **Resolve a receiver to a mechanism at runtime.** The daemon looks
   up a webhook trigger's receiver by path from the declared config and runs the
   matching mechanism (`hmac-webhook` or `standard-webhook`), following the same
   config-loaded-once pattern as the secret resolver and the MCP connector
-  lookup (THREATS.md). A Wafer's webhook trigger names a receiver path.
-- [ ] **Deliver the raw body.** Both mechanisms deliver the raw body as the
+  lookup (THREATS.md). A Wafer's webhook trigger names a receiver by path, and
+  its type must match the receiver's scheme (rejected at submit; a mismatched
+  trigger never matches at serve time).
+- [x] **Deliver the raw body.** Both mechanisms deliver the raw body as the
   run's event; the workflow parses it with a `transform` node. Remove the
   built-in per-service parsing (GitHub hex HMAC, Slack `v0:` envelope and
   `url_verification` handshake, Grist and Atomic not-yet-built receivers). The
   GitHub and Slack HMAC variants become config on `hmac-webhook`.
-- [ ] **Update discovery.** `capabilities` reports the two webhook mechanisms
+- [x] **Update discovery.** `capabilities` reports the two webhook mechanisms
   and a `webhook/receivers.yaml` listing the declared receivers, mirroring
   `singer/taps.yaml` and `mcp/servers.yaml` (ADR-0049, ADR-0018). SPEC's
   Triggers section is already updated.
@@ -362,8 +366,8 @@ SPEC/PLAN, this task becomes buildable and is picked up then.
 - [x] **`transform` step executor.** Runs as a subprocess of the servitor binary's hidden `__transform` command (ADR-0008), evaluating a JSONata expression (ADR-0020) against the step's `{event, steps}` input threaded forward with the job (ADR-0021). Tested per component (the CLI `__transform` command, the `commandFor` wiring, and the input threading separately); the full spawn-the-binary path is not yet covered by an integration test.
 - [x] **`switch` node executor.** Routes to one named branch based on a value; non-chosen branches are skipped and cascade to a rejoin (ADR-0022, ADR-0023).
 - [x] **`foreach` node executor.** Fans a named body node out over a list; results collect into an array under the foreach node's name at the rejoin (ADR-0024).
-- [x] **Provider-specific webhook receivers (GitHub, Slack).** `github_webhook` verifies HMAC-SHA256 in `X-Hub-Signature-256`; `slack_event` verifies HMAC-SHA256 over `v0:<timestamp>:<body>` in `X-Slack-Signature` with a replay-bounding timestamp window, and answers Slack's `url_verification` handshake.
-- [ ] **Provider-specific webhook receivers (Grist, Atomic).** `grist_webhook` and `atomic_event` are registered as types but `isWebhookType` does not serve them, so they cannot match inbound events yet. Note: Grist's current webhooks authenticate with a static `Authorization` header, not an HMAC, so its receiver needs the scheme clarified before building.
+- [x] **`hmac-webhook`/`standard-webhook` receivers (ADR-0049).** The per-service GitHub and Slack webhook receivers were replaced by the two verification-scheme mechanisms: `hmac-webhook` verifies HMAC-SHA256 (header, encoding, and an optional timestamped, replay-bounded form are receiver config), and `standard-webhook` verifies the Standard Webhooks envelope. Both deliver the raw body as the run's event; the workflow parses it itself. See Phase 18.
+- [ ] **Grist and Atomic webhook receivers.** With ADR-0049 there are no per-service receiver types; a service becomes a config receiver (`servitor webhook add`) with a suitable scheme. Grist's current webhooks authenticate with a static `Authorization` header, not an HMAC, so declaring it needs a verification approach (or an open receiver) before it is useful; Atomic is unbuilt. These become config entries when the sender's scheme is known, not new mechanisms.
 - [x] **`email_received` trigger (Google Workspace).** Polls a mailbox via a gmail helper subprocess (ADR-0027): the trigger carries `host`/`username`/`secret`/`poll`, a scheduled poll runs the hidden `__email_poll` command, and the daemon fans out one run per new email with the parsed email as the event. Uses pinned emersion/go-imap v1. Future providers are new helpers.
 - [x] **`completed` trigger.** Registered; fired by another workflow's completion (ADR-0026, ADR-0038). The worker calls a completion callback when a run finishes; the daemon wires it to the trigger receiver, which starts any enabled workflow whose `completed` trigger names the completed workflow, passing an event of `{trigger, from, from_run}`.
 - [x] **Secret provider and per-node delivery.** Built in Phase 13: the provider + per-node delivery model (ADR-0032, ADR-0033, ADR-0034, ADR-0035, ADR-0036) with the `env`, `varlock`, and `onbox` providers.
@@ -383,4 +387,4 @@ SPEC/PLAN, this task becomes buildable and is picked up then.
 - [x] **`dedupe_key` expression language.** JSONata via `internal/expression` (ADR-0020), evaluated at execution time against the step's `{event, steps}` input (ADR-0021) and stringified into the key.
 - [x] **`transform` expression language.** Settled: JSONata via gnata behind `internal/expression` (ADR-0020). Runs as a subprocess, so no host access; evaluation is bounded.
 - [x] **Bespoke per-provider signing schemes.** The receiver verifies the GitHub and Slack schemes (ADR-0025); Grist and Atomic remain open.
-- [x] **Varlock signal handling.** `varlock run` forwards SIGTERM/SIGINT to the runner child and propagates its exit code, and the self-heal now execs varlock (`--inject vars`) so the process the operator launches becomes varlock, giving a clean `manager -> varlock -> runner` tree. No minimal init needed (ADR-0029). (The varlock boot path itself is removed by Phase 13, ADR-0034.)
+- [x] **Varlock signal handling.** `varlock run` forwards SIGTERM/SIGINT to the runner child and propagates its exit code, and the self-heal now execs varlock (`--inject vars`) so the process the operator launches becomes varlock, giving a clean `manager -> varlock -> runner` tree. No minimal init needed (ADR-0029). (The varlock boot path itself is removed by Phase 13, ADR-0034; the redaction decision ADR-0029 bundled is re-homed in ADR-0050.)

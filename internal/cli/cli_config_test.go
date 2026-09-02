@@ -166,3 +166,65 @@ func TestSecretSealSealsToOnBox(t *testing.T) {
 		t.Fatalf("sealed value leaked plaintext on disk: %q", raw)
 	}
 }
+
+func TestWebhookAddListRemove(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cfg.yaml")
+
+	var out, errOut bytes.Buffer
+	// An hmac receiver with the signing config for an HMAC sender (ADR-0049).
+	if code := Run([]string{"webhook", "add", "--file", path, "/hooks/raw", "hmac", "RAW_SECRET", "--header", "x-signature", "--encoding", "hex", "--prefix", "sha256"}, &out, &errOut); code != exitOK {
+		t.Fatalf("add hmac: code=%d err=%q", code, errOut.String())
+	}
+	if code := Run([]string{"webhook", "add", "--file", path, "/hooks/std", "standard", "WH_SECRET"}, &out, &errOut); code != exitOK {
+		t.Fatalf("add standard: code=%d err=%q", code, errOut.String())
+	}
+
+	out.Reset()
+	if code := Run([]string{"webhook", "list", "--file", path}, &out, &errOut); code != exitOK {
+		t.Fatalf("list: code=%d err=%q", code, errOut.String())
+	}
+	for _, want := range []string{"/hooks/raw", "scheme=hmac", "header=x-signature", "prefix=sha256", "/hooks/std", "scheme=standard"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("list output missing %q: %q", want, out.String())
+		}
+	}
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if raw := cfg.Webhook["/hooks/raw"]; raw == nil || raw.Prefix != "sha256" || raw.Encoding != "hex" {
+		t.Fatalf("raw receiver = %+v", raw)
+	}
+
+	out.Reset()
+	if code := Run([]string{"webhook", "remove", "--file", path, "/hooks/raw"}, &out, &errOut); code != exitOK {
+		t.Fatalf("remove: code=%d err=%q", code, errOut.String())
+	}
+	cfg, err = config.Load(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if _, ok := cfg.Webhook["/hooks/raw"]; ok {
+		t.Fatal("receiver not removed")
+	}
+	if _, ok := cfg.Webhook["/hooks/std"]; !ok {
+		t.Fatal("other receiver should remain")
+	}
+}
+
+func TestWebhookRejectsUnknownScheme(t *testing.T) {
+	var out, errOut bytes.Buffer
+	path := filepath.Join(t.TempDir(), "cfg.yaml")
+	if code := Run([]string{"webhook", "add", "--file", path, "/hooks/x", "tiktok"}, &out, &errOut); code != exitUsage {
+		t.Fatalf("add with unknown scheme should be usage error, got %d (err=%q)", code, errOut.String())
+	}
+}
+
+func TestWebhookUsageError(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := Run([]string{"webhook"}, &out, &errOut); code != exitUsage {
+		t.Fatalf("webhook with no subcommand should be usage error, got %d", code)
+	}
+}

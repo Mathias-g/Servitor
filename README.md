@@ -31,18 +31,20 @@ A workflow is a YAML file (a Wafer) declaring triggers (what causes it to run) a
 ```yaml
 name: notify_on_new_lead
 triggers:
-  grist_webhook:
-    table: Leads
-    event: row_added
+  - type: hmac-webhook
+    path: /hooks/grist-leads
 nodes:
   - name: post_to_slack
-    type: slack
-    action: post_message
-    channel: "#sales"
-    text: "New lead: ${trigger.payload.fields.name}"
+    type: transform
+    expression: |
+      $body := $json($event.body);
+      {"text": "New lead: " & $body.name}
 ```
 
-Submit it, enable it, and the next time a row is added to your Grist `Leads` table, a Slack message goes out.
+Submit it, enable it, and the next time an HMAC-signed request hits
+`/hooks/grist-leads` (a receiver you declare in `servitor.config.yaml`,
+ADR-0049), a run fires and its `transform` parses the raw body.
+```
 
 ## System requirements
 

@@ -25,9 +25,14 @@ place workflow state lives; there is no UI or database row to edit.
 ```yaml
 name: notify_on_new_lead
 triggers:
-  - type: grist_webhook
+  - type: hmac-webhook
     path: /hooks/leads
 nodes:
+  - type: transform
+    name: parse
+    expression: |
+      $body := $json($event.body);
+      {"text": "New lead: " & $body.name}
   - type: shell
     name: notify
     secrets: [SLACK_TOKEN]
@@ -85,14 +90,18 @@ and an `index.yaml` listing the mechanisms. Read `./capabilities/index.yaml` to
 see what exists, then read the schema for the specific type you need (for example
 `./capabilities/core/shell.yaml`) to learn its required fields and a valid
 example. The declared connectors sit with their mechanism (`singer/taps.yaml`,
-`mcp/servers.yaml`), so you can see what is available to run against a node
-type. The example is generated from the schema, so it cannot drift from it.
+`mcp/servers.yaml`, `webhook/receivers.yaml`), so you can see what is available
+to run against a node or trigger type. The example is generated from the schema,
+so it cannot drift from it.
 
-Available MCP servers and Singer taps/targets are declared in a local
-`servitor.config.yaml` (ADR-0018), not auto-discovered from PATH. Manage
-them with `servitor mcp`/`tap`/`target` add/remove; the actual software install
-is delegated to the ecosystem's package managers (npx, pipx, uv, Meltano). If a
-node names a server/tap that is not declared, it will not appear here.
+Available MCP servers, Singer taps/targets, and webhook receivers are declared
+in a local `servitor.config.yaml` (ADR-0018, ADR-0049), not auto-discovered from
+PATH. Manage them with `servitor mcp`/`tap`/`target`/`webhook` add/remove; the
+actual software install is delegated to the ecosystem's package managers (npx,
+pipx, uv, Meltano). If a node names a server/tap that is not declared, it will
+not appear here. A webhook trigger names a receiver by path; read
+`webhook/receivers.yaml` for the receiver's scheme (`hmac` or `standard`) and
+set the trigger's `type` (`hmac-webhook` or `standard-webhook`) to match.
 
 > A committed `capabilities/` directory is a materialized snapshot you can read
 > from the repo without a running daemon (ADR-0009). If a runner is reachable,

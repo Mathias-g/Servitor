@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Mathias-g/Servitor/internal/components/secret"
+	"github.com/Mathias-g/Servitor/internal/config"
 	"github.com/Mathias-g/Servitor/internal/honker"
 	"github.com/Mathias-g/Servitor/internal/protocol"
 	"github.com/Mathias-g/Servitor/internal/worker"
@@ -306,12 +307,15 @@ func TestDaemonWebhookReceiver(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- Run(ctx, Config{
-			Addr:         "127.0.0.1:0",
-			DBPath:       dbPath,
-			ExtPath:      ext,
-			WebhookAddr:  whAddr,
-			Workers:      1,
-			Resolver:     secret.ResolverFromMap(map[string]string{"WH_SECRET": "s3cret"}),
+			Addr:        "127.0.0.1:0",
+			DBPath:      dbPath,
+			ExtPath:     ext,
+			WebhookAddr: whAddr,
+			Workers:     1,
+			Resolver:    secret.ResolverFromMap(map[string]string{"WH_SECRET": "s3cret"}),
+			WebhookReceivers: map[string]*config.WebhookReceiver{
+				"/hooks/demo": {Scheme: config.SchemeStandard, Secret: "WH_SECRET"},
+			},
 			DrainTimeout: 2 * time.Second,
 			Started:      func(a string) { started <- a },
 		})
@@ -395,9 +399,8 @@ func TestDaemonWebhookReceiver(t *testing.T) {
 const wfWebhookYAML = `
 name: demo
 triggers:
-  - type: standard_webhook
+  - type: standard-webhook
     path: /hooks/demo
-    secret: WH_SECRET
 nodes:
   - type: shell
     name: a

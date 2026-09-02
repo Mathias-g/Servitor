@@ -85,5 +85,6 @@ self-heals under `varlock run`.
 - SPEC: Secret resolution, Varlock (removed/replaced)
 - ADR-0032 (provider interface), ADR-0033 (per-node delivery)
 - ADR-0014 (superseded: the self-healing boot it established is removed)
-- ADR-0029 (superseded where it built on varlock as the boot mechanism)
+- ADR-0029 (superseded: its boot-mechanism decisions are overruled here; its
+  surviving redaction decision is re-homed in ADR-0050)
 - IDEAS.md (the exploration this decision grew from)

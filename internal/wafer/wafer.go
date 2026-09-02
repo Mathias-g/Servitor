@@ -27,7 +27,7 @@ type Wafer struct {
 
 // Trigger is one trigger config.
 type Trigger struct {
-	// Type is the trigger type (for example `cron` or `http_webhook`).
+	// Type is the trigger type (for example `cron` or `hmac-webhook`).
 	Type string
 	// Config holds the trigger's type-specific fields.
 	Config map[string]any

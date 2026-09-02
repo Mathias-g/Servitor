@@ -23,7 +23,7 @@ func TestUnimportedMechanismsAbsent(t *testing.T) {
 	// core is not imported here, so none of its capabilities may exist. This is
 	// the deletion property: not importing a mechanism's package means it is
 	// gone from validation and capabilities.
-	for _, name := range []string{"http", "shell", "switch", "cron", "mcp-stdio", "singer-tap", "github_webhook"} {
+	for _, name := range []string{"http", "shell", "switch", "cron", "mcp-stdio", "singer-tap", "hmac-webhook"} {
 		if registry.Lookup(name) != nil {
 			t.Fatalf("%s is present without its package being imported; deletion has side effects", name)
 		}

@@ -155,7 +155,7 @@ What we use it for:
 - **A `standard-webhook` trigger type.** Any compliant producer works out of the box with one verification library.
 - **Forward compatibility.** New services adopting the spec become trigger sources with zero per-service code.
 
-For non-compliant services (Grist, GitHub, Stripe, Slack, etc.), provider-specific trigger types handle their bespoke signing schemes.
+For non-compliant services that sign with HMAC-SHA256, the `hmac-webhook` trigger type covers them as receiver config: which signature header, which digest encoding, and optionally a timestamped, replay-bounded form of the body are all declared per receiver in `servitor.config.yaml` (ADR-0049), never compiled in per service.
 
 ### Node execution
 
@@ -250,7 +250,7 @@ Two honest limits are part of the model, not caveats to hide:
   resolve in plaintext anyway, so this is out of scope.
 - **Redaction keeps operating on the running node's filtered env.** A node's
   captured output is scrubbed of any secret value the node was granted by
-  scanning the node's filtered env (ADR-0029). Per-node delivery holds a value
+  scanning the node's filtered env (ADR-0050). Per-node delivery holds a value
   only while its node runs, which is exactly the window redaction needs, and
   redaction only ever scrubs values the node was granted. There is no global
   secret map to redact from; redaction operates per node, and this is what lets
@@ -472,14 +472,16 @@ verifies a signature, a `secret` (the declared secret name holding the shared
 key; SPEC: Secret resolution). A Wafer's webhook trigger names a receiver by its
 path, and the mechanism is chosen by the receiver's declared scheme:
 
-- **`hmac-webhook`** when the sender signs the raw body with HMAC-SHA256. The
-  receiver config declares the signature header and encoding (hex or base64),
-  so GitHub (HMAC-SHA256 in `X-Hub-Signature-256`, hex) is a config entry, not
-  a separate mechanism.
+- **`hmac-webhook`** when the sender signs with HMAC-SHA256. The receiver
+  config declares the signature header and encoding (hex or base64), and
+  optionally a version `prefix` (stripped from the header value) and a
+  `timestamp_header` (the body is then signed as `<prefix>:<timestamp>:<body>`
+  and replay is bounded with a time window). A sender that signs the raw body
+  and a sender that signs the timestamped form are both config entries, not
+  separate mechanisms.
 - **`standard-webhook`** when the sender speaks Standard Webhooks (it sends
-  `webhook-id`, `webhook-timestamp`, and `webhook-signature` headers), or signs
-  a timestamped envelope with a replay window (Slack is such a scheme via
-  config). Any compliant producer works with this type.
+  `webhook-id`, `webhook-timestamp`, and `webhook-signature` headers). Any
+  compliant producer works with this type.
 
 Both mechanisms deliver the **raw body** as the run's event. The workflow parses
 it itself, typically with a `transform` node, so no per-service parsing is
@@ -490,8 +492,14 @@ Execution model step 2), its signature is verified against the receiver's
 declared secret, and each matching enabled workflow is enqueued (SPEC:
 Execution model step 5).
 
+A webhook trigger's `type` must match the scheme of the receiver declared for
+its path (hmac-webhook for `hmac`, standard-webhook for `standard`); a mismatch
+is rejected at submit. A webhook trigger whose path has no declared receiver is
+allowed: it matches nothing, and `webhook/receivers.yaml` shows the declared
+receivers so the author sees what is available.
+
 Both `hmac-webhook` and `standard-webhook` receivers are built and verify
-signatures. A receiver declared with an unknown `scheme` is rejected.
+signatures. A receiver declared with an unknown `scheme` is rejected at load.
 
 #### Using email triggers
 
@@ -800,10 +808,9 @@ Things deliberately out of scope for v1, kept here so the design doesn't quietly
 
 ## Status
 
-Early development. The daemon lifecycle, loopback control protocol, Wafer model and structured validation, capability discovery (including a `secrets.yaml` reporting declared secret names, account, permissions, and expiry, a `secret-resolution` group enumerating the available secret sources, a `singer/taps.yaml` reporting declared Singer taps, and a `mcp/servers.yaml` reporting declared MCP servers; grouped by mechanism group per ADR-0031, sourced from the declared config per ADR-0018), dry-run DAG resolution (including redacted secret names and a `missing_secret` warning), the Honker durability store (with the transactional atom), node execution (the worker loop, subprocess isolation with env filtering, and the dedupe contract), the secret-resolution model (a pluggable provider with per-node, per-subprocess delivery; the `env` and `varlock` providers; a declared-secrets section in the config and the `servitor secret` CLI; submit rejects a Wafer that references an undeclared secret; the varlock boot path is removed, ADR-0032 through ADR-0036), Singer (the `singer-tap` and `singer-target` executors, bookmark state committed with each tap node's result, and schema discovery; ADR-0016), MCP (the `mcp-stdio` node type with a client-mode executor, both classic and stateless protocol support, and structured error mapping; ADR-0015; the `mcp-http` Streamable HTTP executor is not yet built, ADR-0047), inbound triggers (a webhook receiver for Standard Webhooks, generic HMAC, and the GitHub and Slack provider-specific schemes, plus cron and manual), the shipped `SKILL.md` agent reference, run inspection (`servitor runs`, `servitor run <id>`, `servitor cancel`), and the release flow (`make release`) are built (`servitor run`, `stop`, `dry-run`, `capabilities`, `submit`, `update`, `enable`, `disable`, `trigger`, `runs`, `run`, `cancel`, `resume`, `rerun`, `secret`), the `transform` node handler and `dedupe_key` evaluation (JSONata via gnata, ADR-0020; `{event, steps}` threaded input, ADR-0021), and the `switch` and `foreach` node handlers with dependency-counter fan-out (ADR-0022, ADR-0023, ADR-0024). Provider-specific webhook receivers for Grist and Atomic, and the curated helpers (grist, slack, github, email send) are not yet built. Open questions, to be resolved as implementation progresses and tracked in ADRs in the `docs/adr/` directory:
+Early development. The daemon lifecycle, loopback control protocol, Wafer model and structured validation, capability discovery (including a `secrets.yaml` reporting declared secret names, account, permissions, and expiry, a `secret-resolution` group enumerating the available secret sources, a `singer/taps.yaml` reporting declared Singer taps, and a `mcp/servers.yaml` reporting declared MCP servers; grouped by mechanism group per ADR-0031, sourced from the declared config per ADR-0018), dry-run DAG resolution (including redacted secret names and a `missing_secret` warning), the Honker durability store (with the transactional atom), node execution (the worker loop, subprocess isolation with env filtering, and the dedupe contract), the secret-resolution model (a pluggable provider with per-node, per-subprocess delivery; the `env` and `varlock` providers; a declared-secrets section in the config and the `servitor secret` CLI; submit rejects a Wafer that references an undeclared secret; the varlock boot path is removed, ADR-0032 through ADR-0036), Singer (the `singer-tap` and `singer-target` executors, bookmark state committed with each tap node's result, and schema discovery; ADR-0016), MCP (the `mcp-stdio` node type with a client-mode executor, both classic and stateless protocol support, and structured error mapping; ADR-0015; the `mcp-http` Streamable HTTP executor is not yet built, ADR-0047), inbound triggers (webhook receivers declared in `servitor.config.yaml` and verified by scheme, the `hmac-webhook` and `standard-webhook` mechanisms delivering the raw body, plus cron and manual), the shipped `SKILL.md` agent reference, run inspection (`servitor runs`, `servitor run <id>`, `servitor cancel`), and the release flow (`make release`) are built (`servitor run`, `stop`, `dry-run`, `capabilities`, `submit`, `update`, `enable`, `disable`, `trigger`, `runs`, `run`, `cancel`, `resume`, `rerun`, `secret`, `webhook`), the `transform` node handler and `dedupe_key` evaluation (JSONata via gnata, ADR-0020; `{event, steps}` threaded input, ADR-0021), and the `switch` and `foreach` node handlers with dependency-counter fan-out (ADR-0022, ADR-0023, ADR-0024). The curated helpers (grist, slack, github, email send) are not yet built. Open questions, to be resolved as implementation progresses and tracked in ADRs in the `docs/adr/` directory:
 
 - Worker concurrency limits; runs execute as a dependency DAG with fan-out (ADR-0023), but branches run sequentially rather than in parallel.
-- The trigger receiver's framing of the remaining bespoke per-provider signing schemes (Grist and Atomic).
 
 **Suspended waits: built.** The durable `wait` flow node (ADR-0040 through ADR-0043) parks a run and resumes it later via a timer (Honker queue `RunAt`, `timer.after` / `timer.at`) or a named signal (an author-defined JSONata `signal` name; senders are a `send-signal` node, `servitor resume <signal-name>`, or a webhook-triggered broker workflow). The run parks as `waiting`, shows in `servitor runs` / `servitor run <id>`, and `servitor cancel` drops the parked continuation. Race rules are pinned: a signal that arrives before the park is buffered, a repeat resume is a no-op, and a signal naming more than one parked run is rejected as ambiguous. A wait inside a `foreach` body (several iterations parking at once) is not supported yet; the continuation is one-per-run.
 

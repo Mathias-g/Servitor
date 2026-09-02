@@ -67,3 +67,58 @@ func TestSaveCreatesParentDir(t *testing.T) {
 		t.Fatalf("file not written: %v", err)
 	}
 }
+
+func TestWebhookReceiverRoundTrip(t *testing.T) {
+	c := &Config{}
+	c.AddWebhookReceiver("/hooks/raw", &WebhookReceiver{
+		Scheme:   SchemeHMAC,
+		Secret:   "RAW_SECRET",
+		Header:   "x-signature",
+		Encoding: "hex",
+		Prefix:   "sha256",
+	})
+	c.AddWebhookReceiver("/hooks/std", &WebhookReceiver{Scheme: SchemeStandard, Secret: "WH_SECRET"})
+
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	if err := Save(c, path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	raw := got.Webhook["/hooks/raw"]
+	if raw == nil || raw.Scheme != SchemeHMAC || raw.Header != "x-signature" || raw.Encoding != "hex" || raw.Prefix != "sha256" || raw.Secret != "RAW_SECRET" {
+		t.Fatalf("raw receiver = %+v", raw)
+	}
+	if std := got.Webhook["/hooks/std"]; std == nil || std.Scheme != SchemeStandard {
+		t.Fatalf("std receiver = %+v", std)
+	}
+}
+
+func TestWebhookReceiverUnknownSchemeRejected(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	c := &Config{Webhook: map[string]*WebhookReceiver{
+		"/hooks/x": {Scheme: "tiktok"},
+	}}
+	if err := Save(c, path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load should reject a receiver with an unknown scheme")
+	}
+}
+
+func TestRemoveWebhookReceiverReportsExistence(t *testing.T) {
+	c := &Config{}
+	c.AddWebhookReceiver("/hooks/a", &WebhookReceiver{Scheme: SchemeHMAC})
+	if !c.RemoveWebhookReceiver("/hooks/a") {
+		t.Fatal("existing receiver should report removal")
+	}
+	if c.RemoveWebhookReceiver("/hooks/a") {
+		t.Fatal("already-removed receiver should report false")
+	}
+	if len(c.ReceiverPaths()) != 0 {
+		t.Fatalf("ReceiverPaths = %v, want empty", c.ReceiverPaths())
+	}
+}

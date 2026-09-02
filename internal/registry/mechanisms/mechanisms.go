@@ -24,10 +24,6 @@ import (
 	_ "github.com/Mathias-g/Servitor/internal/registry/mcp/stdio"
 	_ "github.com/Mathias-g/Servitor/internal/registry/singer/tap"
 	_ "github.com/Mathias-g/Servitor/internal/registry/singer/target"
-	_ "github.com/Mathias-g/Servitor/internal/registry/webhook/atomicevent"
-	_ "github.com/Mathias-g/Servitor/internal/registry/webhook/githubwebhook"
-	_ "github.com/Mathias-g/Servitor/internal/registry/webhook/gristwebhook"
-	_ "github.com/Mathias-g/Servitor/internal/registry/webhook/httpwebhook"
-	_ "github.com/Mathias-g/Servitor/internal/registry/webhook/slackevent"
+	_ "github.com/Mathias-g/Servitor/internal/registry/webhook/hmacwebhook"
 	_ "github.com/Mathias-g/Servitor/internal/registry/webhook/standardwebhook"
 )

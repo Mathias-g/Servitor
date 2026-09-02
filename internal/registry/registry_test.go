@@ -93,8 +93,8 @@ func TestRolesSeparateTriggerFromNode(t *testing.T) {
 	if tr := registry.LookupTrigger("email_received"); tr.Delivery != registry.DeliveryPolling {
 		t.Fatalf("email_received delivery = %q, want polling", tr.Delivery)
 	}
-	if tr := registry.LookupTrigger("github_webhook"); tr.Delivery != registry.DeliveryInstant {
-		t.Fatalf("github_webhook delivery = %q, want instant", tr.Delivery)
+	if tr := registry.LookupTrigger("hmac-webhook"); tr.Delivery != registry.DeliveryInstant {
+		t.Fatalf("hmac-webhook delivery = %q, want instant", tr.Delivery)
 	}
 }
 

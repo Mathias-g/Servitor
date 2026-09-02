@@ -1,8 +1,16 @@
 // Package trigger implements inbound triggers: webhook reception and the
 // manual trigger (SPEC: Triggers, Execution model steps 1-5). A receiver
-// persists the raw event, verifies the signature, matches it against the
-// registered workflows whose `on:` trigger path it hit, and enqueues a run for
-// each match.
+// persists the raw event, looks up the declared webhook receiver for the
+// request's path, verifies the signature, matches it against the registered
+// workflows whose trigger path it hit, and enqueues a run for each.
+//
+// Webhook receivers are declared in servitor.config.yaml (ADR-0049), keyed by
+// path, and loaded once at daemon boot (the same config-loaded-once pattern as
+// the secret resolver and the MCP connector lookup; THREATS.md). A Wafer's
+// webhook trigger names a receiver by its path; the mechanism (hmac-webhook or
+// standard-webhook) is chosen by the receiver's declared scheme. Both
+// mechanisms deliver the raw body as the run's event; the workflow parses it
+// itself with a `transform` node, so no per-service parsing is compiled in.
 //
 // The webhook listener is deliberately separate from the loopback-only control
 // plane (ADR-0009): webhooks must be reachable by external senders, so the
@@ -26,6 +34,7 @@ import (
 
 	"github.com/Mathias-g/Servitor/internal/components/email"
 	"github.com/Mathias-g/Servitor/internal/components/secret"
+	"github.com/Mathias-g/Servitor/internal/config"
 	"github.com/Mathias-g/Servitor/internal/honker"
 	"github.com/Mathias-g/Servitor/internal/runner"
 	"github.com/Mathias-g/Servitor/internal/wafer"
@@ -37,15 +46,18 @@ type Receiver struct {
 	store    *honker.Store
 	queue    *honker.Queue
 	resolver *secret.Resolver
+	// receivers is the declared webhook receiver config, keyed by path
+	// (ADR-0049). It is loaded once at boot and not re-read per request.
+	receivers map[string]*config.WebhookReceiver
 	// now is injectable for tests.
 	now func() time.Time
 }
 
 // NewReceiver builds a receiver over the store's queue. resolver resolves a
-// webhook trigger's signing key per use (SPEC: Secret resolution); webhook
-// triggers name a secret to verify with.
-func NewReceiver(store *honker.Store, queue *honker.Queue, resolver *secret.Resolver) *Receiver {
-	return &Receiver{store: store, queue: queue, resolver: resolver, now: time.Now}
+// receiver's signing key per use (SPEC: Secret resolution); receivers declares
+// the webhook receivers from servitor.config.yaml (ADR-0049), keyed by path.
+func NewReceiver(store *honker.Store, queue *honker.Queue, resolver *secret.Resolver, receivers map[string]*config.WebhookReceiver) *Receiver {
+	return &Receiver{store: store, queue: queue, resolver: resolver, receivers: receivers, now: time.Now}
 }
 
 // matchPath returns the trigger's configured path, or "" when it has none.
@@ -56,17 +68,46 @@ func matchPath(tr wafer.Trigger) string {
 	return ""
 }
 
-func secretName(tr wafer.Trigger) string {
-	if s, ok := tr.Config["secret"].(string); ok {
-		return s
+// isWebhookType reports whether the trigger type is served by the webhook
+// receiver. A Wafer's webhook trigger is one of the two verification-scheme
+// mechanisms (ADR-0049); the actual mechanism runs as chosen by the declared
+// receiver's scheme.
+func isWebhookType(typ string) bool {
+	return typ == "hmac-webhook" || typ == "standard-webhook"
+}
+
+// SchemeForType returns the declared receiver scheme a webhook trigger type
+// corresponds to, or "" for a non-webhook type. The trigger's type must match
+// the declared receiver's scheme; a mismatch is rejected at submit and never
+// matches at serve time.
+func SchemeForType(typ string) string {
+	switch typ {
+	case "hmac-webhook":
+		return config.SchemeHMAC
+	case "standard-webhook":
+		return config.SchemeStandard
+	default:
+		return ""
 	}
-	return ""
+}
+
+// TypeForScheme returns the webhook trigger type that runs a declared receiver
+// with the given scheme, or "" for an unknown scheme.
+func TypeForScheme(scheme string) string {
+	switch scheme {
+	case config.SchemeHMAC:
+		return "hmac-webhook"
+	case config.SchemeStandard:
+		return "standard-webhook"
+	default:
+		return ""
+	}
 }
 
 // ServeHTTP handles an inbound webhook. The flow follows the execution model:
-// persist the raw event before any matching, verify the signature, match
-// registered enabled workflows whose trigger path this request hit, and
-// enqueue a run for each.
+// persist the raw event before any matching, look up the declared receiver for
+// the path, verify the signature, match registered enabled workflows whose
+// trigger path this request hit, and enqueue a run for each.
 func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -84,7 +125,22 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// 2. Find matching enabled workflows and verify each trigger's signature.
+	// 2. The declared receiver for this path decides how to verify (ADR-0049).
+	// A path with no declared receiver matches nothing; the event is already
+	// persisted and the sender still gets a 2xx.
+	receiver := r.receivers[req.URL.Path]
+	if receiver == nil {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "ok\n")
+		return
+	}
+	if !r.verify(receiver, req.Header, body) {
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return
+	}
+
+	// 3. Match registered enabled workflows whose webhook trigger path this
+	// request hit and whose type matches the receiver's scheme.
 	var matches []*wafer.Wafer
 	workflows, err := r.store.ListWorkflows()
 	if err != nil {
@@ -106,48 +162,158 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			if matchPath(tr) != req.URL.Path {
 				continue
 			}
-			if !r.verify(parsed, tr, req.Header, body) {
-				http.Error(w, "invalid signature", http.StatusUnauthorized)
-				return
-			}
-			// Slack's URL verification handshake: echo the challenge and stop;
-			// it is a setup request, not a real event to run.
-			if tr.Type == "slack_event" {
-				if chal, ok := slackChallenge(body); ok {
-					w.Header().Set("Content-Type", "application/json")
-					w.WriteHeader(http.StatusOK)
-					_ = json.NewEncoder(w).Encode(map[string]string{"challenge": chal})
-					return
-				}
+			if SchemeForType(tr.Type) != receiver.Scheme {
+				continue
 			}
 			matches = append(matches, parsed)
 		}
 	}
 
-	// 3. Enqueue a run per match (SPEC step 5), with the event as input.
+	// 4. Enqueue a run per match (SPEC step 5), with the raw body as the event.
 	for _, m := range matches {
-		if err := r.enqueueRun(m, string(body)); err != nil {
+		if err := r.enqueueRun(m, req.URL.Path, string(body)); err != nil {
 			http.Error(w, "enqueue run", http.StatusInternalServerError)
 			return
 		}
 	}
 
-	// A recognized-but-unmatched path (no registered workflow) still succeeds;
-	// the event is already persisted. Unknown sender behavior is a 2xx.
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.WriteString(w, "ok\n")
 }
 
-// enqueueRun builds and enqueues a run of the workflow from the event payload.
-func (r *Receiver) enqueueRun(w *wafer.Wafer, payload string) error {
-	var input map[string]any
-	_ = json.Unmarshal([]byte(payload), &input)
-	if input == nil {
-		input = map[string]any{}
+// enqueueRun builds and enqueues a run of the workflow from the raw webhook
+// body. Both webhook mechanisms deliver the raw body as the run's event; the
+// workflow parses it itself (SPEC: Using webhook triggers, ADR-0049).
+func (r *Receiver) enqueueRun(w *wafer.Wafer, path, body string) error {
+	event := map[string]any{
+		"trigger": "webhook",
+		"path":    path,
+		"body":    body,
 	}
 	runID := fmt.Sprintf("%s-%d", w.Name, r.now().UnixNano())
-	_, err := runner.StartRun(r.store, r.queue, w, input, runID)
+	_, err := runner.StartRun(r.store, r.queue, w, event, runID)
 	return err
+}
+
+// verify checks the request signature for a declared webhook receiver. It
+// resolves the receiver's signing key fresh per use (SPEC: Secret resolution);
+// there is no rollover window, so a message that does not verify with the
+// current key is rejected and logged, with no retry. It returns true when the
+// signature is valid or when the receiver declares no secret (an open
+// receiver). It returns false only on a definite mismatch.
+func (r *Receiver) verify(receiver *config.WebhookReceiver, h http.Header, body []byte) bool {
+	if receiver.Secret == "" || r.resolver == nil {
+		return true
+	}
+	values, missing, err := r.resolver.Resolve(context.Background(), "webhook", []string{receiver.Secret})
+	if err != nil || len(missing) > 0 {
+		return true
+	}
+	secret := values[receiver.Secret]
+	if secret == "" {
+		return true
+	}
+	switch receiver.Scheme {
+	case config.SchemeStandard:
+		return verifyStandardWebhook(secret, h, body, r.now())
+	case config.SchemeHMAC:
+		return verifyHMAC(secret, h, body, receiver, r.now())
+	default:
+		return true
+	}
+}
+
+// verifyStandardWebhook implements Standard Webhooks signature verification
+// (SPEC: Standard Webhooks). The message is
+// `<webhook-id>.<webhook-timestamp>.<body>`, signed with HMAC-SHA256, base64 in
+// the `webhook-signature` header as a comma-separated `v1,<sig>` list. The
+// timestamp must be within tolerance to bound replay.
+func verifyStandardWebhook(secret string, h http.Header, body []byte, now time.Time) bool {
+	id := h.Get("webhook-id")
+	tsRaw := h.Get("webhook-timestamp")
+	sigHeader := h.Get("webhook-signature")
+	if id == "" || tsRaw == "" || sigHeader == "" {
+		return false
+	}
+	ts, err := strconv.ParseInt(tsRaw, 10, 64)
+	if err != nil {
+		return false
+	}
+	if delta := now.Unix() - ts; delta < -300 || delta > 300 {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(id + "." + tsRaw + "."))
+	_, _ = mac.Write(body)
+	expected := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+	for _, part := range strings.Split(sigHeader, " ") {
+		kv := strings.SplitN(part, ",", 2)
+		if len(kv) == 2 && kv[0] == "v1" && hmac.Equal([]byte(kv[1]), []byte(expected)) {
+			return true
+		}
+	}
+	return false
+}
+
+// verifyHMAC verifies an HMAC-SHA256 signature of the body (or a timestamped
+// form of it) against the receiver's declared signing config (ADR-0049). The
+// signature header, digest encoding, and an optional timestamp header and
+// version prefix are all receiver config, so a raw-body scheme (hex and
+// prefixed, or plain base64) and a timestamped, replay-bounded scheme are all
+// config entries, not separate mechanisms.
+func verifyHMAC(secret string, h http.Header, body []byte, r *config.WebhookReceiver, now time.Time) bool {
+	header := r.Header
+	if header == "" {
+		header = "x-servitor-signature"
+	}
+	got := h.Get(header)
+	if got == "" {
+		return false
+	}
+	// Strip a version prefix the sender prepends to the digest, for example
+	// "sha256=" or "v0=".
+	if r.Prefix != "" {
+		got = strings.TrimPrefix(got, r.Prefix+"=")
+	}
+
+	// The message is the raw body, or `<prefix>:<timestamp>:<body>` when the
+	// receiver declares a timestamp header (a replay-bounded scheme).
+	message := body
+	if r.TimestampHeader != "" {
+		tsRaw := h.Get(r.TimestampHeader)
+		if tsRaw == "" {
+			return false
+		}
+		ts, err := strconv.ParseInt(tsRaw, 10, 64)
+		if err != nil {
+			return false
+		}
+		if delta := now.Unix() - ts; delta < -300 || delta > 300 {
+			return false
+		}
+		var prefix string
+		if r.Prefix != "" {
+			prefix = r.Prefix + ":"
+		}
+		message = []byte(prefix + tsRaw + ":" + string(body))
+	}
+
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write(message)
+	digest := mac.Sum(nil)
+
+	encoding := r.Encoding
+	if encoding == "" {
+		encoding = "base64"
+	}
+	switch encoding {
+	case "hex":
+		return hmac.Equal([]byte(got), []byte(hex.EncodeToString(digest)))
+	case "base64":
+		return hmac.Equal([]byte(got), []byte(base64.StdEncoding.EncodeToString(digest)))
+	default:
+		return false
+	}
 }
 
 // Manual triggers a registered, enabled workflow by name, with the given
@@ -310,147 +476,4 @@ func pollEvent(kind string, item any) (map[string]any, error) {
 	default:
 		return map[string]any{"trigger": kind, "item": item}, nil
 	}
-}
-
-// isWebhookType reports whether the trigger type is served by the webhook
-// receiver.
-func isWebhookType(typ string) bool {
-	switch typ {
-	case "http_webhook", "standard_webhook", "github_webhook", "slack_event":
-		return true
-	default:
-		return false
-	}
-}
-
-// verify checks the request signature for a webhook trigger. It resolves the
-// trigger's signing key fresh per use (SPEC: Secret resolution); there is no
-// rollover window, so a message that does not verify with the current key is
-// rejected and logged, with no retry. It returns true when the signature is
-// valid or when the trigger names no resolvable secret (an open receiver). It
-// returns false only on a definite mismatch.
-func (r *Receiver) verify(w *wafer.Wafer, tr wafer.Trigger, h http.Header, body []byte) bool {
-	name := secretName(tr)
-	if name == "" || r.resolver == nil {
-		return true
-	}
-	values, missing, err := r.resolver.Resolve(context.Background(), "webhook", []string{name})
-	if err != nil || len(missing) > 0 {
-		return true
-	}
-	secret := values[name]
-	if secret == "" {
-		return true
-	}
-	switch tr.Type {
-	case "standard_webhook":
-		return verifyStandardWebhook(secret, h, body, r.now())
-	case "http_webhook":
-		return verifyHMAC(secret, h, body)
-	case "github_webhook":
-		return verifyGitHub(secret, h, body)
-	case "slack_event":
-		return verifySlack(secret, h, body, r.now())
-	default:
-		return true
-	}
-}
-
-// verifyStandardWebhook implements Standard Webhooks signature verification
-// (SPEC: Standard Webhooks). The message is
-// `<webhook-id>.<webhook-timestamp>.<body>`, signed with HMAC-SHA256, base64 in
-// the `webhook-signature` header as a comma-separated `v1,<sig>` list. The
-// timestamp must be within tolerance to bound replay.
-func verifyStandardWebhook(secret string, h http.Header, body []byte, now time.Time) bool {
-	id := h.Get("webhook-id")
-	tsRaw := h.Get("webhook-timestamp")
-	sigHeader := h.Get("webhook-signature")
-	if id == "" || tsRaw == "" || sigHeader == "" {
-		return false
-	}
-	ts, err := strconv.ParseInt(tsRaw, 10, 64)
-	if err != nil {
-		return false
-	}
-	if delta := now.Unix() - ts; delta < -300 || delta > 300 {
-		return false
-	}
-	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write([]byte(id + "." + tsRaw + "."))
-	_, _ = mac.Write(body)
-	expected := base64.StdEncoding.EncodeToString(mac.Sum(nil))
-	for _, part := range strings.Split(sigHeader, " ") {
-		kv := strings.SplitN(part, ",", 2)
-		if len(kv) == 2 && kv[0] == "v1" && hmac.Equal([]byte(kv[1]), []byte(expected)) {
-			return true
-		}
-	}
-	return false
-}
-
-// verifyHMAC verifies an HMAC-SHA256 signature of the body carried in the
-// `x-servitor-signature` header. It is the default scheme for the generic
-// `http_webhook` trigger.
-func verifyHMAC(secret string, h http.Header, body []byte) bool {
-	got := h.Get("x-servitor-signature")
-	if got == "" {
-		return false
-	}
-	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write(body)
-	expected := base64.StdEncoding.EncodeToString(mac.Sum(nil))
-	return hmac.Equal([]byte(got), []byte(expected))
-}
-
-// verifyGitHub verifies a GitHub webhook (SPEC: Triggers). GitHub signs the
-// body with HMAC-SHA256 using the shared secret and sends the hex digest in the
-// `X-Hub-Signature-256` header as `sha256=<hex>`.
-func verifyGitHub(secret string, h http.Header, body []byte) bool {
-	got := h.Get("X-Hub-Signature-256")
-	if !strings.HasPrefix(got, "sha256=") {
-		return false
-	}
-	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write(body)
-	expected := "sha256=" + hex.EncodeToString(mac.Sum(nil))
-	return hmac.Equal([]byte(got), []byte(expected))
-}
-
-// verifySlack verifies a Slack events request (SPEC: Triggers). Slack signs
-// `v0:<timestamp>:<body>` with HMAC-SHA256 using the signing secret and sends
-// the hex digest in the `X-Slack-Signature` header as `v0=<hex>`. The
-// `X-Slack-Request-Timestamp` must be within tolerance to bound replay.
-func verifySlack(secret string, h http.Header, body []byte, now time.Time) bool {
-	tsRaw := h.Get("X-Slack-Request-Timestamp")
-	sig := h.Get("X-Slack-Signature")
-	if tsRaw == "" || sig == "" {
-		return false
-	}
-	ts, err := strconv.ParseInt(tsRaw, 10, 64)
-	if err != nil {
-		return false
-	}
-	if delta := now.Unix() - ts; delta < -300 || delta > 300 {
-		return false
-	}
-	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write([]byte("v0:" + tsRaw + ":" + string(body)))
-	expected := "v0=" + hex.EncodeToString(mac.Sum(nil))
-	return hmac.Equal([]byte(sig), []byte(expected))
-}
-
-// slackChallenge reports whether the body is Slack's `url_verification` setup
-// handshake, and if so returns the challenge value to echo back.
-func slackChallenge(body []byte) (string, bool) {
-	var msg struct {
-		Type      string `json:"type"`
-		Challenge string `json:"challenge"`
-	}
-	if err := json.Unmarshal(body, &msg); err != nil {
-		return "", false
-	}
-	if msg.Type == "url_verification" && msg.Challenge != "" {
-		return msg.Challenge, true
-	}
-	return "", false
 }

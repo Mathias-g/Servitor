@@ -376,5 +376,66 @@ an operator or a `rerun-failed` node makes an informed choice.
   or whether that reintroduces the retry loop the rerun feature is meant to
   give the operator control over.
 
+## Research the real-world webhook signing landscape to validate the two mechanisms
+
+Phase 18 (ADR-0049) split inbound webhooks into two mechanisms by verification
+scheme: `hmac-webhook` (HMAC-SHA256 over the raw body, or a timestamped,
+replay-bounded form; the signature header, encoding, version prefix, and
+timestamp header are all receiver config) and `standard-webhook` (the Standard
+Webhooks envelope). This is a bet that two primitives plus config cover the
+actual webhook signing schemes in the wild. Before the trigger surface gets an
+installed base, a thorough research pass over real providers would check that
+bet.
+
+### What the research is
+
+Survey a broad set of webhook-sending services and classify how each signs its
+requests. For each, answer: what is signed (the raw body, a timestamped string,
+a structured envelope), in which header, in which encoding (hex or base64),
+with what version prefix, and with what replay bounds. Then map each provider
+onto the two mechanisms plus their config fields and see whether any does not
+fit. Providers worth covering: the major SaaS that webhooks are built for
+(GitHub, Slack, Stripe, Twilio, Discord, Linear, Notion, Grist, PagerDuty,
+Shopify, GitLab, Bitbucket, Jira, Zendesk, Intercom, Box, Dropbox, outgoing
+hooks from automation tools), the Standard-Webhooks-envelope senders (OpenAI,
+Anthropic, Supabase, and Twilio's SW flavor), and the no-signing (open) and
+non-HMAC-authenticated (static header, OAuth-verified) cases.
+
+### Why it is worth doing now
+
+- The trigger surface just changed (breaking): the per-service types were
+  removed and replaced by the two mechanisms. The cost of discovering that a
+  primitive is wrong is higher once Wafers in the wild depend on it.
+- The bet is falsifiable and cheap to check: each provider is either a config
+  entry against `hmac-webhook` or `standard-webhook`, or it is a
+  counterexample.
+- It sharpens the AI-authoring story: if every provider maps cleanly, then
+  `webhook/receivers.yaml` genuinely lets an agent author a trigger without
+  knowing a sender's scheme from memory.
+
+### What the outcome would be
+
+- If everything maps to the two mechanisms as config: the primitives are
+  validated, and the research record is discarded or distilled to a short note.
+- If a real scheme does not fit (for example a provider that signs a
+  materially different string, or one that needs a different verification
+  primitive): that is a genuine finding, recorded as a decision (a new ADR and
+  a SPEC change, possibly a new mechanism or a new config field), not an
+  afterthought.
+- If a class of providers is simply unverifiable this way (static-header auth,
+  no signing): it is a documented limitation of the raw-body-delivery model,
+  not a mechanism gap.
+
+### Open questions
+
+- How broad the survey must be to be convincing, and how to keep it honest
+  (primary sources: the provider's own docs, not folklore).
+- Whether the findings deserve a committed reference table in the repo, or
+  whether they only feed decisions and then get discarded (BSSN leans to the
+  latter: the map is validation, not a living artifact).
+- Whether a scheme that appears often enough deserves to graduate from config
+  to a documented preset (for example a `github` receiver the CLI can scaffold
+  with the right header, encoding, and prefix), without becoming a mechanism.
+
 ## (Add more ideas here as they come up; delete them when they become ADRs or
 ## are discarded.)

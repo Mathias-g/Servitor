@@ -14,7 +14,7 @@ interface-impact: none
 
 ## Context and problem statement
 
-The current model (ADR-0014, ADR-0029) resolves the whole secret set into the
+The current model (ADR-0014, ADR-0029, both since superseded) resolves the whole secret set into the
 runner process at boot: varlock injects resolved values as process environment
 variables, the daemon reads them into a global secret map, and node subprocesses
 are filtered to the subset a node declared. This has two limits. The long-lived
