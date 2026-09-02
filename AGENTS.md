@@ -112,6 +112,7 @@ How to behave:
 - **Making a decision with real alternatives.** Offer to record a short ADR so it is not relitigated later. Draft it if yes. Drop it if it is not actually significant (BSSN).
 - **Anything destructive or hard to reverse:** deleting or renaming a package or a public name, moving a dependency boundary.
 - **Adding a dependency.** Ask whether it is needed now or whether a few lines do the job for now.
+- **Committing or pushing.** Do not commit or push on your own. Stage and leave changes in the working tree, and ask the developer before committing or pushing. The developer decides when, how (message style, branch), and whether to push.
 
 ### Remind, but do not block, when
 
