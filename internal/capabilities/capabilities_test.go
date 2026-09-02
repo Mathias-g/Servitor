@@ -8,15 +8,15 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/Mathias-g/Servitor/internal/integrations"
+	"github.com/Mathias-g/Servitor/internal/config"
 )
 
 // writeTestConfig writes the integrations config to the working directory
 // (where capabilities.Load reads it) and chdirs there.
-func writeTestConfig(t *testing.T, cfg *integrations.Config) {
+func writeTestConfig(t *testing.T, cfg *config.Config) {
 	t.Helper()
 	dir := t.TempDir()
-	if err := integrations.Save(cfg, filepath.Join(dir, integrations.DefaultFile)); err != nil {
+	if err := config.Save(cfg, filepath.Join(dir, config.DefaultFile)); err != nil {
 		t.Fatalf("write test config: %v", err)
 	}
 	oldwd, _ := os.Getwd()
@@ -149,8 +149,8 @@ func TestEntryEmitsRoleAndDelivery(t *testing.T) {
 }
 
 func TestWriteSecretsFromDeclaredConfig(t *testing.T) {
-	writeTestConfig(t, &integrations.Config{
-		Secrets: map[string]*integrations.Secret{
+	writeTestConfig(t, &config.Config{
+		Secrets: map[string]*config.Secret{
 			"GMAIL_SEND_TOKEN": {
 				Source:      "varlock",
 				Account:     "billing@acme.com",
@@ -220,7 +220,7 @@ esac
 	if err := os.WriteFile(tap, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &integrations.Config{}
+	cfg := &config.Config{}
 	cfg.AddTap("tap-fake", []string{tap}, nil)
 	writeTestConfig(t, cfg)
 
@@ -268,7 +268,7 @@ for line in sys.stdin:
 	if err := os.WriteFile(server, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &integrations.Config{}
+	cfg := &config.Config{}
 	cfg.AddMCPServer("atomic", []string{server}, nil)
 	writeTestConfig(t, cfg)
 

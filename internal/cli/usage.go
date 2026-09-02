@@ -45,8 +45,8 @@ Flags:
   --db PATH    SQLite file the daemon owns (via Honker)
   HONKER_EXTENSION_PATH  path to the Honker extension .so (ADR-0011)
 
-The declared integration commands (mcp/tap/target/secret) edit a local
-servitor.integrations.yaml and need no daemon; the actual software install is
+The declared connector commands (mcp/tap/target/secret) edit a local
+servitor.config.yaml and need no daemon; the actual software install is
 delegated to the ecosystem's package managers (npx, pipx, uv, Meltano), and
 secret values are delivered to the declared source, never stored here.
 

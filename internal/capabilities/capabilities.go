@@ -1,5 +1,5 @@
 // Package capabilities materializes the per-server capability set (SPEC: How
-// an agent discovers integrations) as files an agent can read on demand. For
+// an agent discovers capabilities and connectors) as files an agent can read on demand. For
 // each capability it writes the JSON Schema and a derived example
 // fragment, grouped by mechanism (core, webhook, singer, mcp, helper,
 // websocket; ADR-0017). Discovered executables sit with their mechanism
@@ -19,7 +19,7 @@ import (
 	"github.com/Mathias-g/Servitor/internal/components/mcp"
 	"github.com/Mathias-g/Servitor/internal/components/secret"
 	"github.com/Mathias-g/Servitor/internal/components/singer"
-	"github.com/Mathias-g/Servitor/internal/integrations"
+	"github.com/Mathias-g/Servitor/internal/config"
 	"github.com/Mathias-g/Servitor/internal/registry"
 	_ "github.com/Mathias-g/Servitor/internal/registry/mechanisms"
 )
@@ -96,13 +96,13 @@ type tapsReport struct {
 
 // writeTaps writes a taps.yaml under the singer/ group reporting the declared
 // Singer taps and their discovered schemas (SPEC: How an agent discovers
-// integrations, ADR-0018). It sits beside the singer-tap node so an agent
+// capabilities and connectors, ADR-0018). It sits beside the singer-tap node so an agent
 // sees both the type and what is declared to run against it (ADR-0017).
 func writeTaps(dir string) error {
 	report := tapsReport{Generated: true}
-	cfg, err := integrations.Load("")
+	cfg, err := config.Load("")
 	if err != nil {
-		report.Note = "could not load integrations config: " + err.Error()
+		report.Note = "could not load config: " + err.Error()
 	} else {
 		declared := map[string][]string{}
 		if cfg.Singer != nil {
@@ -134,14 +134,14 @@ type serversReport struct {
 
 // writeServers writes a servers.yaml under the mcp/ group reporting the
 // declared MCP servers (ADR-0017, ADR-0018): each declared server, its protocol
-// mode, and its tool schemas. It sits beside the mcp-call node so an agent
+// mode, and its tool schemas. It sits beside the mcp-stdio node so an agent
 // sees both the type and what is declared. If a server cannot be probed, the
 // report records its error rather than failing.
 func writeServers(dir string) error {
 	report := serversReport{Generated: true}
-	cfg, err := integrations.Load("")
+	cfg, err := config.Load("")
 	if err != nil {
-		report.Note = "could not load integrations config: " + err.Error()
+		report.Note = "could not load config: " + err.Error()
 	} else {
 		declared := map[string][]string{}
 		for name, s := range cfg.MCP {
@@ -165,7 +165,7 @@ func writeServers(dir string) error {
 // secretEntry is one declared secret and its informational metadata (name,
 // account, permissions, expiry). Values are never written; only names and
 // metadata, so the report is safe to commit (ADR-0035, SPEC: How an agent
-// discovers integrations).
+// discovers capabilities and connectors).
 type secretEntry struct {
 	Name        string   `yaml:"name"`
 	Source      string   `yaml:"source"`
@@ -181,13 +181,13 @@ type secretsReport struct {
 }
 
 // writeSecrets writes a secrets.yaml reporting the secrets declared in the
-// declared integrations config (ADR-0035) in the working directory (names and
+// declared config (ADR-0035) in the working directory (names and
 // metadata, never values).
 func writeSecrets(dir string) error {
 	report := secretsReport{Generated: true}
-	cfg, err := integrations.Load("")
+	cfg, err := config.Load("")
 	if err != nil {
-		return fmt.Errorf("capabilities: load integrations config: %w", err)
+		return fmt.Errorf("capabilities: load config: %w", err)
 	}
 	names := make([]string, 0, len(cfg.Secrets))
 	for name := range cfg.Secrets {

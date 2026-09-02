@@ -14,10 +14,10 @@ import (
 	"github.com/Mathias-g/Servitor/internal/capabilities"
 	"github.com/Mathias-g/Servitor/internal/components/expression"
 	"github.com/Mathias-g/Servitor/internal/components/secret"
+	"github.com/Mathias-g/Servitor/internal/config"
 	"github.com/Mathias-g/Servitor/internal/daemon"
-	"github.com/Mathias-g/Servitor/internal/gmail"
-	"github.com/Mathias-g/Servitor/internal/integrations"
 	"github.com/Mathias-g/Servitor/internal/protocol"
+	"github.com/Mathias-g/Servitor/internal/registry/helper/email/gmail"
 	"github.com/Mathias-g/Servitor/internal/wafer"
 )
 
@@ -166,13 +166,13 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	return exitOK
 }
 
-// buildResolver builds the secret resolver from the declared integrations
+// buildResolver builds the secret resolver from the declared config
 // config (ADR-0035): the compiled-in providers (env, varlock) routed by each
 // declared secret's source. A missing config is an empty (valid) config, so the
 // runner works with nothing declared; nodes that reference an undeclared secret
 // then fail at run time.
 func buildResolver(stderr io.Writer) *secret.Resolver {
-	cfg, err := integrations.Load("")
+	cfg, err := config.Load("")
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "servitor: warning: %v; running with no declared secrets\n", err)
 		return secret.NewResolver(secret.DefaultRegistry(), nil)
@@ -816,7 +816,7 @@ func renderDryRunPlan(w io.Writer, res wafer.DryRunResult) {
 }
 
 // cmdCapabilities writes the per-server capability set to a directory the agent
-// reads on demand (SPEC: How an agent discovers integrations). A pipeline can
+// reads on demand (SPEC: How an agent discovers capabilities and connectors). A pipeline can
 // commit the directory so remote agents read it from the repo (ADR-0009).
 func cmdCapabilities(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 1 {
