@@ -1,8 +1,9 @@
-// Package email registers the inbound email helper: the `email_received`
-// trigger under the `helper` mechanism group (ADR-0031, ADR-0045). Email is an
-// integration, a distinct deletable unit: remove this package and the type
-// disappears from validation and capabilities with no central reference left to
-// edit.
+// Package email registers the `email_received` trigger mechanism under the
+// `helper` mechanism group (ADR-0031, ADR-0048). Email is a mechanism, a
+// distinct deletable unit: remove this folder and the type disappears from
+// validation and capabilities with no central reference left to edit. Its
+// provider transport and auth live in the gmail mechanism package alongside it
+// (ADR-0027).
 package email
 
 import "github.com/Mathias-g/Servitor/internal/registry"

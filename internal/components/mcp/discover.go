@@ -8,7 +8,7 @@ import (
 // DiscoveredServer is a declared MCP server, with its protocol mode and tool
 // schemas (ADR-0015). A discovery that fails records the error rather than
 // failing the whole report, so `capabilities` still works when a server is
-// broken (SPEC: How an agent discovers integrations).
+// broken (SPEC: How an agent discovers capabilities and connectors).
 type DiscoveredServer struct {
 	Name     string `json:"name"`
 	Mode     Mode   `json:"mode"`
@@ -19,7 +19,7 @@ type DiscoveredServer struct {
 // DiscoverServers probes each declared server (name to command) for its
 // protocol mode and tools via tools/list. It is invoked once during a
 // capabilities refresh, not per node execution (SPEC: Capability discovery).
-// The declared set comes from the integrations config (ADR-0018); there is no
+// The declared set comes from the config (ADR-0018); there is no
 // PATH scan.
 func DiscoverServers(declared map[string][]string, env []string) []DiscoveredServer {
 	names := sortedKeys(declared)

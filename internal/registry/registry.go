@@ -1,10 +1,10 @@
 // Package registry holds the set of capabilities the runner knows about, with a
 // stable JSON Schema per capability. This is the per-server authoritative set
 // that `servitor capabilities` reports (SPEC: How an agent discovers
-// integrations). The field metadata here is the single source of truth:
+// capabilities and connectors). The field metadata here is the single source of truth:
 // validation and the emitted JSON Schema both derive from it, so they cannot
 // drift apart. Field `Examples` also feed the schema-to-example generator (SPEC:
-// How an agent discovers integrations), so a new capability should give every
+// How an agent discovers capabilities and connectors), so a new capability should give every
 // field a representative `Examples` value; otherwise its generated example is an
 // empty skeleton and the agent has to guess.
 //
@@ -74,7 +74,7 @@ const (
 // a family of mechanisms; the individual types within it are the mechanisms.
 // `capabilities` groups its output by this value, so a service reached by
 // several mechanisms appears in several groups (SPEC: How an agent discovers
-// integrations).
+// capabilities and connectors).
 const (
 	Core      = "core"
 	Webhook   = "webhook"
@@ -124,7 +124,7 @@ type Capability struct {
 	// fixed per capability. Empty for node capabilities.
 	Delivery string
 	// MechanismGroup is the mechanism group this capability belongs to, or Core
-	// for Servitor's own primitives (SPEC: What counts as an integration).
+	// for Servitor's own primitives.
 	MechanismGroup string
 	// Fields is the capability's config schema, keyed by field name.
 	Fields map[string]*Field

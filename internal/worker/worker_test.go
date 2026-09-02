@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -740,7 +741,7 @@ func TestMCPNodeDispatchesAndMapsError(t *testing.T) {
 
 	if _, err := q.Enqueue(NodeJob{
 		RunID: "run-mcp", WorkflowID: "wf", NodeID: "m", NodeName: "m",
-		NodeType: "mcp-call",
+		NodeType: "mcp-stdio",
 		Config:   map[string]any{"server": "srv", "tool": "search", "input": map[string]any{"query": "x"}, "mode": "stateless"},
 		Command:  []string{"srv"},
 	}); err != nil {
@@ -756,6 +757,36 @@ func TestMCPNodeDispatchesAndMapsError(t *testing.T) {
 	res := claimResultJSON(t, store, "run-mcp", "m").(map[string]any)
 	if res["ok"] != false || res["code"] != "mcp_tool_error" {
 		t.Fatalf("result = %v, want mapped mcp_tool_error", res)
+	}
+}
+
+func TestMCPHTTPNodeFailsCleanlyUntilBuilt(t *testing.T) {
+	// mcp-http is registered (so it validates and appears in capabilities) but
+	// its Streamable HTTP executor is not yet built. Running one must fail with
+	// a clear "not yet built" error, not be misread as a control node with no
+	// command (ADR-0047, PLAN Phase 17).
+	ext := extPath(t)
+	store, err := honker.Open(filepath.Join(t.TempDir(), "test.db"), ext)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	q := store.Queue("nodes", 30, 3)
+	w := New(store, q, "worker-1", Config{})
+
+	if _, err := q.Enqueue(NodeJob{
+		RunID: "run-mcp-http", WorkflowID: "wf", NodeID: "m", NodeName: "m",
+		NodeType: "mcp-http",
+		Config:   map[string]any{"server": "atomic", "tool": "search", "input": map[string]any{"query": "x"}},
+	}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	job, err := q.ClaimOne("worker-1")
+	if err != nil || job == nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := w.handle(context.Background(), job); err == nil || !strings.Contains(err.Error(), "not yet built") {
+		t.Fatalf("handle error = %v, want a 'not yet built' error", err)
 	}
 }
 

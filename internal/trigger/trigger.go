@@ -24,8 +24,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Mathias-g/Servitor/internal/components/email"
 	"github.com/Mathias-g/Servitor/internal/components/secret"
-	"github.com/Mathias-g/Servitor/internal/email"
 	"github.com/Mathias-g/Servitor/internal/honker"
 	"github.com/Mathias-g/Servitor/internal/runner"
 	"github.com/Mathias-g/Servitor/internal/wafer"

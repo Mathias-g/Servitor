@@ -5,7 +5,7 @@ package registry
 // arrays from the type), with each property's value taken from its `examples`
 // keyword when present. Because the example is derived from the same metadata
 // as the schema, it cannot drift from it (SPEC: How an agent discovers
-// integrations).
+// capabilities and connectors).
 //
 // When used as a node, the fragment is the capability's `type` plus a `name`
 // and its config, keyed for a `nodes:` list. When used as a trigger, the

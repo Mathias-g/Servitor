@@ -122,13 +122,13 @@ func (subprocessSingerRunner) RunTarget(ctx context.Context, req singer.TargetRe
 	return singer.RunTarget(ctx, req)
 }
 
-// MCPRunner runs an mcp-call node as a subprocess. It is an interface so tests
+// MCPRunner runs an mcp-stdio node as a subprocess. It is an interface so tests
 // can stub it; the production value is subprocessMCPRunner.
 type MCPRunner interface {
 	Call(ctx context.Context, req mcp.CallRequest) (mcp.CallResult, error)
 }
 
-// subprocessMCPRunner runs mcp-call nodes as real OS subprocesses (ADR-0008,
+// subprocessMCPRunner runs mcp-stdio nodes as real OS subprocesses (ADR-0008,
 // ADR-0015).
 type subprocessMCPRunner struct{}
 
@@ -156,7 +156,7 @@ type Config struct {
 	// Singer runs singer tap and target subprocesses. Defaults to real
 	// subprocesses.
 	Singer SingerRunner
-	// MCP runs mcp-call subprocesses. Defaults to real subprocesses.
+	// MCP runs mcp-stdio subprocesses. Defaults to real subprocesses.
 	MCP MCPRunner
 	// OnRunComplete, if set, is called after a run transitions to completed
 	// (pending reaches zero). It lets the caller fire downstream work, such as
@@ -860,10 +860,17 @@ func (w *Worker) runSingerNode(ctx context.Context, sj NodeJob) (result any, ran
 	}
 }
 
-// runMCPNode runs an mcp-call node as a subprocess (SPEC: MCP integration,
+// runMCPNode runs an mcp-stdio node as a subprocess (SPEC: MCP,
 // ADR-0015). It spawns the named server with a filtered secret env, invokes one
 // tool, and maps an errored result onto Servitor's structured error format.
 func (w *Worker) runMCPNode(ctx context.Context, sj NodeJob) (result any, ran bool, state *honker.SingerState, err error) {
+	// mcp-http dispatches here too (RunKind RunMCP) but has no Spawn, so it has
+	// no command to run as a subprocess. Its Streamable HTTP executor is not yet
+	// built; fail cleanly instead of misreading an empty command as a control
+	// node (ADR-0047, PLAN Phase 17).
+	if sj.NodeType == "mcp-http" {
+		return nil, true, nil, fmt.Errorf("node type mcp-http is not yet built: the Streamable HTTP executor is not implemented")
+	}
 	if len(sj.Command) == 0 {
 		return nil, true, nil, fmt.Errorf("node type %q has no command to run", sj.NodeType)
 	}
@@ -876,7 +883,7 @@ func (w *Worker) runMCPNode(ctx context.Context, sj NodeJob) (result any, ran bo
 	}
 	tool, _ := sj.Config["tool"].(string)
 	if tool == "" {
-		return nil, true, nil, fmt.Errorf("node type mcp-call requires a `tool` name")
+		return nil, true, nil, fmt.Errorf("node type requires a `tool` name")
 	}
 	input, _ := sj.Config["input"].(map[string]any)
 	mode := mcp.ModeUnknown

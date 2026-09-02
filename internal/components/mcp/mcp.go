@@ -1,4 +1,4 @@
-// Package mcp implements the `mcp-call` node type (ADR-0015): invoking one
+// Package mcp implements the `mcp-stdio` node type (ADR-0015): invoking one
 // named tool on one named MCP server over stdio. An MCP server is a subprocess
 // that exposes named tools, each with a JSON Schema for its input, over
 // newline delimited JSON-RPC 2.0. The node runs the server with a filtered
@@ -261,7 +261,7 @@ func (c *client) listTools(ctx context.Context, mode Mode) ([]Tool, error) {
 }
 
 // Discover probes a server's mode and lists its tools. It is the once-at-refresh
-// capability discovery; the returned mode is what a `mcp-call` node authors so
+// capability discovery; the returned mode is what a `mcp-stdio` node authors so
 // execution does not re-probe (ADR-0015).
 func Discover(ctx context.Context, req ServerRequest) (Discovery, error) {
 	c, err := start(ctx, req)

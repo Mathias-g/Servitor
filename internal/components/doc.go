@@ -1,8 +1,8 @@
 // Package components holds the shared building blocks that mechanisms and the
 // engine compose (ADR-0046). Each subpackage is one reusable, mechanism-agnostic
 // piece: subprocess isolation (exec), expression evaluation (expression), the
-// record-streaming protocol (singer), the stdio tool protocol (mcp), and the
-// secret provider + resolver (secret).
+// record-streaming protocol (singer), the MCP client (mcp), the secret provider
+// + resolver (secret), and the running-binary path (selfexe).
 //
 // # What belongs here, and what does not
 //
@@ -12,8 +12,8 @@
 //     regardless of which mechanisms exist (the worker loop, dispatch, the
 //     durability store, the trigger receiver, the daemon, the CLI, Wafer
 //     validation)? It lives at internal/ top level (honker, worker, runner,
-//     trigger, daemon, cli, wafer, capabilities, protocol, app, integrations).
-//     It is never deletable and never a mechanism.
+//     trigger, daemon, cli, wafer, capabilities, protocol, app, config). It is
+//     never deletable and never a mechanism.
 //
 //  2. Is this a specific mechanism: one capability an operator might not want,
 //     self-registering into the registry? It lives in

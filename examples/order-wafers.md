@@ -78,8 +78,8 @@ nodes:
     as: item
     body: ship_item
 
-  # The foreach body: an `mcp-call` node, one shipment per item.
-  - type: mcp-call
+  # The foreach body: an `mcp-stdio` node, one shipment per item.
+  - type: mcp-stdio
     name: ship_item
     depends_on: [fulfill]
     server: inventory

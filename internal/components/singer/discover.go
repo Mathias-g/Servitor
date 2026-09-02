@@ -21,7 +21,7 @@ type Stream struct {
 // DiscoveredTap is a declared tap, with its config schema (from --about) and
 // catalog (from --discover). A discovery that fails records the error rather
 // than failing the whole report, so `capabilities` still works when a tap is
-// broken (SPEC: How an agent discovers integrations).
+// broken (SPEC: How an agent discovers capabilities and connectors).
 type DiscoveredTap struct {
 	Name        string         `json:"name"`
 	Config      map[string]any `json:"config,omitempty"`
@@ -33,7 +33,7 @@ type DiscoveredTap struct {
 // DiscoverTaps probes each declared tap (name to command) for its config
 // schema and streams via --about and --discover. It is invoked during a
 // capabilities refresh, not per node execution (SPEC: Capability discovery).
-// The declared set comes from the integrations config (ADR-0018); there is no
+// The declared set comes from the config (ADR-0018); there is no
 // PATH scan.
 func DiscoverTaps(declared map[string][]string) []DiscoveredTap {
 	names := sortedKeys(declared)

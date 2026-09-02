@@ -1,5 +1,5 @@
-// Package singer implements the record-stream integration layer (SPEC: Singer,
-// data movement integrations). A tap is a CLI that emits records as newline
+// Package singer implements the record-stream layer (SPEC: Singer,
+// data movement). A tap is a CLI that emits records as newline
 // delimited JSON on stdout; a target is a CLI that consumes records on stdin.
 // Both run as subprocesses with a filtered secret env (ADR-0008); nothing runs
 // in the runner's process.

@@ -1,8 +1,10 @@
-// Package mcp registers the tool-invocation mechanism: the `mcp` mechanism
-// group (ADR-0031, ADR-0045). It is the generic `mcp-call` node type; the
-// specific MCP servers it talks to are declared in servitor.integrations.yaml,
-// not compiled in (SPEC: How an agent discovers integrations, ADR-0018).
-package mcp
+// Package stdio registers the `mcp-stdio` action mechanism: invoke one named
+// tool on one named MCP server over stdio (ADR-0015, ADR-0047). It spawns the
+// named server as a subprocess with a filtered secret env and sends one
+// `tools/call` over its stdin/stdout. The specific servers it talks to are
+// declared in the config, not compiled in (SPEC: How an agent discovers
+// capabilities and connectors, ADR-0018).
+package stdio
 
 import (
 	"fmt"
@@ -11,11 +13,11 @@ import (
 )
 
 func init() {
-	registry.Register(call)
+	registry.Register(capability)
 }
 
-var call = &registry.Capability{
-	Name:           "mcp-call",
+var capability = &registry.Capability{
+	Name:           "mcp-stdio",
 	Desc:           "Invoke one named tool on one named MCP server over stdio (ADR-0015).",
 	Role:           registry.RoleAction,
 	SideEffect:     true,
@@ -30,7 +32,7 @@ var call = &registry.Capability{
 	Spawn: func(cfg map[string]any) ([]string, error) {
 		server, ok := cfg["server"].(string)
 		if !ok || server == "" {
-			return nil, fmt.Errorf("mcp-call requires a `server` name")
+			return nil, fmt.Errorf("mcp-stdio requires a `server` name")
 		}
 		return []string{server}, nil
 	},

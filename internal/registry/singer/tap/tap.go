@@ -1,9 +1,8 @@
-// Package singer registers the record-streaming mechanisms: the `singer`
-// mechanism group (ADR-0031, ADR-0045). These are the generic tap and target
-// node types; the specific services they talk to are declared in
-// servitor.integrations.yaml, not compiled in (SPEC: How an agent discovers
-// integrations, ADR-0018).
-package singer
+// Package tap registers the `singer-tap` action mechanism: run a Singer tap and
+// capture records and state (ADR-0048). The specific services a tap talks to
+// are declared in the config, not compiled in (SPEC: How an agent discovers
+// capabilities and connectors, ADR-0018).
+package tap
 
 import (
 	"fmt"
@@ -12,11 +11,10 @@ import (
 )
 
 func init() {
-	registry.Register(tap)
-	registry.Register(target)
+	registry.Register(capability)
 }
 
-var tap = &registry.Capability{
+var capability = &registry.Capability{
 	Name:           "singer-tap",
 	Desc:           "Run a Singer tap and capture records and state.",
 	Role:           registry.RoleAction,
@@ -34,25 +32,5 @@ var tap = &registry.Capability{
 			return nil, fmt.Errorf("singer-tap requires a `tap` name")
 		}
 		return []string{tap}, nil
-	},
-}
-
-var target = &registry.Capability{
-	Name:           "singer-target",
-	Desc:           "Run a Singer target consuming records.",
-	Role:           registry.RoleAction,
-	SideEffect:     true,
-	MechanismGroup: registry.Singer,
-	Fields: map[string]*registry.Field{
-		"target": {Type: "string", Required: true, Desc: "The target to run.", Examples: []any{"target-grist"}},
-		"config": {Type: "object", Desc: "Target config."},
-	},
-	RunKind: registry.RunSinger,
-	Spawn: func(cfg map[string]any) ([]string, error) {
-		target, ok := cfg["target"].(string)
-		if !ok || target == "" {
-			return nil, fmt.Errorf("singer-target requires a `target` name")
-		}
-		return []string{target}, nil
 	},
 }

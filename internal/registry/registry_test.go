@@ -133,9 +133,9 @@ func TestCommandForDispatchesThroughRegistry(t *testing.T) {
 	if err != nil || len(cmd) != 1 || cmd[0] != "tap-stripe" {
 		t.Fatalf("singer-tap spawn = %v, %v; want [tap-stripe]", cmd, err)
 	}
-	cmd, err = registry.CommandFor("mcp-call", map[string]any{"server": "atomic-server"})
+	cmd, err = registry.CommandFor("mcp-stdio", map[string]any{"server": "atomic-server"})
 	if err != nil || len(cmd) != 1 || cmd[0] != "atomic-server" {
-		t.Fatalf("mcp-call spawn = %v, %v; want [atomic-server]", cmd, err)
+		t.Fatalf("mcp-stdio spawn = %v, %v; want [atomic-server]", cmd, err)
 	}
 	// A control node has no plain subprocess: nil, nil.
 	if cmd, err := registry.CommandFor("wait", map[string]any{}); err != nil || cmd != nil {
@@ -151,7 +151,8 @@ func TestRunKindForDispatchesThroughRegistry(t *testing.T) {
 	cases := map[string]registry.RunKind{
 		"singer-tap":    registry.RunSinger,
 		"singer-target": registry.RunSinger,
-		"mcp-call":      registry.RunMCP,
+		"mcp-stdio":     registry.RunMCP,
+		"mcp-http":      registry.RunMCP,
 		"switch":        registry.RunFlow,
 		"foreach":       registry.RunFlow,
 		"wait":          registry.RunFlow,
@@ -163,5 +164,27 @@ func TestRunKindForDispatchesThroughRegistry(t *testing.T) {
 		if got := registry.RunKindFor(typ); got != want {
 			t.Fatalf("RunKindFor(%q) = %q, want %q", typ, got, want)
 		}
+	}
+}
+
+func TestMCPTransportMechanisms(t *testing.T) {
+	// The mcp group splits by transport (ADR-0047): mcp-stdio spawns a server
+	// as a subprocess; mcp-http connects to a URL and has no Spawn (its
+	// Streamable HTTP executor is not yet built, so CommandFor returns nil, nil
+	// just like a control node, and the worker rejects it at run time).
+	if registry.Lookup("mcp-stdio") == nil {
+		t.Fatal("mcp-stdio should be registered")
+	}
+	if registry.Lookup("mcp-http") == nil {
+		t.Fatal("mcp-http should be registered")
+	}
+	if cmd, err := registry.CommandFor("mcp-stdio", map[string]any{"server": "srv"}); err != nil || len(cmd) != 1 || cmd[0] != "srv" {
+		t.Fatalf("mcp-stdio spawn = %v, %v; want [srv]", cmd, err)
+	}
+	if cmd, err := registry.CommandFor("mcp-http", map[string]any{"server": "atomic"}); err != nil || cmd != nil {
+		t.Fatalf("mcp-http spawn = %v, %v; want nil, nil (no executor yet)", cmd, err)
+	}
+	if c := registry.Lookup("mcp-http"); c.RunKind != registry.RunMCP {
+		t.Fatalf("mcp-http run kind = %q, want mcp", c.RunKind)
 	}
 }
