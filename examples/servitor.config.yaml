@@ -1,0 +1,77 @@
+# Example servitor.config.yaml
+#
+# This is the declared config (ADR-0018, ADR-0049): the single source of truth
+# for what connectors (MCP servers, Singer taps and targets), secrets, and
+# webhook receivers are declared on a box. `servitor capabilities` reports what
+# is declared, and a management CLI edits this file (servitor mcp/tap/target/
+# secret/webhook add|list|remove). Names here are placeholders; install the
+# actual software yourself and deliver real secret values to each secret's
+# source. Values never appear in this file.
+#
+# A Wafer references these by name: an mcp-stdio node names a server, a
+# singer-tap node names a tap, a node's `secrets:` list names secrets, and a
+# webhook trigger names a receiver by its path (ADR-0049).
+
+# Declared MCP servers, keyed by name. An mcp-stdio node names a server here.
+mcp:
+  # A server reached over stdio (ADR-0047). `command` is the exact argv; `env`
+  # lists the secret names the server needs, filtered to these at spawn.
+  inventory:
+    command: [npx, -y, "@example/inventory-mcp"]
+    env: [INVENTORY_TOKEN]
+
+# Declared Singer taps and targets, keyed by name. singer-tap / singer-target
+# nodes name one here; the command is the pin (ADR-0016).
+singer:
+  taps:
+    stripe:
+      command: [tap-stripe]
+      env: [STRIPE_KEY]
+  targets:
+    warehouse:
+      command: [target-warehouse]
+      env: [WAREHOUSE_TOKEN]
+
+# Declared secrets, keyed by name (ADR-0035). `source` is the provider that
+# resolves the value per node (SPEC: Secret resolution). Never put a value here.
+secrets:
+  STRIPE_KEY:
+    source: onbox
+    account: "acct_my_stripe"
+    permissions: [charge, read]
+    expiry: "2027-06-01"
+  INVENTORY_TOKEN:
+    source: onbox
+  WEBHOOK_SECRET:
+    source: env
+
+# Declared webhook receivers, keyed by path (ADR-0049). A Wafer's webhook
+# trigger names a receiver by its path; the `scheme` picks the mechanism
+# (hmac-webhook or standard-webhook), and the signing details are config, not
+# separate mechanisms.
+webhook:
+  # A raw-body HMAC receiver (hmac-webhook): hex digest with a "sha256="
+  # version prefix, no timestamp. Any HMAC signer like this is a config entry.
+  /hooks/things:
+    scheme: hmac
+    secret: WEBHOOK_SECRET
+    header: x-signature
+    encoding: hex
+    prefix: sha256
+  # A timestamped HMAC receiver (hmac-webhook): signs <prefix>:<timestamp>:<body>
+  # and bounds replay, so a sender that timestamps its signature is a config
+  # entry too, not a separate mechanism.
+  /hooks/events:
+    scheme: hmac
+    secret: WEBHOOK_SECRET
+    header: x-signature
+    encoding: hex
+    timestamp_header: x-timestamp
+    prefix: v0
+  # A Standard Webhooks receiver (standard-webhook): any compliant producer.
+  /hooks/std:
+    scheme: standard
+    secret: WEBHOOK_SECRET
+  # An open receiver: no secret, accepts any body (the workflow parses it).
+  /hooks/open:
+    scheme: hmac

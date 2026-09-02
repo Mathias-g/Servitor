@@ -6,6 +6,36 @@ import (
 	"testing"
 )
 
+// TestExampleConfigLoads pins the shipped example config (examples/
+// servitor.config.yaml) to the loader: it must load and validate, and its
+// declared sections must round-trip. This keeps the example from drifting from
+// what config.Load actually accepts.
+func TestExampleConfigLoads(t *testing.T) {
+	path := filepath.Join("..", "..", "examples", "servitor.config.yaml")
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load example config: %v", err)
+	}
+	if c.MCP["inventory"] == nil {
+		t.Fatal("example config missing inventory mcp server")
+	}
+	if c.Singer == nil || c.Singer.Taps["stripe"] == nil || c.Singer.Targets["warehouse"] == nil {
+		t.Fatal("example config missing singer taps/targets")
+	}
+	if c.Secrets["STRIPE_KEY"] == nil || c.Secrets["STRIPE_KEY"].Source != "onbox" {
+		t.Fatal("example config missing STRIPE_KEY secret")
+	}
+	if r := c.Webhook["/hooks/things"]; r == nil || r.Scheme != SchemeHMAC || r.Encoding != "hex" {
+		t.Fatal("example config missing /hooks/things hmac receiver")
+	}
+	if r := c.Webhook["/hooks/events"]; r == nil || r.TimestampHeader != "x-timestamp" {
+		t.Fatal("example config missing timestamped /hooks/events receiver")
+	}
+	if r := c.Webhook["/hooks/std"]; r == nil || r.Scheme != SchemeStandard {
+		t.Fatal("example config missing /hooks/std standard receiver")
+	}
+}
+
 func TestLoadMissingFileIsEmpty(t *testing.T) {
 	c, err := Load(filepath.Join(t.TempDir(), "nope.yaml"))
 	if err != nil {
