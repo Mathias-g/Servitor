@@ -252,6 +252,56 @@ placement rule (ADR-0046), separating it from both mechanisms and the engine.
   consumer is moved into that consumer rather than left as a seam.
 
 
+## Phase 17: Mechanism layout, terminology, config rename, and MCP transports
+
+Applies the decisions recorded in ADR-0047 and ADR-0048. Two goals: make the
+physical layout and the vocabulary match the definitions (a mechanism group is
+a category directory, a mechanism has its own folder inside it, and a mechanism
+package lives in that folder and self-registers exactly one mechanism), and
+split the `mcp` group by transport.
+
+- [ ] **Split the registry into one package per mechanism (ADR-0048).** The
+  group-directory packages that register several mechanisms today must become
+  one mechanism folder (and package) per mechanism:
+  `core` (12 mechanisms: http, shell, transform, switch, foreach, wait,
+  send-signal, rerun-failed, cron, manual, completed, failed) and `webhook`
+  (6: http, standard, grist, github, slack, atomic) each split into one folder
+  per mechanism, e.g. `core/shell/`, `core/http/`, `webhook/grist/`,
+  `webhook/http/`. `singer` (2: tap, target) splits into `singer/tap/` and
+  `singer/target/`. `mcp` (1: mcp-call) and `helper/email` (1) already follow
+  the model. `go test ./...` stays green after each group moves.
+- [ ] **Update the `mechanisms` aggregator.** `internal/registry/mechanisms/`
+  blank-imports group-level packages; after the split it must import every
+  mechanism package instead, or its shape changes. The deletion-proof test
+  (a capability is present only when its mechanism package is imported) keeps
+  passing.
+- [ ] **Rename the config to `servitor.config.yaml` (ADR-0047).**
+  `internal/integrations` becomes `internal/config`, and the file
+  `servitor.integrations.yaml` becomes `servitor.config.yaml`. The `Config`,
+  `Server`, `Tap`, `Target`, and `Secret` types, `DefaultFile`, the
+  `servitor mcp/tap/target/secret` CLI `--file` default, the capabilities
+  reports, and all importers and tests update. The `mcp:` section gains a `url`
+  variant (plus secret-referenced `headers`) alongside `command`.
+- [ ] **Split the `mcp` group by transport (ADR-0047).** Rename `mcp-call` to
+  `mcp-stdio` (behavior unchanged), and add `mcp-http` (Streamable HTTP to a
+  declared `url`, secret-referenced token). Both carry an optional `mode` field
+  (`stateless` or `classic`) that defaults to run-time detection. This touches
+  the registry capability, the worker dispatch, `examples/order-wafers.md`, and
+  the tests that name `mcp-call`.
+- [ ] **Route the leftover packages (ADR-0046, ADR-0048).** Move
+  `internal/email` (a provider-agnostic, multi-consumer, mechanism-agnostic
+  `Email` struct) to `internal/components/email`, and move `internal/gmail`
+  (the Gmail provider for `email_received`) under the mechanism folder, for
+  example `internal/registry/helper/email/gmail/`.
+- [ ] **Retire the terms "integration" and "subpackage" from prose and
+  comments (ADR-0048).** Sweep the remaining uses across package docstrings
+  (for example `internal/registry/webhook/webhook.go`,
+  `internal/registry/helper/email/email.go`, `internal/components/doc.go`) and
+  replace each with the specific word: mechanism, mechanism package, service,
+  or config. `internal/components/doc.go`'s engine list drops the `integrations`
+  reference (the config is not engine).
+
+
 ## Outstanding work
 
 Everything still to do, consolidated from the review of SPEC/ADRs vs the code.
@@ -279,7 +329,7 @@ SPEC/PLAN, this task becomes buildable and is picked up then.
 - [x] **Secret provider and per-node delivery.** Built in Phase 13: the provider + per-node delivery model (ADR-0032, ADR-0033, ADR-0034, ADR-0035, ADR-0036) with the `env`, `varlock`, and `onbox` providers.
 - [x] **`secret-resolution` mechanism group and `secret` role.** Added with the first secret providers in Phase 13 (ADR-0036); `capabilities` renders the group and the available sources.
 
-### Curated integration helpers (SPEC lists, not built)
+### Curated helpers (SPEC lists, not built)
 
 - [ ] **`grist`** helper (read, write, list, query).
 - [ ] **`slack`** helper (post messages, read events).

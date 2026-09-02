@@ -1,8 +1,8 @@
 <img src="servitorLogo.png" alt="Servitor" width="400">
 
-Workflow automation for the agentic stack. Self-hosted. MIT-licensed. X integrations.
+Workflow automation for the agentic stack. Self-hosted. MIT-licensed.
 
-Servitor is a self-hosted workflow automation runtime designed from the ground up for AI agents to author and operate. Workflows are declared as YAML files (called **Wafers**); a long-lived runner daemon executes them durably; a CLI control plane exposes the whole thing for humans and agents alike.
+Servitor is a self-hosted headless workflow automation runtime designed from the ground up for AI agents to author and operate. Workflows are declared as YAML files (called **Wafers**); a long-lived runner daemon executes them durably; a CLI control plane exposes the whole thing for humans and agents alike.
 
 The workflow is fully defined by the Wafer file, nowhere else. There is no built-in web UI; if a UI exists someday, it generates Wafers and submits them through the same interface agents use.
 
@@ -78,12 +78,12 @@ Build it, download the Honker extension, declare your secrets, then run it.
 2. **Declare secrets.** Secrets are resolved per node through a pluggable
    provider (SPEC: Secret resolution): the Wafer names a secret, and the runner
    obtains it from that secret's declared source at the moment its node runs.
-   Declare the secrets your integrations need:
+   Declare the secrets your connectors need:
 
        ./bin/servitor secret add SLACK_TOKEN onbox
        ./bin/servitor secret add GH_TOKEN env
 
-   `servitor secret add <name> <source>` writes `servitor.integrations.yaml` in
+   `servitor secret add <name> <source>` writes `servitor.config.yaml` in
    the working directory. Optional metadata (`--account`, `--permissions`,
    `--expiry`) shows up in `servitor capabilities`, so an agent can reach for
    the right secret. Three sources are built in:

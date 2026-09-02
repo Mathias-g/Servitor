@@ -1,7 +1,7 @@
 # Servitor
 
 > **Workflow automation for the agentic stack.**
-> **Self-hosted. MIT-licensed. X integrations.**
+> **Self-hosted. MIT-licensed.**
 
 A self-hosted workflow automation runtime designed from the ground up for AI agents to author and operate. Workflows are declared as YAML files (which we call **Wafers**); a long-lived runner daemon executes them durably; a CLI control plane exposes the whole thing for humans and agents alike.
 
@@ -26,12 +26,12 @@ Servitor is an opinionated take, built because none of the existing options were
 
 Decisions already made. Revisiting any of these means reopening something settled deliberately.
 
-- **Not a Zapier replacement.** Zapier's value is its 7000+ commercial integrations and its visual builder. This project's value is honest integrations, code-first authoring, and agent-friendliness. Different audience.
+- **Not a Zapier replacement.** Zapier's value is its 7000+ prebuilt connectors and its visual builder. This project's value is honest connectors, code-first authoring, and agent-friendliness. Different audience.
 - **Not an MCP server.** The control plane is a CLI, consumed by agents through a skill. MCP is a possible future adapter over the same daemon protocol, deferred until there is a concrete user (ADR-0005).
 - **Not a multi-tenant SaaS workflow platform.** SQLite's single-writer model rules that out by design.
 - **Not a data orchestration tool.** Airflow, Dagster, Prefect exist for that.
 - **Not a CI/CD system.** GitHub Actions, Drone, Woodpecker exist for that.
-- **Not a unified API.** Singer and per-service helpers are the integration model. There is no normalized cross-service schema.
+- **Not a unified API.** Singer and per-service helpers are how services are reached. There is no normalized cross-service schema.
 
 ---
 
@@ -128,11 +128,11 @@ What we use it for:
 - **Transactional commits.** A node's completion writes commit as a single atomic SQLite transaction rather than as separate operations. This is the mechanism behind the transactional fan-out guarantee; see step 8 of the Execution model for what the transaction contains and why it must never be split.
 - **Scheduler primitive.** Cron-style triggers use Honker's built-in scheduler.
 
-#### Singer, data movement integrations (standard)
+#### Singer, data movement (standard)
 
-[Singer](https://www.singer.io) is an open spec for data integration. A *tap* is a CLI that emits records from a source as JSON; a *target* is a CLI that consumes records into a destination. Hundreds of taps exist across the ecosystem, most MIT-licensed, many actively maintained through [Meltano Hub](https://hub.meltano.com).
+[Singer](https://www.singer.io) is an open spec for data movement. A *tap* is a CLI that emits records from a source as JSON; a *target* is a CLI that consumes records into a destination. Hundreds of taps exist across the ecosystem, most MIT-licensed, many actively maintained through [Meltano Hub](https://hub.meltano.com).
 
-Singer is the record-stream integration layer of the runner: schemas, streams of records, and bookmark state. Most taps in practice run in batch (pull everything new since last bookmark, exit), but the spec itself is a streaming protocol and continuous taps exist; the runner treats both the same way.
+Singer is the record-stream layer of the runner: schemas, streams of records, and bookmark state. Most taps in practice run in batch (pull everything new since last bookmark, exit), but the spec itself is a streaming protocol and continuous taps exist; the runner treats both the same way.
 
 What we use it for:
 
@@ -413,9 +413,9 @@ describing how they start a run. Both lists are representative, not exhaustive;
 `servitor capabilities` returns the authoritative live set, each entry with its
 JSON Schema, role, and delivery.
 
-### How an agent discovers integrations
+### How an agent discovers capabilities and connectors
 
-Before writing a Wafer, an agent needs to know what the *target* server supports and how to use it. `servitor capabilities` answers both, and it is a per-server query: the authoritative set is what that runner has compiled in (its capabilities), what the operator has declared for secrets (names and metadata, never values; ADR-0035) and integrations (Singer taps, MCP servers; ADR-0018). The agent asks the server rather than trusting a doc, because the answer differs per deployment.
+Before writing a Wafer, an agent needs to know what the *target* server supports and how to use it. `servitor capabilities` answers both, and it is a per-server query: the authoritative set is what that runner has compiled in (its capabilities), what the operator has declared for secrets (names and metadata, never values; ADR-0035) and connectors (Singer taps, MCP servers; ADR-0018). The agent asks the server rather than trusting a doc, because the answer differs per deployment.
 
 For each capability, `capabilities` returns:
 
@@ -424,17 +424,17 @@ For each capability, `capabilities` returns:
 
 The example is **derived from the schema, not written by hand**: the structural skeleton (required fields in order, nested objects and arrays) is generated from the schema, and meaningful sample values come from each property's `examples` keyword in the same schema definition. Because the example is rendered from the schema, it cannot drift from it: a field added to the schema appears in the generated example, and a curated value like `channel: "#sales"` lives in the schema's `examples` next to the field's type, so they version together. The same generator applies to Singer taps, whose config schemas (from `--about`/`--discover`) carry `examples` too, so an agent gets an example `singer-tap` config as well.
 
-This is how "what integrations exist and how do I use them" is answered: the agent runs `capabilities`, reads the schemas and their derived examples, and generates a valid Wafer. The pipeline then re-validates the Wafer against the live server's capabilities on deploy (ADR-0009).
+This is how "what can this box do and how do I use it" is answered: the agent runs `capabilities`, reads the schemas and their derived examples, and generates a valid Wafer. The pipeline then re-validates the Wafer against the live server's capabilities on deploy (ADR-0009).
 
-`servitor capabilities [dir]` writes files rather than printing, so the schemas never sit in the agent's context: one file per capability (its JSON Schema, role, and delivery, plus a derived example), grouped by **mechanism group** into top-level directories, plus a `secrets.yaml` reporting the declared secrets (name, account, permissions, and expiry, never the values) and an `index.yaml` listing the mechanism groups. A mechanism group (ADR-0031) is a family of mechanisms: `core` (universal primitives and scheduling), `webhook` (inbound HTTP reception), `singer` (record streaming), `mcp` (tool invocation), `helper` (compiled-in wrappers), `secret-resolution` (the available secret sources, the valid `source` values for `secrets.yaml`; ADR-0036), and `websocket` (inbound streaming, future). The individual types within a group are the mechanisms (for example `grist_webhook` and `http_webhook` are both mechanisms under `webhook`). The `secret-resolution` group is different in kind from the node-capability groups: it does not hold Wafer node types, it enumerates the secret providers an agent can name as a secret's `source` (SPEC: Secret resolution, ADR-0036). A service reached by several mechanisms appears in several groups; the type name carries the service (`grist_webhook`, `slack_event`, `tap-grist`). The declared integrations sit with their mechanism group: `singer/taps.yaml` lists the declared Singer taps, and `mcp/servers.yaml` lists the declared MCP servers (ADR-0018), so an agent sees both a capability and what is installed to run against it. The distinction between a standard envelope and a bespoke one (for example `standard_webhook` vs `http_webhook` vs `grist_webhook`) is a per-type detail within a mechanism group, not a separate group (SPEC: What counts as an integration).
+`servitor capabilities [dir]` writes files rather than printing, so the schemas never sit in the agent's context: one file per capability (its JSON Schema, role, and delivery, plus a derived example), grouped by **mechanism group** into top-level directories, plus a `secrets.yaml` reporting the declared secrets (name, account, permissions, and expiry, never the values) and an `index.yaml` listing the mechanism groups. A mechanism group (ADR-0031) is a family of mechanisms: `core` (universal primitives and scheduling), `webhook` (inbound HTTP reception), `singer` (record streaming), `mcp` (tool invocation), `helper` (compiled-in wrappers), `secret-resolution` (the available secret sources, the valid `source` values for `secrets.yaml`; ADR-0036), and `websocket` (inbound streaming, future). The individual types within a group are the mechanisms (for example `grist_webhook` and `http_webhook` are both mechanisms under `webhook`). The `secret-resolution` group is different in kind from the node-capability groups: it does not hold Wafer node types, it enumerates the secret providers an agent can name as a secret's `source` (SPEC: Secret resolution, ADR-0036). A service reached by several mechanisms appears in several groups; the type name carries the service (`grist_webhook`, `slack_event`, `tap-grist`). The declared connectors sit with their mechanism group: `singer/taps.yaml` lists the declared Singer taps, and `mcp/servers.yaml` lists the declared MCP servers (ADR-0018), so an agent sees both a capability and what is installed to run against it. The distinction between a standard envelope and a bespoke one (for example `standard_webhook` vs `http_webhook` vs `grist_webhook`) is a per-type detail within a mechanism group, not a separate group.
 
-The mechanism source mirrors this grouping. Each mechanism lives as its own package under the directory of its mechanism group (`core/`, `webhook/`, `singer/`, `mcp/`, `helper/`, `websocket/`) in the source tree, and self-registers its capability and its run behavior into the shared registry; the runner dispatches to a mechanism through the registry, never by naming it in a central switch (ADR-0045). An integration that is its own deletable unit is a subpackage within its group (for example `helper/grist`). Removing a mechanism's package removes it from Servitor with no central references left to edit: validation simply no longer knows the type, and it disappears from `capabilities`. A service reachable by several mechanisms is one package per mechanism group it appears in (for example a Grist helper under `helper/grist` and a Grist MCP integration under `mcp/grist`); they are separate code paths and independently removable.
+The mechanism source mirrors this grouping. Each mechanism has its own folder under its mechanism group's directory, and its package lives inside that folder and self-registers its capability and run behavior into the shared registry; the runner dispatches to a mechanism through the registry, never by naming it in a central switch (ADR-0045, ADR-0048). So a mechanism lives at `internal/registry/<group>/<mechanism>/`, for example `helper/email` registers the `email_received` mechanism. The mechanism's folder is the unit of deletion: removing it removes the mechanism from validation and `capabilities` with no central references left to edit. A service reachable by several mechanisms is one mechanism per mechanism group it appears in (for example a Grist helper under `helper/grist` and a Grist MCP mechanism under `mcp/grist`); they are separate code paths and independently removable.
 
 Reusable machinery that is mechanism-agnostic and shared by more than one consumer lives apart from both the mechanisms and the engine, in `internal/components/` (ADR-0046). A component is written in terms of the thing it abstracts (a subprocess, a JSONata expression, a record stream, a tool call, a secret source), never a specific capability or product. A component imports only other components and the standard library, never the registry, a mechanism, or the engine. Code is routed to one of three homes by asking, in order: is it Servitor's core engine (the worker loop, dispatch, durability store, trigger receiver, daemon, CLI, Wafer validation)? it stays at `internal/` top level. Is it a specific, deletable mechanism? it goes in its mechanism's folder. Otherwise, is it reusable machinery more than one consumer composes? it is a shared component in `internal/components/`. A shared component with a single consumer is moved into that consumer rather than left as a speculative seam (ADR-0002).
 
 For a **remote agent**, capabilities reach it the same way Wafers do: the pipeline (which already runs the CLI on the box) runs `servitor capabilities` and commits the generated directory into the git repo, and the agent reads the files from the repo on demand. Capabilities are still per-server because the directory is generated from that box's compiled-in set; committing it is a materialized snapshot, not a hand-written doc, so it cannot drift. A local agent (on the box, or the pipeline's own runner) can also run `capabilities` directly into a scratch directory.
 
-The integrations themselves are declared in a local `servitor.integrations.yaml` (ADR-0018): the operator names each MCP server, Singer tap, and Singer target with its exact command and the env vars it needs, and each declared secret with its source and optional metadata (ADR-0035). `servitor mcp`/`tap`/`target`/`secret` add/list/remove manage this file; the actual software install is delegated to the ecosystem's package managers (npx, pipx, uv, Meltano). `capabilities` reports only what is declared, probing each once at refresh for its schemas; there is no PATH scan and no naming convention to break.
+The connectors and secrets are declared in a local `servitor.config.yaml` (ADR-0018): the operator names each MCP server, Singer tap, and Singer target with its exact command (or, for an MCP server reached over HTTP, its URL and secret-referenced headers) and the env vars it needs, and each declared secret with its source and optional metadata (ADR-0035). `servitor mcp`/`tap`/`target`/`secret` add/list/remove manage this file; the actual software install is delegated to the ecosystem's package managers (npx, pipx, uv, Meltano). `capabilities` reports only what is declared, probing each once at refresh for its schemas; there is no PATH scan and no naming convention to break.
 
 ### Triggers
 
@@ -445,7 +445,7 @@ The integrations themselves are declared in a local `servitor.integrations.yaml`
 - `slack_event`. Slack events (messages, mentions, and so on).
 - `atomic_event`. Atomic knowledge-base changes. Atomic is a separate, self-hostable project (atomicapp.ai) Servitor integrates with; it is not built as part of Servitor.
 - `email_received`. Inbound email parsed into a structured payload. Its `host`, `username`, and `secret` (a declared secret name) name the mailbox, and its `poll` schedule (default every 5 minutes) polls it for new mail, firing one run per new email. Built for Google Workspace via IMAP (app password); other providers are future helpers.
-- *(more per-service trigger types as integrations are added)*
+- *(more per-service trigger types as mechanisms are added)*
 - `cron`. Honker scheduler.
 - `manual`. Invoked via CLI.
 - `completed`. Fired by another workflow's completion. Its `workflow` field names the workflow whose completion fires it; the run's event is `{trigger: "completed", from: <workflow name>, from_run: <completed run id>}`.
@@ -515,17 +515,23 @@ compute over the run's data.
 - `transform`. Reshape, extract, or compute over previous nodes' JSON output, returning new JSON. Its `expression` field is JSONata (ADR-0020), evaluated against the node's `{event, steps}` input (ADR-0021). It runs as a subprocess of the servitor binary's hidden `__transform` command (ADR-0008).
 - `singer-tap`. Run a Singer tap with config, capture records and state.
 - `singer-target`. Run a Singer target consuming records.
-- `mcp-call`. Invoke one named tool on one named MCP server as a subprocess
-  (ADR-0015). An MCP server is a subprocess that exposes named tools, each with
-  a JSON Schema for its input, over stdio. The node runs the server with a
-  filtered secret env, sends a single `tools/call` request on stdin, reads the
-  structured JSON response on stdout, and exits. Fields: `server` (which MCP
-  server to run), `tool` (which named tool), `input` (the tool arguments), and
-  `mode` (the protocol mode the server speaks, `classic` or `stateless`, copied
-  from capabilities; omit to probe once at run time). Server package versions
-  are pinned by the operator's declared `command` (for example
-  `npx -y atomic-server@1.2.3`), matching how tap and server versions are pinned
-  (ADR-0018).
+- `mcp-stdio`. Invoke one named tool on one named MCP server as a subprocess
+  over stdio (ADR-0015, ADR-0047). The node runs the server with a filtered
+  secret env, sends a single `tools/call` request on stdin, reads the
+  structured JSON response on stdout, and exits. Fields: `server` (which
+  declared server to run), `tool` (which named tool), `input` (the tool
+  arguments), and `mode` (the protocol revision the server speaks, `classic`
+  or `stateless`; omit to detect at run time). Server package versions are
+  pinned by the operator's declared `command` (for example
+  `npx -y atomic-server@1.2.3`), matching how tap and server versions are
+  pinned (ADR-0018).
+- `mcp-http`. Invoke one named tool on one named MCP server over Streamable
+  HTTP (ADR-0047). The node connects to the server's declared `url` with its
+  Bearer token and sends a single `tools/call` request. Fields: `server`
+  (which declared server to connect to), `tool`, `input`, and `mode`
+  (`classic` or `stateless`; omit to detect at run time). The server's `url`
+  and secret-referenced `headers` are declared in the config, not in the
+  Wafer.
 - `rerun-failed`. Re-run a dead-lettered (failed) run (ADR-0044). Its `run_id`
   is a JSONata expression over the node's `{event, steps}` input naming the
   failed run to re-run, and its `mode` is how to re-run (`continue`, `restart`,
@@ -552,16 +558,17 @@ compute over the run's data.
     mode: continue
   ```
 
-  `mcp-call` supports both the original MCP protocol (the `initialize` /
-  `initialized` handshake) and the stateless revision that carries protocol
-  version and capabilities inline in a `_meta` field, detecting which a server
-  expects at discovery time and caching it. Tool schemas are discovered from the
-  server once during a `capabilities` refresh and cached, not queried on every
-  node execution. MCP tool results (an `isError` flag plus content blocks) map
-  onto Servitor's structured validation error format. Installed servers are
-  those declared in the integrations config (ADR-0018).
+  `mcp-stdio` and `mcp-http` both support the original MCP protocol (the
+  `initialize` / `initialized` handshake) and the stateless revision that
+  carries protocol version and capabilities inline in a `_meta` field,
+  detecting which a server expects at discovery time and caching it. Tool
+  schemas are discovered from the server once during a `capabilities` refresh
+  and cached, not queried on every node execution. MCP tool results (an
+  `isError` flag plus content blocks) map onto Servitor's structured
+  validation error format. Installed servers are those declared in the config
+  (ADR-0018).
 
-  MCP is an integration mechanism for this node type, unrelated to the
+  MCP is a mechanism for this node type, unrelated to the
   control-plane question of whether Servitor's own daemon interface is ever
   exposed over MCP, which stays out of scope (ADR-0005).
 
@@ -620,7 +627,7 @@ run's DAG branches and loops.
   result survives, and a parked run resumes at the next node with the pre-wait
   results already saved.
 
-#### Curated integration helpers
+#### Curated helpers
 
 Small wrappers around official SDKs for the services most commonly used. Each one is well-typed, well-documented, and ships with appropriate triggers and actions.
 
@@ -631,14 +638,12 @@ Initial set (subject to your stack's priorities):
 - `github`. Issues, PRs, releases.
 - `email`. Send, parse incoming.
 
-(Atomic is reached via the `mcp-call` node type against its native MCP server
-rather than a hand-written helper, since it is low-frequency and the server is
-self-hostable alongside the runner.)
+(Atomic is reached via the `mcp-http` node type against its Streamable HTTP
+MCP endpoint, rather than a hand-written helper, since it is low-frequency
+and the server is self-hostable.)
 
 Each helper uses declared secrets for auth and exposes its
 actions/triggers via `servitor capabilities`.
-
-**What counts as an integration.** The "X integrations" number in the tagline counts services, not mechanisms. Any service the runner can talk to via any dedicated mechanism (a Singer tap, a Singer target, a trigger type, a curated helper, or any combination) counts as one integration. Slack having both a `slack_event` trigger and a `slack` helper is one integration, not two.
 
 ---
 
@@ -650,7 +655,7 @@ actions/triggers via `servitor capabilities`.
 4. **Workflow matching.** The runner finds workflows whose `trigger:` block matches the event.
 5. **Run enqueued.** A workflow run is created in Honker with the event payload as input. The run's initial node(s) are enqueued in the same transaction.
 6. **Workers claim and execute.** A node executor in the parent process claims a job and checks the node's `dedupe_key` against the dedupe table. It spawns a subprocess with a filtered env containing only the secrets the node declared (every node runs as a subprocess; ADR-0008).
-7. **Node runs.** Node types dispatch to handlers: HTTP, shell, transform, Singer tap, Singer target, integration helpers, and the flow nodes `switch` (route to one branch) and `foreach` (fan a body out over a list). A node writes its result as structured JSON to stdout and exits. A `switch` and `foreach` resolve their decision in a subprocess and then route: the worker fans out the chosen branch / body iterations through the dependency counters (ADR-0022, ADR-0024).
+7. **Node runs.** Node types dispatch to handlers: HTTP, shell, transform, Singer tap, Singer target, helpers, and the flow nodes `switch` (route to one branch) and `foreach` (fan a body out over a list). A node writes its result as structured JSON to stdout and exits. A `switch` and `foreach` resolve their decision in a subprocess and then route: the worker fans out the chosen branch / body iterations through the dependency counters (ADR-0022, ADR-0024).
 8. **Result committed transactionally.** When a node completes, its writes happen as a single atomic SQLite transaction: the node's result is persisted, the `dedupe_key` record is written (if any), all downstream nodes whose dependencies are now satisfied are enqueued, and the node's own claim is acked, all in one commit. Runs are built as a dependency DAG (ADR-0023): each node carries a count of unsatisfied dependencies, and the completing node decrements each dependent's count and enqueues it only when the count reaches zero (fan-in). A `switch` node enqueues its chosen branch and marks the others skipped; a `foreach` node enqueues one body job per element. The input a downstream node receives is `{event, steps}`, where `steps` is prior results keyed by node name, threaded forward and committed with the result (ADR-0021). (For Singer nodes, the updated bookmark is part of the same commit.) There is no separate scheduler process watching for completions; the worker that just finished the node performs these writes itself. This is non-negotiable because each possible split produces a distinct silent failure: result-without-enqueue stalls the workflow (a node is "done" but successors never run); enqueue-without-ack re-issues the claim on visibility timeout and re-runs the node, fanning out *again* and doubling every downstream side effect; dedupe-without-result causes future retries to skip the node without ever returning a value. The transactional atom is therefore **{result, dedupe_record, downstream_enqueues, claim_ack}**, all in one commit. If implementation pressure ever tempts splitting this transaction, the answer is no; redesign the data model instead.
 9. **Crashes are safe, with a caveat.** If a subprocess dies, the parent records the failure and the executor reclaims through normal retry. If the parent dies mid-job, Honker's visibility timeout re-issues the claim to another runner instance (or to itself on restart). **Crash safety against double-firing of side effects only applies to nodes that declare a `dedupe_key`.** Nodes without one inherit Honker's at-least-once contract: a node whose side effect completes before the result is persisted may be re-issued and the side effect re-performed. The validator warns when a side-effecting node omits `dedupe_key` precisely to make this contract visible to authors.
 10. **Run completes when no work is pending.** Each run tracks a count of in-flight jobs, adjusted in the same atomic commit as each node's completion (a claimed node's ack removes one, each enqueued dependent adds one). A run is marked completed when that count reaches zero. This is the dependency-based completion signal (ADR-0023): it correctly waits for a `foreach`'s body iterations and a fan-in rejoin, and for a linear chain it is the degenerate case. A skipped branch (non-chosen by a `switch`) records itself as skipped and cascades, so a run is never left waiting on a branch that did not run. A *parked* run (one at a `wait` node) is not complete: the guard is `pending == 0 && status != waiting`.
@@ -723,7 +728,7 @@ Getting onto the box is the operator's existing access (SSH or VPN), not a Servi
 
 ## Design principles
 
-**Small interfaces compose well.** Honker handles durability. The secret provider handles secrets. Singer handles record-stream integration. Standard Webhooks handles modern webhook reception. The CLI and daemon protocol handle control. This runner is the glue. Each piece does its narrow job; replacing any one doesn't affect the others.
+**Small interfaces compose well.** Honker handles durability. The secret provider handles secrets. Singer handles record streaming. Standard Webhooks handles modern webhook reception. The CLI and daemon protocol handle control. This runner is the glue. Each piece does its narrow job; replacing any one doesn't affect the others.
 
 **The workflow is fully defined by the Wafer, nowhere else.** No state lives in a UI. Workflows are version-controllable, diff-able, and reviewable. Agents and humans manipulate the same artifact.
 
@@ -775,14 +780,14 @@ Things deliberately out of scope for v1, kept here so the design doesn't quietly
 
 - **Multi-host scaling.** SQLite rules this out for the core runner. A different tool, not a different version of this one.
 - **MCP adapter.** Deferred until there is a concrete user; the daemon protocol is kept transport-agnostic so it can be added later (ADR-0005).
-- **OAuth flow management for outbound credentials.** Long-lived tokens cover the realistic self-hosted single-team case. Revisit if a critical integration becomes OAuth-only.
+- **OAuth flow management for outbound credentials.** Long-lived tokens cover the realistic self-hosted single-team case. Revisit if a critical service becomes OAuth-only.
 - **A policy engine for permissions.** Role strings cover the realistic case. Revisit if real deployments hit the ceiling.
 
 ---
 
 ## Status
 
-Early development. The daemon lifecycle, loopback control protocol, Wafer model and structured validation, capability discovery (including a `secrets.yaml` reporting declared secret names, account, permissions, and expiry, a `secret-resolution` group enumerating the available secret sources, a `singer/taps.yaml` reporting declared Singer taps, and a `mcp/servers.yaml` reporting declared MCP servers; grouped by mechanism group per ADR-0031, sourced from the declared integrations config per ADR-0018), dry-run DAG resolution (including redacted secret names and a `missing_secret` warning), the Honker durability store (with the transactional atom), node execution (the worker loop, subprocess isolation with env filtering, and the dedupe contract), the secret-resolution model (a pluggable provider with per-node, per-subprocess delivery; the `env` and `varlock` providers; a declared-secrets section in the integrations config and the `servitor secret` CLI; submit rejects a Wafer that references an undeclared secret; the varlock boot path is removed, ADR-0032 through ADR-0036), the Singer integration (the `singer-tap` and `singer-target` executors, bookmark state committed with each tap node's result, and schema discovery; ADR-0016), the MCP integration (the `mcp-call` node type with a client-mode executor, both classic and stateless protocol support, and structured error mapping; ADR-0015), inbound triggers (a webhook receiver for Standard Webhooks, generic HMAC, and the GitHub and Slack provider-specific schemes, plus cron and manual), the shipped `SKILL.md` agent reference, run inspection (`servitor runs`, `servitor run <id>`, `servitor cancel`), and the release flow (`make release`) are built (`servitor run`, `stop`, `dry-run`, `capabilities`, `submit`, `update`, `enable`, `disable`, `trigger`, `runs`, `run`, `cancel`, `resume`, `rerun`, `secret`), the `transform` node handler and `dedupe_key` evaluation (JSONata via gnata, ADR-0020; `{event, steps}` threaded input, ADR-0021), and the `switch` and `foreach` node handlers with dependency-counter fan-out (ADR-0022, ADR-0023, ADR-0024). Provider-specific webhook receivers for Grist and Atomic, and the curated helpers (grist, slack, github, email send) are not yet built. Open questions, to be resolved as implementation progresses and tracked in ADRs in the `docs/adr/` directory:
+Early development. The daemon lifecycle, loopback control protocol, Wafer model and structured validation, capability discovery (including a `secrets.yaml` reporting declared secret names, account, permissions, and expiry, a `secret-resolution` group enumerating the available secret sources, a `singer/taps.yaml` reporting declared Singer taps, and a `mcp/servers.yaml` reporting declared MCP servers; grouped by mechanism group per ADR-0031, sourced from the declared config per ADR-0018), dry-run DAG resolution (including redacted secret names and a `missing_secret` warning), the Honker durability store (with the transactional atom), node execution (the worker loop, subprocess isolation with env filtering, and the dedupe contract), the secret-resolution model (a pluggable provider with per-node, per-subprocess delivery; the `env` and `varlock` providers; a declared-secrets section in the config and the `servitor secret` CLI; submit rejects a Wafer that references an undeclared secret; the varlock boot path is removed, ADR-0032 through ADR-0036), Singer (the `singer-tap` and `singer-target` executors, bookmark state committed with each tap node's result, and schema discovery; ADR-0016), MCP (the `mcp-stdio` node type with a client-mode executor, both classic and stateless protocol support, and structured error mapping; ADR-0015), inbound triggers (a webhook receiver for Standard Webhooks, generic HMAC, and the GitHub and Slack provider-specific schemes, plus cron and manual), the shipped `SKILL.md` agent reference, run inspection (`servitor runs`, `servitor run <id>`, `servitor cancel`), and the release flow (`make release`) are built (`servitor run`, `stop`, `dry-run`, `capabilities`, `submit`, `update`, `enable`, `disable`, `trigger`, `runs`, `run`, `cancel`, `resume`, `rerun`, `secret`), the `transform` node handler and `dedupe_key` evaluation (JSONata via gnata, ADR-0020; `{event, steps}` threaded input, ADR-0021), and the `switch` and `foreach` node handlers with dependency-counter fan-out (ADR-0022, ADR-0023, ADR-0024). Provider-specific webhook receivers for Grist and Atomic, and the curated helpers (grist, slack, github, email send) are not yet built. Open questions, to be resolved as implementation progresses and tracked in ADRs in the `docs/adr/` directory:
 
 - Worker concurrency limits; runs execute as a dependency DAG with fan-out (ADR-0023), but branches run sequentially rather than in parallel.
 - The trigger receiver's framing of the remaining bespoke per-provider signing schemes (Grist and Atomic).
