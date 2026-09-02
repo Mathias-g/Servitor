@@ -105,6 +105,14 @@ type Server struct {
 	// Env are the env var names the server needs. Values come from the
 	// runner's resolved secrets, filtered to these (SPEC: Varlock).
 	Env []string `yaml:"env,omitempty"`
+	// URL is the Streamable HTTP endpoint of the server, for an mcp-http
+	// server reached over HTTP (ADR-0047). Either Command (mcp-stdio) or URL
+	// (mcp-http) is set; a server with both is an authoring error.
+	URL string `yaml:"url,omitempty"`
+	// Headers are extra headers to send with each request, for an mcp-http
+	// server. Values are secret names (for example "Authorization:
+	// Bearer $TOKEN"), resolved per use like any declared secret.
+	Headers map[string]string `yaml:"headers,omitempty"`
 }
 
 // Tap is one declared Singer tap.

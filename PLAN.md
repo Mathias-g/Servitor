@@ -289,9 +289,10 @@ split the `mcp` group by transport.
   is fully wired (registry, worker dispatch, `examples/order-wafers.md`, tests).
   `mcp-http` is registered with its schema (so it validates and appears in
   `capabilities`) but its executor is not yet built: running one fails with a
-  clear "not yet built" error. Remaining for `mcp-http`: the Streamable HTTP
-  client, the connector registry (URL lookup), the config `url`/`headers`
-  schema, and worker dispatch.
+  clear "not yet built" error. The config `url`/`headers` schema is built (a
+  URL-only server validates, holds its URL, and is skipped by capabilities
+  discovery rather than mis-probed). Remaining for `mcp-http`: the Streamable
+  HTTP client, the connector registry (URL lookup), and worker dispatch.
 - [x] **Route the leftover packages (ADR-0046, ADR-0048).** Move
   `internal/email` (a provider-agnostic, multi-consumer, mechanism-agnostic
   `Email` struct) to `internal/components/email`, and move `internal/gmail`

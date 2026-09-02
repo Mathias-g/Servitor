@@ -336,3 +336,31 @@ for line in sys.stdin:
 		t.Fatalf("servers report = %+v, want atomic with search tool", rep.Servers)
 	}
 }
+
+func TestWriteSkipsURLOnlyServerFromDiscovery(t *testing.T) {
+	// A URL-only (mcp-http) server has no command to spawn, and its Streamable
+	// HTTP client is not built yet. capabilities must skip it rather than
+	// mis-probe it as a subprocess (PLAN Phase 17).
+	cfg := &config.Config{}
+	cfg.AddMCPServer("atomic", []string{"/bin/true"}, nil)
+	cfg.MCP["search"] = &config.Server{URL: "https://search.example.com/mcp"}
+	writeTestConfig(t, cfg)
+
+	out := t.TempDir()
+	if err := Write(out); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(out, "mcp", "servers.yaml"))
+	if err != nil {
+		t.Fatalf("read mcp/servers.yaml: %v", err)
+	}
+	rep := serversReport{}
+	if err := yaml.Unmarshal(data, &rep); err != nil {
+		t.Fatalf("parse mcp/servers.yaml: %v", err)
+	}
+	for _, s := range rep.Servers {
+		if s.Name == "search" {
+			t.Fatalf("URL-only server %q should not be probed as a subprocess", s.Name)
+		}
+	}
+}

@@ -19,6 +19,9 @@ func TestExampleConfigLoads(t *testing.T) {
 	if c.MCP["inventory"] == nil {
 		t.Fatal("example config missing inventory mcp server")
 	}
+	if search := c.MCP["search"]; search == nil || search.URL != "https://search.example.com/mcp" || search.Headers["Authorization"] != "Bearer $SEARCH_TOKEN" {
+		t.Fatalf("example config missing http mcp server with url/headers: %+v", search)
+	}
 	if c.Singer == nil || c.Singer.Taps["stripe"] == nil || c.Singer.Targets["warehouse"] == nil {
 		t.Fatal("example config missing singer taps/targets")
 	}

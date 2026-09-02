@@ -19,6 +19,14 @@ mcp:
   inventory:
     command: [npx, -y, "@example/inventory-mcp"]
     env: [INVENTORY_TOKEN]
+  # A server reached over Streamable HTTP (mcp-http, ADR-0047): `url` is the
+  # endpoint and `headers` are secret-referenced, resolved per use. The
+  # mcp-http executor is not yet built; the entry validates, holds the URL in
+  # the config, and is skipped by capabilities discovery until then.
+  search:
+    url: "https://search.example.com/mcp"
+    headers:
+      Authorization: "Bearer $SEARCH_TOKEN"
 
 # Declared Singer taps and targets, keyed by name. singer-tap / singer-target
 # nodes name one here; the command is the pin (ADR-0016).
@@ -42,6 +50,8 @@ secrets:
     expiry: "2027-06-01"
   INVENTORY_TOKEN:
     source: onbox
+  SEARCH_TOKEN:
+    source: env
   WEBHOOK_SECRET:
     source: env
 

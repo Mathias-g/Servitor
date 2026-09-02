@@ -148,7 +148,13 @@ func writeServers(dir string) error {
 	} else {
 		declared := map[string][]string{}
 		for name, s := range cfg.MCP {
-			declared[name] = s.Command
+			// Only command-based (mcp-stdio) servers are probed for tools. A
+			// URL-based (mcp-http) server has no command to spawn; its Streamable
+			// HTTP client is not yet built, so it is skipped rather than
+			// mis-probed as a subprocess (PLAN Phase 17).
+			if len(s.Command) > 0 {
+				declared[name] = s.Command
+			}
 		}
 		report.Servers = mcp.DiscoverServers(declared, nil)
 	}
