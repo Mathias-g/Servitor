@@ -44,7 +44,6 @@ nodes:
 Submit it, enable it, and the next time an HMAC-signed request hits
 `/hooks/grist-leads` (a receiver you declare in `servitor.config.yaml`,
 ADR-0049), a run fires and its `transform` parses the raw body.
-```
 
 ## System requirements
 
