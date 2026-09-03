@@ -74,5 +74,3 @@ transaction (for Singer taps the bookmark is part of that same commit).
 - Worker concurrency: branches of a DAG run sequentially, not in parallel.
 - An agent authoring reference of committed Wafer examples (deferred until the
   type set stabilizes).
-
-Contributions welcome once the initial scaffolding is in place.
