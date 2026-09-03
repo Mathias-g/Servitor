@@ -437,5 +437,43 @@ non-HMAC-authenticated (static header, OAuth-verified) cases.
   to a documented preset (for example a `github` receiver the CLI can scaffold
   with the right header, encoding, and prefix), without becoming a mechanism.
 
+## Separate small subprocess binaries for the pure-compute mechanisms
+
+`transform`, `switch`, and `foreach` run Servitor's own pure computation and
+routing as a subprocess of the servitor binary itself (`selfexe`, ADR-0008):
+the worker spawns `[servitor __transform|__switch|__foreach <expr>]` to keep
+even trusted computation out of the runner's process. A dedicated small binary
+(a leaner build that links only what the pure-compute subprocesses need) is the
+alternative. Two considerations, the first performance, the second security.
+
+Performance: the binary is ~17MB, but a spawn does not read it all into memory
+(exec mmaps and faults pages lazily), and the dominant cost is the constant Go
+runtime init (~1-3ms), which is the same whatever the binary size. So a small
+binary would save, at best, that constant few ms per step, on a path that is
+not hot (control flow and pure computation, not I/O). Whether the cost matters
+at all is a profiling question.
+
+Security (unclear, worth looking into): the subprocess is the entire servitor
+binary, not a thin evaluator. That means every mechanism package is linked and
+its `init()` runs, and the code for Honker, the secret providers, Singer, MCP,
+and HTTP is all present in the process even though `__transform` only evaluates
+a JSONata expression. The subprocess env is filtered to the node's declared
+secrets and JSONata evaluation is bounded, so the concrete exposure today looks
+small, but a dedicated small binary would carry a far smaller attack surface
+than the full runner. Whether running the full binary as a pure-compute
+subprocess is a real problem is an open question, not a settled one.
+
+The other side of the trade: the self-exe pattern avoids a second artifact to
+build, version, pin, and keep in sync with the runner, and ADR-0008 already
+records the escape hatch that any in-process or dedicated-binary optimization
+should come only after profiling demonstrates a real cost, as a measured,
+reversible change behind a benchmark.
+
+Not acting on this now. If it is revisited, the open questions are: whether the
+concern is the performance hot path or the security surface (or both); a
+dedicated small binary vs re-adding an in-process path; which mechanisms
+qualify (likely `transform` first, then `switch` and `foreach`); and how it
+stays consistent with ADR-0008's single-subprocess-mode rule.
+
 ## (Add more ideas here as they come up; delete them when they become ADRs or
 ## are discarded.)
