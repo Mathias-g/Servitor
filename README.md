@@ -1,4 +1,4 @@
-<img src="servitorLogo.png" alt="Servitor" width="400">
+<img src="servitorLogo.png" alt="Servitor" height="160">
 
 Workflow automation for the agentic stack. Self-hosted. MIT-licensed.
 
