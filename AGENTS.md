@@ -12,6 +12,7 @@ This file governs how context about the codebase (why things are the way they ar
 
 - **SPEC.md**: the full product and behavior spec: what Servitor is, the control-plane (CLI) surface, the Wafer format, how it works end to end. This is the source of truth for what to build and why. (An earlier draft is in git history under `old-spec.md`; it was deleted and is not part of the current docs.)
 - **PLAN.md**: the implementation plan: build phases in order, dependencies, and what "done" means for each. Follow this when building.
+- **STATUS.md**: the current-state snapshot: what actually works in Servitor today, in product terms, as opposed to what is aspirational. It answers "can I do X yet?" and keeps SPEC.md pure (status annotations do not belong in the behavior contract). Unlike PLAN.md it is not append-only, so it reflects only the present. Keep it current in the same change as the work that ships.
 - **docs/adr/**: the decision log. Each significant decision, with its alternatives and rationale, recorded as a numbered, immutable ADR. This is where the "why" of the design lives.
 - **IDEAS.md**: a catch-all for promising directions that are not yet decided or built. Not commitments; ideas move to an ADR (and then the SPEC/PLAN) when they become real decisions, and are discarded when not.
 - **THREATS.md**: open, unsettled attack surfaces and things to investigate. Not decisions and not invariants yet; when one is resolved it moves to a test, the relevant SPEC section, Gotchas, or an ADR depending on what the resolution is, and is discarded when found to be a non-issue.
@@ -49,6 +50,7 @@ Several homes, each owning one kind of context. Most context is in the product/b
 | Layer                         | Owns                                              | Mutable? | Enforced? |
 |-------------------------------|---------------------------------------------------|----------|-----------|
 | `SPEC.md`                     | What the product is and how it behaves            | yes      | review |
+| `STATUS.md`                   | What works today (current-state snapshot), in product terms | yes | review |
 | `THREATS.md`                  | Open, unsettled attack surfaces and things to investigate | yes | review |
 | `docs/adr/`                   | Decisions with real alternatives, and their rationale | append-only | linter (front matter) |
 | Exported Go identifiers + package docs | A package's public interface           | yes      | `go vet`, review |
@@ -83,6 +85,7 @@ How to route what you learned this session into the codebase, and what to discar
 
 - **Made a choice with real alternatives someone might later reverse?** ADR. If the choice changes behavior, the test that pins the new behavior is part of recording it.
 - **Changed the product's behavior or interface (Wafer schema, CLI, daemon protocol)?** Update `SPEC.md` and, if it was a genuine decision, write an ADR.
+- **Changed what is built or not built (implementation status)?** Update `STATUS.md`, the current-state snapshot. SPEC.md stays the behavior contract and does not carry a build-status ledger; PLAN.md's checkboxes track each build task's done state but, being append-only, do not summarize the current state at a glance.
 - **Established or changed how a package is supposed to behave** (an edge case, an input/output guarantee, a regression you just fixed)? A test. This is preferred over prose whenever the behavior can be asserted.
 - **Fixed a bug** (a regression, an edge case, a behavior change)? A test pins the new behavior, and the fix and its rationale go in the commit message. Do not add a PLAN phase for it: PLAN.md tracks build phases, not bug fixes. A bug fix rises to an ADR or a SPEC change only if it altered a product contract or required a contested decision.
 - **Found an open, unsettled attack surface or something to investigate?** `THREATS.md`. It is not a decision and not an invariant yet; when resolved it moves to a test, the relevant SPEC section, Gotchas, or an ADR depending on what the resolution is, and is discarded when found to be a non-issue.
