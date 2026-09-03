@@ -4,11 +4,41 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
-	"github.com/Mathias-g/Servitor/internal/components/expression"
+	"github.com/Mathias-g/Servitor/internal/components/exec"
+	"github.com/Mathias-g/Servitor/internal/components/secret"
+	"github.com/Mathias-g/Servitor/internal/components/selfexe"
 	"github.com/Mathias-g/Servitor/internal/honker"
 )
+
+// evalExpression evaluates a JSONata expression against the node's `{event,
+// steps}` input in a subprocess (ADR-0008) and returns the raw evaluated value.
+// Expression evaluation for the flow nodes (wait, send-signal, rerun-failed)
+// runs outside the runner's process; the caller uses the returned value to
+// perform its own store mutation, which cannot leave the process because the
+// worker owns the single SQLite write connection (ADR-0004). The subprocess
+// environment is filtered to the node's declared secrets (typically none, just
+// PATH), so nothing worth stealing reaches it (ADR-0008).
+func (w *Worker) evalExpression(ctx context.Context, sj NodeJob, expr string) (any, error) {
+	env, missing, err := w.nodeEnv(ctx, sj.NodeName, sj.Secrets)
+	if err != nil {
+		return nil, err
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("%w: %s", secret.ErrSecretMissing, strings.Join(missing, ", "))
+	}
+	res, rerr := w.runner.Run(ctx, exec.Request{
+		Command: []string{selfexe.Path(), "__eval", expr},
+		Env:     env,
+		Input:   sj.Input,
+	})
+	if rerr != nil {
+		return nil, rerr
+	}
+	return res.Output, nil
+}
 
 // waitContinuation is the worker-serialized payload of a parked run (ADR-0040).
 // It carries the wait node's identity, the `{event, steps}` input it parked
@@ -35,7 +65,7 @@ type waitContinuation struct {
 //
 // The run is not completed while `waiting` (checkRunComplete guards on that).
 func (w *Worker) handleWait(ctx context.Context, sj NodeJob, claimed *honker.Job) error {
-	signalName, err := resolveSignalName(sj)
+	signalName, err := w.resolveSignalName(ctx, sj)
 	if err != nil {
 		w.recordFailure(sj, claimed, err)
 		return fmt.Errorf("worker: wait %s (job %d): %w", sj.NodeID, claimed.ID, err)
@@ -141,13 +171,14 @@ func fanOutContinuation(tx *honker.Tx, queue *honker.Queue, wc waitContinuation,
 
 // resolveSignalName evaluates the wait node's `signal` JSONata expression
 // against its `{event, steps}` input to get the effective signal name
-// (ADR-0042). It returns "" when the wait has no signal source.
-func resolveSignalName(sj NodeJob) (string, error) {
+// (ADR-0042). It returns "" when the wait has no signal source. The expression
+// is evaluated in a subprocess; only the resulting name is used here.
+func (w *Worker) resolveSignalName(ctx context.Context, sj NodeJob) (string, error) {
 	expr, _ := sj.Config["signal"].(string)
 	if expr == "" {
 		return "", nil
 	}
-	v, err := expression.Eval(expr, sj.Input)
+	v, err := w.evalExpression(ctx, sj, expr)
 	if err != nil {
 		return "", fmt.Errorf("wait %s: resolve signal: %w", sj.NodeID, err)
 	}
@@ -192,7 +223,7 @@ func (w *Worker) handleSendSignal(ctx context.Context, sj NodeJob, claimed *honk
 		w.recordFailure(sj, claimed, fmt.Errorf("send-signal %s: requires a `signal` expression", sj.NodeID))
 		return fmt.Errorf("worker: send-signal %s (job %d): no signal expression", sj.NodeID, claimed.ID)
 	}
-	v, err := expression.Eval(expr, sj.Input)
+	v, err := w.evalExpression(ctx, sj, expr)
 	if err != nil {
 		w.recordFailure(sj, claimed, err)
 		return fmt.Errorf("worker: send-signal %s (job %d): %w", sj.NodeID, claimed.ID, err)
@@ -201,7 +232,7 @@ func (w *Worker) handleSendSignal(ctx context.Context, sj NodeJob, claimed *honk
 
 	var payload any
 	if pExpr, _ := sj.Config["payload"].(string); pExpr != "" {
-		p, perr := expression.Eval(pExpr, sj.Input)
+		p, perr := w.evalExpression(ctx, sj, pExpr)
 		if perr != nil {
 			w.recordFailure(sj, claimed, perr)
 			return fmt.Errorf("worker: send-signal %s (job %d): payload: %w", sj.NodeID, claimed.ID, perr)
@@ -242,7 +273,7 @@ func (w *Worker) handleSendSignal(ctx context.Context, sj NodeJob, claimed *honk
 func (w *Worker) handleRerunFailed(ctx context.Context, sj NodeJob, claimed *honker.Job) error {
 	runID := ""
 	if expr, _ := sj.Config["run_id"].(string); expr != "" {
-		v, err := expression.Eval(expr, sj.Input)
+		v, err := w.evalExpression(ctx, sj, expr)
 		if err != nil {
 			w.recordFailure(sj, claimed, err)
 			return fmt.Errorf("worker: rerun-failed %s (job %d): %w", sj.NodeID, claimed.ID, err)

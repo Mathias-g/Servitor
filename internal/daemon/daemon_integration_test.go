@@ -7,21 +7,58 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/Mathias-g/Servitor/internal/components/secret"
+	"github.com/Mathias-g/Servitor/internal/components/selfexe"
 	"github.com/Mathias-g/Servitor/internal/config"
 	"github.com/Mathias-g/Servitor/internal/honker"
 	"github.com/Mathias-g/Servitor/internal/protocol"
 	"github.com/Mathias-g/Servitor/internal/worker"
 )
+
+var (
+	servitorOnce sync.Once
+	servitorErr  error
+)
+
+// buildServitor builds the real servitor binary once and points selfexe at it,
+// so tests that boot a real daemon in-process can run hidden-subcommand nodes
+// (for example `wait`, whose signal evaluates in the `__eval` subprocess). The
+// running test binary does not serve those subcommands (ADR-0008). It mirrors
+// what scripts/e2e.sh does for the end-to-end check.
+func buildServitor(t *testing.T) {
+	t.Helper()
+	servitorOnce.Do(func() {
+		root := filepath.Clean(filepath.Join("..", ".."))
+		dir, err := os.MkdirTemp("", "servitor-selfexe-*")
+		if err != nil {
+			servitorErr = fmt.Errorf("create temp dir: %w", err)
+			return
+		}
+		bin := filepath.Join(dir, "servitor")
+		cmd := exec.Command("go", "build", "-o", bin, "./cmd/servitor")
+		cmd.Dir = root
+		if out, err := cmd.CombinedOutput(); err != nil {
+			servitorErr = fmt.Errorf("build servitor: %w: %s", err, out)
+			return
+		}
+		selfexe.SetPath(bin)
+	})
+	if servitorErr != nil {
+		t.Fatalf("%v", servitorErr)
+	}
+}
 
 func daemonExtPath(t *testing.T) string {
 	t.Helper()
@@ -719,6 +756,7 @@ func TestDaemonEmailRegistration(t *testing.T) {
 // `wait` node, trigger it so it parks, then resume it by named signal and
 // verify the run completes.
 func TestDaemonWaitAndResume(t *testing.T) {
+	buildServitor(t)
 	ext := daemonExtPath(t)
 	dbPath := filepath.Join(t.TempDir(), "wait.db")
 

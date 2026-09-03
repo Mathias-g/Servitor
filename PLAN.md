@@ -385,7 +385,7 @@ of in a subprocess.
   reference a declared secret as `$NAME`, resolved per use from the node's
   filtered env via the shared `refs` component (the same substitution mcp-http
   uses). The result is `{ok, status, statusText, headers, body}`.
-- [ ] **Flow-node expression evaluation moves to a subprocess.** `wait`
+- [x] **Flow-node expression evaluation moves to a subprocess.** `wait`
   (its `signal` name), `send-signal` (its `signal` name and `payload`), and
   `rerun-failed` (its `run_id`) evaluate their JSONata expressions in the
   worker's process (`internal/worker/suspend.go`), unlike `switch`, `foreach`,
@@ -396,7 +396,13 @@ of in a subprocess.
   (ADR-0004) and cannot hand it to a subprocess. The split: the subprocess
   computes (evaluates the expression), the worker mutates (the transaction).
   The `wait` timer parsing (`timer.after`/`timer.at`) is not expression
-  evaluation and stays in-process. `dedupe_key` evaluation
+  evaluation and stays in-process. Built as the hidden `servitor __eval`
+  subcommand: the worker resolves each expression through a subprocess with the
+  node's filtered env and the `{event, steps}` input, then uses the returned
+  value to perform the store mutation in one transaction. The daemon integration
+  test that exercises a `wait` node now builds the real servitor binary and
+  points `selfexe` at it (a test-only override), since the running test binary
+  does not serve the hidden subcommands. `dedupe_key` evaluation
   (`internal/worker/worker.go`) shares the in-process pattern; whether it also
   moves is an open question within this task, since it runs for every
   dedupe-keyed node before the dedupe lookup.

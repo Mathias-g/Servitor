@@ -6,8 +6,31 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Mathias-g/Servitor/internal/components/exec"
+	"github.com/Mathias-g/Servitor/internal/components/expression"
 	"github.com/Mathias-g/Servitor/internal/honker"
 )
+
+// evalStubRunner evaluates `__eval` subprocess requests in-process, so the
+// suspend tests exercise the flow-node logic (wait/send-signal/rerun-failed)
+// without needing the real servitor binary's hidden `__eval` subcommand
+// (ADR-0008). It mirrors what the subprocess does: evaluate the expression
+// against the request input and return the result.
+type evalStubRunner struct{}
+
+func (evalStubRunner) Run(_ context.Context, req exec.Request) (exec.Result, error) {
+	for _, c := range req.Command {
+		if c == "__eval" {
+			expr := req.Command[len(req.Command)-1]
+			out, err := expression.Eval(expr, req.Input)
+			if err != nil {
+				return exec.Result{}, err
+			}
+			return exec.Result{Output: out}, nil
+		}
+	}
+	return exec.Result{Output: map[string]any{"ok": true}}, nil
+}
 
 func waitResult(t *testing.T, store *honker.Store, runID string) map[string]any {
 	t.Helper()
@@ -28,6 +51,7 @@ func waitJob(runID string, signal string) NodeJob {
 
 func TestWaitParksAndResumesBySignal(t *testing.T) {
 	w, store, q := newWorker(t, 30, 3, nil)
+	w.runner = evalStubRunner{}
 	if err := store.CreateRun("run-w", "wf"); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
@@ -126,6 +150,7 @@ func TestWaitParksAndResumesByTimer(t *testing.T) {
 
 func TestWaitBufferedSignalResumesImmediately(t *testing.T) {
 	w, store, q := newWorker(t, 30, 3, nil)
+	w.runner = evalStubRunner{}
 	if err := store.CreateRun("run-b", "wf"); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
@@ -158,6 +183,7 @@ func TestWaitBufferedSignalResumesImmediately(t *testing.T) {
 
 func TestWaitRepeatResumeIsNoOp(t *testing.T) {
 	w, store, q := newWorker(t, 30, 3, nil)
+	w.runner = evalStubRunner{}
 	if err := store.CreateRun("run-n", "wf"); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
@@ -191,6 +217,7 @@ func TestWaitRepeatResumeIsNoOp(t *testing.T) {
 
 func TestWaitAmbiguousSignalRejected(t *testing.T) {
 	w, store, q := newWorker(t, 30, 3, nil)
+	w.runner = evalStubRunner{}
 	// Two runs park on the same effective signal name.
 	for _, id := range []string{"run-a1", "run-a2"} {
 		if err := store.CreateRun(id, "wf"); err != nil {
@@ -221,6 +248,7 @@ func TestWaitAmbiguousSignalRejected(t *testing.T) {
 
 func TestSendSignalWakesParkedRun(t *testing.T) {
 	w, store, q := newWorker(t, 30, 3, nil)
+	w.runner = evalStubRunner{}
 	if err := store.CreateRun("run-park", "wf"); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
@@ -351,6 +379,7 @@ func TestRerunFailedNodeCallsOnRerun(t *testing.T) {
 func TestRerunFailedNodeModeAndRunIDExpr(t *testing.T) {
 	var gotRun, gotMode string
 	w, store, q := newWorker(t, 30, 3, nil)
+	w.runner = evalStubRunner{}
 	w.onRerun = func(runID, mode string) error {
 		gotRun = runID
 		gotMode = mode

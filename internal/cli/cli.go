@@ -123,6 +123,15 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		// `$SECRET` header references from its own filtered env, and writes the
 		// structured response to stdout.
 		return cmdHTTPNode(args[1:], stdout, stderr)
+	case "__eval":
+		// Hidden subprocess entrypoint: the worker evaluates a flow node's
+		// JSONata expression (for example a `wait` signal name, a `send-signal`
+		// name/payload, or a `rerun-failed` run_id) in a subprocess (ADR-0008),
+		// keeping expression evaluation out of the runner's process. It reads
+		// the `{event, steps}` input on stdin, evaluates the expression given as
+		// its single argument, and writes the raw result as JSON to stdout. The
+		// worker uses the returned value to perform its own store mutation.
+		return cmdEvalNode(args[1:], stdout, stderr)
 	}
 
 	// The remaining commands are daemon operations scheduled for later phases.
@@ -664,6 +673,46 @@ func cmdTransformNode(args []string, stdout, stderr io.Writer) int {
 	enc := json.NewEncoder(stdout)
 	if err := enc.Encode(out); err != nil {
 		_, _ = fmt.Fprintf(stderr, "servitor: __transform: encode result: %v\n", err)
+		return exitFailure
+	}
+	return exitOK
+}
+
+// cmdEvalNode is the hidden subprocess entrypoint that evaluates a flow node's
+// JSONata expression against the `{event, steps}` input on stdin and writes the
+// raw result as JSON to stdout. The worker runs this as a subprocess (ADR-0008)
+// for `wait` (its signal name), `send-signal` (its name and payload), and
+// `rerun-failed` (its run_id), so expression evaluation never happens inside the
+// runner's process; the worker uses the returned value to perform its own store
+// mutation, which cannot leave the process (ADR-0004).
+func cmdEvalNode(args []string, stdout, stderr io.Writer) int {
+	if len(args) != 1 {
+		_, _ = fmt.Fprintf(stderr, "servitor: __eval: usage: __eval <expression>\n")
+		return exitUsage
+	}
+	expr := args[0]
+
+	data, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: __eval: read input: %v\n", err)
+		return exitFailure
+	}
+	var input any
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &input); err != nil {
+			_, _ = fmt.Fprintf(stderr, "servitor: __eval: input is not valid JSON: %v\n", err)
+			return exitFailure
+		}
+	}
+
+	out, err := expression.Eval(expr, input)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: __eval: %v\n", err)
+		return exitFailure
+	}
+	enc := json.NewEncoder(stdout)
+	if err := enc.Encode(out); err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: __eval: encode result: %v\n", err)
 		return exitFailure
 	}
 	return exitOK

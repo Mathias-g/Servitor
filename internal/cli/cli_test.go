@@ -465,3 +465,53 @@ func TestHTTPNodeSubprocessMissingSecret(t *testing.T) {
 		t.Fatalf("__http stderr %q should mention the missing secret", errOut.String())
 	}
 }
+
+func TestEvalNodeSubprocess(t *testing.T) {
+	// The __eval subprocess evaluates a flow node's JSONata expression against
+	// the input on stdin and returns the raw result, so wait/send-signal/
+	// rerun-failed can resolve their expressions outside the runner's process
+	// (ADR-0008).
+	input := `{"event":{"order_id":"1"},"steps":{}}`
+	oldStdin := os.Stdin
+	t.Cleanup(func() { os.Stdin = oldStdin })
+	f, err := os.CreateTemp(t.TempDir(), "stdin-*.json")
+	if err != nil {
+		t.Fatalf("create stdin file: %v", err)
+	}
+	if _, err := f.WriteString(input); err != nil {
+		t.Fatalf("write stdin: %v", err)
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		t.Fatalf("seek: %v", err)
+	}
+	os.Stdin = f
+
+	var out, errOut bytes.Buffer
+	if code := Run([]string{"__eval", `"approval." & $string(event.order_id)`}, &out, &errOut); code != exitOK {
+		t.Fatalf("__eval exit %d, want %d (stderr: %s)", code, exitOK, errOut.String())
+	}
+	if strings.TrimSpace(out.String()) != `"approval.1"` {
+		t.Fatalf("__eval output = %q, want \"approval.1\"", out.String())
+	}
+}
+
+func TestEvalNodeBadExpression(t *testing.T) {
+	oldStdin := os.Stdin
+	t.Cleanup(func() { os.Stdin = oldStdin })
+	f, err := os.CreateTemp(t.TempDir(), "stdin-*.json")
+	if err != nil {
+		t.Fatalf("create stdin file: %v", err)
+	}
+	if _, err := f.WriteString(`{}`); err != nil {
+		t.Fatalf("write stdin: %v", err)
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		t.Fatalf("seek: %v", err)
+	}
+	os.Stdin = f
+
+	var out, errOut bytes.Buffer
+	if code := Run([]string{"__eval", `["unterminated`}, &out, &errOut); code != exitFailure {
+		t.Fatalf("__eval bad expr exit %d, want %d", code, exitFailure)
+	}
+}
