@@ -129,7 +129,8 @@ The automated checks enforce structure. This covers what they cannot:
 
 1. **Behavior added or changed → a test asserts it.** If you changed what a package does or fixed a bug, there should be a test that would fail without that change.
 2. **A real decision was made → ADR drafted, or explicitly declined.** A real decision is one with genuine alternatives that someone might later reverse. If you just shipped the work a `proposed` ADR describes, promote it to `accepted` in the same change, so no landed decision sits parked at `proposed`.
-3. **SPEC / README still matches the code.** If the public surface or the intent changed, check that the prose still accurately describes it. Stale prose is worse than no prose.
+3. **Built/not-built status changed → STATUS.md reflects it.** If a PLAN task flipped `[x]` (or a feature shipped that changes what works today), update `STATUS.md` in the same change. Only edit it when "what works today" actually changed in product terms: an internal refactor or machinery change that alters no product behavior does not touch STATUS.md.
+4. **SPEC / README still matches the code.** If the public surface or the intent changed, check that the prose still accurately describes it. Stale prose is worse than no prose.
 
 ## Conventions
 
