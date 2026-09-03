@@ -140,60 +140,6 @@ Revisit the choice when actually building: if it turns out read-only inspection 
 
 Not buildable until Servitor actually publishes the data the app reads and the shape of that published data is defined. The dogfooding idea covers publishing capabilities, and the monitoring idea wants a "see all runs" view, but neither yet specifies a signed, redacted, external-readable feed of run history and outcomes for an app to consume; that feed is the missing prerequisite. Until then this is just a promising direction, kept here so it is not lost.
 
-## Multiple concurrent parks per run (foreach-body waits)
-
-A possible future extension of "Suspended waits" (ADR-0040 through ADR-0043).
-Today a run can park only one `wait` at a time: the continuation is keyed by
-`run_id`, so a second park in the same run overwrites the first. The only shape
-that needs more is a `wait` inside a `foreach` body, where several iterations
-park at once and all must be resumed before the fan-in rejoin completes (for
-example "send N approval requests, wait for all N to sign off, then ship").
-
-Not decided, not in scope; the current one-per-run model is the deliberate
-BSSN choice and covers the common cases. This entry records the shape in case
-that changes.
-
-### The use case, narrowly
-
-Sequential waits never collide: a wait parks, resumes, then the next waits, so
-one-per-run is perfect for a linear chain, a wait before a fan-in, or a wait
-with a fan-out after it. Multiple simultaneous parks come from exactly one
-place: a `foreach` body containing a `wait`, where N iterations park and each
-must be resumed before the rejoin. It is the "wait for all N" fan-out shape.
-
-### The alternative that avoids it
-
-"Wait for N" can be modeled without multiple parks per run, the way Temporal
-recommends child workflows: fan out to N separate runs (each run is one unit
-with one wait), then chain them together with the `completed` trigger or a
-collector. Each run keeps its single wait, reusing machinery Servitor already
-has. This is the first answer to the use case.
-
-### What it would take to support multiple parks
-
-Not a one-line fix; it touches the coupled pieces a single park already
-navigates (ADR-0040):
-
-- **Per-park continuation key.** Key `suspended_continuations` by
-  `(run_id, park_id)` (or `(run_id, node_id, iteration)`) instead of `run_id`
-  alone, so each parked iteration gets its own row instead of overwriting.
-- **Per-park status vs run status.** Today the run has one `waiting` status and
-  `checkRunComplete` guards on `status != waiting`. With several parks the run
-  is `waiting` while any iteration is parked, and each park/resume must manage
-  the shared status correctly rather than flipping it wholesale.
-- **Iteration-scoped signals.** A named signal must address a specific parked
-  iteration, not "the run parked on this name". The effective signal name would
-  have to encode the iteration, or the signal would carry a park id.
-- **`run_deps` and pending consistency.** When one iteration resumes and others
-  stay parked, the fan-in counters and pending count must stay consistent; the
-  rejoin must wait for all iterations to both run *and* resume. This is the
-  subtle part, the same coupling a single park has, multiplied by N.
-
-Why it is separate: it is not part of the current suspend/resume spine. It is
-independently buildable once the "wait for N" case is real enough to justify
-the coupling, and it is not the recommended first answer to that case (the
-N-runs modeling above is).
-
 ## Agent node (an LLM-driven action node)
 
 An action node that delegates work to an LLM agent rather than to a fixed integration, for example a `call-llm` or `agent` node that sends a prompt (and prior `{event, steps}` context) to a hosted model (say OpenRouter) and returns its completion. The node is durable like any other: it runs as a subprocess (ADR-0008), its output is committed and threaded forward as a step result, and a `dedupe_key` guards a retry from re-invoking the model.

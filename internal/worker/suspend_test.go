@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -70,7 +71,7 @@ func TestWaitParksAndResumesBySignal(t *testing.T) {
 	if st, _ := store.RunStatus("run-w"); st != honker.RunWaiting {
 		t.Fatalf("status = %q, want waiting", st)
 	}
-	cont, err := store.GetContinuation("run-w")
+	cont, err := store.GetContinuation("run-w", "w")
 	if err != nil || cont == nil {
 		t.Fatalf("continuation: %v", err)
 	}
@@ -85,7 +86,7 @@ func TestWaitParksAndResumesBySignal(t *testing.T) {
 	if st, _ := store.RunStatus("run-w"); st != honker.RunRunning {
 		t.Fatalf("status = %q, want running after resume", st)
 	}
-	if cont, _ := store.GetContinuation("run-w"); cont != nil {
+	if cont, _ := store.GetContinuation("run-w", "w"); cont != nil {
 		t.Fatalf("continuation not cleared after resume")
 	}
 	res := waitResult(t, store, "run-w")
@@ -341,6 +342,153 @@ func TestWaitTimerRunAtSurvivesReopen(t *testing.T) {
 	res := waitResult(t, store2, "run-t")
 	if res["source"] != "timer" {
 		t.Fatalf("result source = %v, want timer", res["source"])
+	}
+}
+
+// foreachWaitStubRunner answers a foreach node whose body is a `wait` (ADR-0041,
+// ADR-0024): the foreach returns the item list, a wait's `__eval` signal
+// resolution evaluates its expression, and the rejoin returns the collected
+// array under the foreach's name.
+type foreachWaitStubRunner struct{}
+
+func (foreachWaitStubRunner) Run(_ context.Context, req exec.Request) (exec.Result, error) {
+	in, _ := req.Input.(map[string]any)
+	// A wait's signal expression resolves through `__eval`.
+	for _, c := range req.Command {
+		if c == "__eval" {
+			expr := req.Command[len(req.Command)-1]
+			out, err := expression.Eval(expr, in)
+			if err != nil {
+				return exec.Result{}, err
+			}
+			return exec.Result{Output: out}, nil
+		}
+	}
+	// The rejoin node has the collected array under the foreach node's name.
+	if steps, ok := in["steps"].(map[string]any); ok {
+		if fan, ok := steps["fan"]; ok {
+			return exec.Result{Output: fan}, nil
+		}
+	}
+	// The foreach node itself returns the iteration list.
+	return exec.Result{Output: []any{"a", "b", "c"}}, nil
+}
+
+// TestForeachBodyWaitParksConcurrentlyAndCollects pins the deferred Phase 14
+// case: a `wait` inside a `foreach` body. Each body iteration parks its own
+// continuation (keyed per wait instance, not one-per-run), so a single run can
+// be parked at several waits at once; each signal resumes only its own wait; and
+// the rejoin collects all the wait results in input order.
+func TestForeachBodyWaitParksConcurrentlyAndCollects(t *testing.T) {
+	w, store, q := newWorker(t, 30, 3, nil)
+	w.runner = foreachWaitStubRunner{}
+
+	// foreach fan -> body wait (fanned N times, each parks) -> rejoin summarize.
+	summarize := NodeJob{RunID: "run-fw", WorkflowID: "wf", NodeID: "summarize", NodeName: "summarize",
+		NodeType: "transform", Command: []string{"ignored"},
+		CollectFrom: "wait", CollectAs: "item", CollectCount: 3, CollectName: "fan"}
+	waitBody := NodeJob{RunID: "run-fw", WorkflowID: "wf", NodeID: "wait", NodeName: "wait",
+		NodeType: "wait", Config: map[string]any{"signal": `"approve." & $string(item)`},
+		Dependents: []string{"summarize"}, Downstream: []NodeJob{summarize}}
+	fan := NodeJob{RunID: "run-fw", WorkflowID: "wf", NodeID: "fan", NodeName: "fan",
+		NodeType: "foreach", Command: []string{"servitor", "__foreach", "steps.ids"},
+		Body: &waitBody, BodyAs: "item", Rejoins: []string{"summarize"},
+		Downstream: []NodeJob{summarize}}
+
+	if err := store.CreateRun("run-fw", "wf"); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if err := store.InitRunDeps(honker.NewRunDeps("run-fw", map[string]int{
+		"fan": 0, "wait": 1, "summarize": 1,
+	}, []string{"fan", "wait", "summarize"})); err != nil {
+		t.Fatalf("InitRunDeps: %v", err)
+	}
+
+	if _, err := q.Enqueue(fan); err != nil {
+		t.Fatalf("enqueue fan: %v", err)
+	}
+	// Run the foreach: it fans out three wait#i jobs.
+	fjob, err := q.ClaimOne("worker-1")
+	if err != nil || fjob == nil {
+		t.Fatalf("claim fan: %v", err)
+	}
+	if err := w.handle(context.Background(), fjob); err != nil {
+		t.Fatalf("handle fan: %v", err)
+	}
+
+	// Each body iteration parks its own continuation. All three are parked at
+	// once; the old one-per-run key would have overwritten the earlier ones.
+	for i := 0; i < 3; i++ {
+		job, err := q.ClaimOne("worker-1")
+		if err != nil || job == nil {
+			t.Fatalf("claim wait body %d: %v", i, err)
+		}
+		if err := w.handle(context.Background(), job); err != nil {
+			t.Fatalf("handle wait body %d: %v", i, err)
+		}
+	}
+
+	if st, _ := store.RunStatus("run-fw"); st != honker.RunWaiting {
+		t.Fatalf("status = %q, want waiting", st)
+	}
+	// All three continuations exist and are distinct.
+	for i := 0; i < 3; i++ {
+		id := fmt.Sprintf("wait#%d", i)
+		cont, err := store.GetContinuation("run-fw", id)
+		if err != nil || cont == nil {
+			t.Fatalf("continuation %s: %v", id, err)
+		}
+		if cont.SignalName != fmt.Sprintf("approve.%s", []string{"a", "b", "c"}[i]) {
+			t.Fatalf("continuation %s signal = %q", id, cont.SignalName)
+		}
+	}
+
+	// Resume each wait by its own signal, in an order other than park order.
+	order := []struct{ signal, payload string }{
+		{"approve.b", "yes-b"},
+		{"approve.c", "yes-c"},
+		{"approve.a", "yes-a"},
+	}
+	for _, o := range order {
+		if err := ResumeBySignal(store, q, o.signal, o.payload); err != nil {
+			t.Fatalf("ResumeBySignal(%s): %v", o.signal, err)
+		}
+	}
+
+	// After the last wait resumes, the run is running again and the rejoin job
+	// is enqueued; run it to completion.
+	if st, _ := store.RunStatus("run-fw"); st != honker.RunRunning {
+		t.Fatalf("status = %q, want running", st)
+	}
+	rj, err := q.ClaimOne("worker-1")
+	if err != nil || rj == nil {
+		t.Fatalf("rejoin not enqueued: %v", err)
+	}
+	if err := w.handle(context.Background(), rj); err != nil {
+		t.Fatalf("handle rejoin: %v", err)
+	}
+	if st, _ := store.RunStatus("run-fw"); st != honker.RunCompleted {
+		t.Fatalf("status = %q, want completed", st)
+	}
+
+	// The rejoin collected all three wait results, in input order.
+	res := claimResultJSON(t, store, "run-fw", "summarize")
+	arr, ok := res.([]any)
+	if !ok {
+		t.Fatalf("summarize result = %#v, want array", res)
+	}
+	if len(arr) != 3 {
+		t.Fatalf("collected array len = %d, want 3", len(arr))
+	}
+	wantPayloads := []string{"yes-a", "yes-b", "yes-c"}
+	for i, v := range arr {
+		m, _ := v.(map[string]any)
+		if m["source"] != "signal" {
+			t.Fatalf("collected[%d] source = %v, want signal", i, m["source"])
+		}
+		if m["payload"] != wantPayloads[i] {
+			t.Fatalf("collected[%d] payload = %v, want %s (in input order)", i, m["payload"], wantPayloads[i])
+		}
 	}
 }
 

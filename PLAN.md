@@ -181,14 +181,14 @@ mechanism (ADR-0043). Unblocks the Phase 13 resume-from-failure modes, which
 reuse the DAG-shaped continuation.
 
 - [x] **Suspend/resume machinery** (ADR-0040): park a run in one transaction (a `suspended_continuations` row holding the parked node's downstream sub-DAG and the current `run_deps` state, the new `waiting` run status, ack the wait job's claim); the run-completion guard becomes `pending == 0 && status != waiting`; resume re-enqueues the continuation frontier (pending +1), flips status to `running`, deletes the row. The continuation is DAG-shaped so a `wait` can sit before a fan-in (multiple dependents) or have a fan-out after it.
-  - [ ] **Wait inside a `foreach` body (multiple concurrent parks per run).** The continuation is keyed one-per-run, so a run can park only one wait at a time. A wait inside a `foreach` body where several iterations park simultaneously is not supported (a second park would overwrite the first's continuation). Needs a per-wait-instance continuation key if ever required; deferred. A wait before a fan-in or with a fan-out after it is supported.
+  - [x] **Wait inside a `foreach` body (multiple concurrent parks per run).** The continuation is keyed per wait instance `(run_id, node_id)`, where `node_id` is the wait's effective id (`<body>#<i>` for a foreach iteration), so a run can park one continuation per wait at a time. A wait inside a `foreach` body where several iterations park simultaneously is supported: each parks its own row, a signal or timer resumes only its own wait, and the run stays `waiting` (the `pending == 0 && status != waiting` guard holds) until the last parked wait resumes, which flips it back to `running` for the rejoin to collect all the results in input order. The timer resume job carries the wait's `node_id` so a multi-parked run resumes the right wait. A wait before a fan-in or with a fan-out after it is supported.
 - [x] **`wait` node type** (ADR-0041): register the flow node with optional `timer` and `signal`; resolve on whichever fires first; the `{source, payload}` result shape; reject a node with neither source; thread the result forward into downstream `{event, steps}` input.
 - [x] **Timer mechanism** (ADR-0043): a `RunAt`-carrying `Tx.Enqueue` variant; `timer.after` (duration) and `timer.at` (absolute time) resolved to a `RunAt` at park time. The timer job is not explicitly dropped when a signal resolves first; a stale timer fire is a no-op through the repeat-resume guard, which makes timer and signal mutually exclusive by construction.
 - [x] **Named signals** (ADR-0042): resolve the `signal` JSONata expression at park time; a `send-signal` node for one workflow to wake another; `servitor resume <signal-name> [payload]`; buffer a signal that arrives before the park and consume it in the park transaction; a repeat resume is a no-op (atomic compare-and-set on `waiting`); a signal addressing more than one parked run is rejected as ambiguous.
 - [x] **Inspection and control surface**: `waiting` shown in `servitor runs` / `servitor run <id>`; `servitor cancel` drops parked continuations.
 - [x] **Tests**: parking/resume atomicity, the `pending == 0 && status != waiting` guard, first-wins on timer vs signal, buffered pre-park signal, no-op on repeat resume, ambiguous-signal rejection, `send-signal` waking a parked run, the full daemon resume path, and a `wait` with neither source failing validation.
   - [x] Timer `RunAt` durability across a store reopen.
-  - [ ] Park inside a `foreach` body (blocked on the continuation-keying deferral above).
+  - [x] Park inside a `foreach` body (a wait in a fanned body parks per iteration and collects at the rejoin; `TestForeachBodyWaitParksConcurrentlyAndCollects`).
 
 **Done when:** a `wait` node parks a run and resumes it on a timer or a named signal, the `waiting` status is visible and cancellable, the named signal is authorable and unambiguous, and the Phase 13 resume-from-failure `continue` mode can be built on the same continuation.
 
@@ -229,11 +229,6 @@ left to edit.
 - [x] **Deletion proof.** A test asserts a capability is present only when its
   package is imported, so deleting a package removes the capability with no
   dangling references (ADR-0045 confirmation).
-- [ ] **Future mechanisms follow the layout.** New helpers (grist, slack,
-  github, email send) and future mechanisms are added as packages under their
-  group, not appended to the central registry list. This supersedes the
-  "Curated integration helpers" list in Outstanding work, which is where they
-  are tracked today.
 
 ## Phase 16: Shared components home
 

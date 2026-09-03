@@ -416,12 +416,14 @@ var schemaStmts = []string{
 		PRIMARY KEY (run_id, node_id)
 	)`,
 	`CREATE TABLE IF NOT EXISTS suspended_continuations (
-		run_id       TEXT PRIMARY KEY,
+		run_id       TEXT NOT NULL,
+		node_id      TEXT NOT NULL,
 		workflow_id  TEXT NOT NULL,
 		signal_name  TEXT,
 		run_at       INTEGER,
 		payload      TEXT NOT NULL,
-		created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+		created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+		PRIMARY KEY (run_id, node_id)
 	)`,
 	`CREATE TABLE IF NOT EXISTS buffered_signals (
 		id          INTEGER PRIMARY KEY AUTOINCREMENT,

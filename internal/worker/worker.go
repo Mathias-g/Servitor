@@ -291,11 +291,13 @@ func (w *Worker) handle(ctx context.Context, claimed *honker.Job) error {
 		return fmt.Errorf("worker: decode job %d: %w", claimed.ID, err)
 	}
 
-	// A one-shot timer firing resumes a parked run (ADR-0043). It is handled
+	// A one-shot timer firing resumes a parked wait (ADR-0043). It is handled
 	// before the cancelled check because the run is `waiting`, not `running`,
-	// when the timer fires. It is a no-op if the run was already resumed.
+	// when the timer fires. It is a no-op if the wait was already resumed. The
+	// job carries the wait's NodeID so the right wait of a multi-parked run is
+	// resumed.
 	if sj.NodeType == "resume" {
-		_ = resumeRun(w.store, w.queue, sj.RunID, "timer", nil)
+		_ = resumeInstance(w.store, w.queue, sj.RunID, sj.NodeID, "timer", nil)
 		_, _ = claimed.Ack()
 		return nil
 	}

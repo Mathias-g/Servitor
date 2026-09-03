@@ -100,6 +100,7 @@ func (w *Worker) handleWait(ctx context.Context, sj NodeJob, claimed *honker.Job
 		}
 		if err := tx.WriteContinuation(honker.Continuation{
 			RunID:      sj.RunID,
+			NodeID:     sj.NodeID,
 			WorkflowID: sj.WorkflowID,
 			SignalName: signalName,
 			RunAt:      runAt,
@@ -119,8 +120,10 @@ func (w *Worker) handleWait(ctx context.Context, sj NodeJob, claimed *honker.Job
 			}
 		}
 		if runAt != 0 {
-			// One-shot timer resume job, claimable at runAt (ADR-0043).
-			if err := tx.EnqueueAt(w.queue, NodeJob{NodeType: "resume", RunID: sj.RunID}, runAt); err != nil {
+			// One-shot timer resume job, claimable at runAt (ADR-0043). It
+			// carries the wait's NodeID so a run parked at several waits can
+			// resume the right one when its timer fires.
+			if err := tx.EnqueueAt(w.queue, NodeJob{NodeType: "resume", RunID: sj.RunID, NodeID: sj.NodeID}, runAt); err != nil {
 				return err
 			}
 		}
@@ -320,42 +323,45 @@ func (w *Worker) handleRerunFailed(ctx context.Context, sj NodeJob, claimed *hon
 	return w.checkRunComplete(ctx, sj)
 }
 
-// ResumeBySignal delivers a named signal to the parked run parked on that name
-// (ADR-0042). If exactly one run is parked on the name it resumes that run with
-// the payload; if none, it buffers the signal so a later `wait` park consumes
-// it; if more than one, it rejects the signal as ambiguous (an authoring bug).
+// ResumeBySignal delivers a named signal to the parked wait parked on that name
+// (ADR-0042). If exactly one wait is parked on the name it resumes that wait
+// with the payload; if none, it buffers the signal so a later `wait` park
+// consumes it; if more than one, it rejects the signal as ambiguous (an
+// authoring bug).
 func ResumeBySignal(store *honker.Store, queue *honker.Queue, name string, payload any) error {
-	runs, err := store.ParkedRunsForSignal(name)
+	instances, err := store.ParkedInstancesForSignal(name)
 	if err != nil {
 		return err
 	}
-	switch len(runs) {
+	switch len(instances) {
 	case 0:
 		return store.BufferSignal(name, payload)
 	case 1:
-		return resumeRun(store, queue, runs[0], "signal", payload)
+		return resumeInstance(store, queue, instances[0].RunID, instances[0].NodeID, "signal", payload)
 	default:
-		return fmt.Errorf("signal %q is ambiguous: %d runs are parked on it", name, len(runs))
+		return fmt.Errorf("signal %q is ambiguous: %d waits are parked on it", name, len(instances))
 	}
 }
 
-// resumeRun resumes a parked run with the given result source and payload
-// (ADR-0040, ADR-0042). It is a no-op if the run is not parked (status not
-// `waiting`, or no continuation), which is what makes a repeated resume safe
-// and what makes a stale timer fire harmless. It completes the wait node with
-// `{source, payload}` inside one transaction.
-func resumeRun(store *honker.Store, queue *honker.Queue, runID, source string, payload any) error {
+// resumeInstance resumes one parked wait with the given result source and
+// payload (ADR-0040, ADR-0042). It is a no-op if the wait is not parked (status
+// not `waiting`, or no continuation for that wait), which is what makes a
+// repeated resume safe and what makes a stale timer fire harmless. It completes
+// the wait node with `{source, payload}` inside one transaction. If other waits
+// in the same run are still parked, the run stays `waiting`; the last wait's
+// resume flips the run back to `running`.
+func resumeInstance(store *honker.Store, queue *honker.Queue, runID, nodeID, source string, payload any) error {
 	st, err := store.RunStatus(runID)
 	if err != nil || st != honker.RunWaiting {
 		return nil
 	}
-	cont, err := store.GetContinuation(runID)
+	cont, err := store.GetContinuation(runID, nodeID)
 	if err != nil || cont == nil {
 		return nil
 	}
 	var wc waitContinuation
 	if err := json.Unmarshal(cont.Payload, &wc); err != nil {
-		return fmt.Errorf("worker: resume %s: decode continuation: %w", runID, err)
+		return fmt.Errorf("worker: resume %s/%s: decode continuation: %w", runID, nodeID, err)
 	}
 	result := map[string]any{"source": source, "payload": payload}
 	return store.WithTx(func(tx *honker.Tx) error {
@@ -369,10 +375,21 @@ func resumeRun(store *honker.Store, queue *honker.Queue, runID, source string, p
 		if err := tx.AdjustPending(runID, n); err != nil {
 			return err
 		}
-		if err := tx.SetRunStatusTx(runID, honker.RunRunning); err != nil {
+		if err := tx.DeleteContinuation(runID, nodeID); err != nil {
 			return err
 		}
-		return tx.DeleteContinuation(runID)
+		remaining, err := tx.ContinuationCount(runID)
+		if err != nil {
+			return err
+		}
+		// Stay waiting while other waits in the run are still parked; only the
+		// last resume flips the run back to running so it can complete.
+		if remaining == 0 {
+			if err := tx.SetRunStatusTx(runID, honker.RunRunning); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 

@@ -615,7 +615,7 @@ run's DAG branches and loops.
     time to the effective signal name (for example
     `approval_gate.${event.order_id}`), so distinct work yields distinct names
     and the sender needs only the business key, never the run id. A signal
-    addressing more than one parked run is rejected as ambiguous. A literal
+    addressing more than one parked wait is rejected as ambiguous. A literal
     `signal` name (for example `approval_gate`) is legal and means "any run
     parked on this name". Senders are
     another workflow's `send-signal` node, `servitor resume <signal-name>
@@ -786,14 +786,16 @@ Operational and security invariants that are easy to miss or re-litigate.
   evaluated.** The language is JSONata (ADR-0020). When it is evaluated (now, at
   node execution, alongside `transform`) is a separate decision (ADR-0021).
   Do not conflate them when revisiting either.
-- **A run can park only one `wait` at a time.** The continuation is keyed by
-  run id, so a second `wait` in the same run overwrites the first
-  (ADR-0040). Sequential waits (a linear chain, a wait before a fan-in, a wait
-  with a fan-out after it) are fine, since only one is active at a time. A
-  `wait` inside a `foreach` body, where several iterations park at once, is not
-  supported: only the last park would survive. Express "wait for all N" as N
-  separate runs chained by a `completed` trigger instead. See IDEAS.md
-  "Multiple concurrent parks per run".
+- **A run can park many `wait`s at once, keyed per wait instance.** The
+  continuation is keyed by `(run_id, node_id)`, where `node_id` is the wait
+  node's effective identifier (for example `wait#0` for a `foreach` iteration),
+  so several waits in the same run can park simultaneously without overwriting
+  one another (ADR-0040). A `wait` inside a `foreach` body is supported: each
+  iteration parks its own continuation, a signal or timer resumes only its own
+  wait, and the run stays `waiting` until the last parked wait resumes (the
+  `pending == 0 && status != waiting` guard holds), after which the rejoin
+  collects all the wait results in input order. A signal still names at most
+  one parked wait: one that addresses more than one is rejected as ambiguous.
 
 ---
 
@@ -814,7 +816,7 @@ Early development. The daemon lifecycle, loopback control protocol, Wafer model 
 
 - Worker concurrency limits; runs execute as a dependency DAG with fan-out (ADR-0023), but branches run sequentially rather than in parallel.
 
-**Suspended waits: built.** The durable `wait` flow node (ADR-0040 through ADR-0043) parks a run and resumes it later via a timer (Honker queue `RunAt`, `timer.after` / `timer.at`) or a named signal (an author-defined JSONata `signal` name; senders are a `send-signal` node, `servitor resume <signal-name>`, or a webhook-triggered broker workflow). The run parks as `waiting`, shows in `servitor runs` / `servitor run <id>`, and `servitor cancel` drops the parked continuation. Race rules are pinned: a signal that arrives before the park is buffered, a repeat resume is a no-op, and a signal naming more than one parked run is rejected as ambiguous. A wait inside a `foreach` body (several iterations parking at once) is not supported yet; the continuation is one-per-run.
+**Suspended waits: built.** The durable `wait` flow node (ADR-0040 through ADR-0043) parks a run and resumes it later via a timer (Honker queue `RunAt`, `timer.after` / `timer.at`) or a named signal (an author-defined JSONata `signal` name; senders are a `send-signal` node, `servitor resume <signal-name>`, or a webhook-triggered broker workflow). The run parks as `waiting`, shows in `servitor runs` / `servitor run <id>`, and `servitor cancel` drops the parked continuations. Race rules are pinned: a signal that arrives before the park is buffered, a repeat resume is a no-op, and a signal naming more than one parked wait is rejected as ambiguous. A wait inside a `foreach` body is supported: each iteration parks its own continuation, the run stays `waiting` until the last one resumes, and the rejoin collects all the wait results in input order.
 
 **Rerun: built.** A dead-lettered node saves its self-contained job as a failed continuation and the run is marked failed (ADR-0044). `servitor rerun <run-id> [--mode ...]` re-runs it (`continue` from the failed node, `restart` from the top, `discard` to drop it), and a `rerun-failed` node lets one workflow re-run another (defaulting to `event.from_run`). A per-Wafer `on_failure` field sets the default mode. Rerun is general, applying to any failed run regardless of cause. The global-config layer for the mode is deferred until a servitor config file exists.
 
