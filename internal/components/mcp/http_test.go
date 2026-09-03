@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 )
 
@@ -108,39 +107,5 @@ func TestHTTPCallUnknownModeProbes(t *testing.T) {
 	}
 	if res.Content != "found it" {
 		t.Fatalf("content = %q, want found it", res.Content)
-	}
-}
-
-func TestResolveHeaders(t *testing.T) {
-	env := []string{"SEARCH_TOKEN=abc", "PATH=/usr/bin"}
-	res, err := ResolveHeaders(map[string]string{
-		"Authorization": "Bearer $SEARCH_TOKEN",
-		"X-Static":      "value",
-	}, env)
-	if err != nil {
-		t.Fatalf("ResolveHeaders: %v", err)
-	}
-	if res["Authorization"] != "Bearer abc" {
-		t.Fatalf("Authorization = %q, want Bearer abc", res["Authorization"])
-	}
-	if res["X-Static"] != "value" {
-		t.Fatalf("X-Static = %q, want value", res["X-Static"])
-	}
-}
-
-func TestResolveHeadersMissingSecretFails(t *testing.T) {
-	_, err := ResolveHeaders(map[string]string{"Authorization": "Bearer $NOPE"}, []string{"OTHER=x"})
-	if err == nil || !strings.Contains(err.Error(), "NOPE") {
-		t.Fatalf("ResolveHeaders error = %v, want a missing-secret error", err)
-	}
-}
-
-func TestReferencedSecrets(t *testing.T) {
-	names := ReferencedSecrets(map[string]string{
-		"Authorization": "Bearer $SEARCH_TOKEN",
-		"X":             "$OTHER",
-	})
-	if len(names) != 2 || names[0] != "SEARCH_TOKEN" || names[1] != "OTHER" {
-		t.Fatalf("names = %v, want [SEARCH_TOKEN OTHER]", names)
 	}
 }

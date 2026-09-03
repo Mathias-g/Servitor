@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -14,6 +16,7 @@ import (
 	"github.com/Mathias-g/Servitor/internal/capabilities"
 	"github.com/Mathias-g/Servitor/internal/components/expression"
 	"github.com/Mathias-g/Servitor/internal/components/mcp"
+	"github.com/Mathias-g/Servitor/internal/components/refs"
 	"github.com/Mathias-g/Servitor/internal/components/secret"
 	"github.com/Mathias-g/Servitor/internal/config"
 	"github.com/Mathias-g/Servitor/internal/daemon"
@@ -112,6 +115,14 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		// resolves `$SECRET` header references from its own filtered env, and
 		// writes the structured tool result to stdout (ADR-0047).
 		return cmdMCPHTTP(args[1:], stdout, stderr)
+	case "__http":
+		// Hidden subprocess entrypoint: the worker runs an `http` node as a
+		// subprocess (ADR-0008) that makes the HTTP request. It reads the
+		// request config (url, method, headers, body, timeout) from its single
+		// argument (JSON), the `{event, steps}` input on stdin, resolves
+		// `$SECRET` header references from its own filtered env, and writes the
+		// structured response to stdout.
+		return cmdHTTPNode(args[1:], stdout, stderr)
 	}
 
 	// The remaining commands are daemon operations scheduled for later phases.
@@ -796,7 +807,7 @@ func cmdMCPHTTP(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "servitor: __mcp_http: input is not valid JSON: %v\n", err)
 		return exitFailure
 	}
-	headers, err := mcp.ResolveHeaders(payload.Headers, os.Environ())
+	headers, err := refs.ResolveHeaders(payload.Headers, os.Environ())
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "servitor: __mcp_http: %v\n", err)
 		return exitFailure
@@ -817,6 +828,105 @@ func cmdMCPHTTP(args []string, stdout, stderr io.Writer) int {
 		return exitFailure
 	}
 	return exitOK
+}
+
+// cmdHTTPNode is the hidden subprocess entrypoint for an `http` node (ADR-0048).
+// It reads the request config (url, method, headers, body, timeout) as a single
+// JSON argument, resolves `$SECRET` header references against its own filtered
+// env, makes the request, and writes the structured response to stdout. The
+// worker runs this as a subprocess (ADR-0008) so the HTTP client and the
+// secret-bearing request headers never enter the runner's process. The
+// `{event, steps}` input the worker passes on stdin is ignored: an http node's
+// request is fully described by its config.
+func cmdHTTPNode(args []string, stdout, stderr io.Writer) int {
+	if len(args) != 1 {
+		_, _ = fmt.Fprintf(stderr, "servitor: __http: usage: __http <config-json>\n")
+		return exitUsage
+	}
+	var cfg struct {
+		URL     string            `json:"url"`
+		Method  string            `json:"method"`
+		Headers map[string]string `json:"headers"`
+		Body    any               `json:"body"`
+		Timeout int               `json:"timeout"`
+	}
+	if err := json.Unmarshal([]byte(args[0]), &cfg); err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: __http: config is not valid JSON: %v\n", err)
+		return exitFailure
+	}
+	if cfg.URL == "" || cfg.Method == "" {
+		_, _ = fmt.Fprintf(stderr, "servitor: __http: url and method are required\n")
+		return exitFailure
+	}
+	headers, err := refs.ResolveHeaders(cfg.Headers, os.Environ())
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: __http: %v\n", err)
+		return exitFailure
+	}
+
+	var body io.Reader
+	if cfg.Body != nil {
+		raw, merr := json.Marshal(cfg.Body)
+		if merr != nil {
+			_, _ = fmt.Fprintf(stderr, "servitor: __http: encode body: %v\n", merr)
+			return exitFailure
+		}
+		body = bytes.NewReader(raw)
+		headers = cloneHeaders(headers)
+		if _, ok := headers["Content-Type"]; !ok {
+			headers["Content-Type"] = "application/json"
+		}
+	}
+
+	timeout := time.Duration(cfg.Timeout) * time.Second
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	client := &http.Client{Timeout: timeout}
+	req, err := http.NewRequest(cfg.Method, cfg.URL, body)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: __http: %v\n", err)
+		return exitFailure
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: __http: %v\n", err)
+		return exitFailure
+	}
+	defer func() { _ = resp.Body.Close() }()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: __http: read response: %v\n", err)
+		return exitFailure
+	}
+
+	result := map[string]any{
+		"ok":         resp.StatusCode >= 200 && resp.StatusCode < 300,
+		"status":     resp.StatusCode,
+		"statusText": http.StatusText(resp.StatusCode),
+		"headers":    resp.Header,
+		"body":       string(respBody),
+	}
+	enc := json.NewEncoder(stdout)
+	if err := enc.Encode(result); err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: __http: encode result: %v\n", err)
+		return exitFailure
+	}
+	return exitOK
+}
+
+// cloneHeaders returns a copy of headers so mutating it (adding a default
+// Content-Type) never mutates the caller's map.
+func cloneHeaders(headers map[string]string) map[string]string {
+	out := make(map[string]string, len(headers))
+	for k, v := range headers {
+		out[k] = v
+	}
+	return out
 }
 
 // cmdEmailPoll is the hidden subprocess entrypoint for an `email_received`

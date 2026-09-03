@@ -137,6 +137,13 @@ func TestCommandForDispatchesThroughRegistry(t *testing.T) {
 	if err != nil || len(cmd) != 1 || cmd[0] != "atomic-server" {
 		t.Fatalf("mcp-stdio spawn = %v, %v; want [atomic-server]", cmd, err)
 	}
+	// The http node is a plain subprocess: it re-invokes the servitor binary's
+	// hidden __http command with the request config as a JSON argument, so the
+	// worker's generic plain path runs it with no node-specific case (ADR-0048).
+	cmd, err = registry.CommandFor("http", map[string]any{"url": "https://x", "method": "GET"})
+	if err != nil || len(cmd) != 3 || cmd[0] == "" || cmd[1] != "__http" {
+		t.Fatalf("http spawn = %v, %v; want [exe __http <config>]", cmd, err)
+	}
 	// A control node has no plain subprocess: nil, nil.
 	if cmd, err := registry.CommandFor("wait", map[string]any{}); err != nil || cmd != nil {
 		t.Fatalf("wait spawn = %v, %v; want nil, nil", cmd, err)

@@ -527,7 +527,7 @@ the run's DAG and run as subprocesses (ADR-0008).
 Action nodes do work: they call an external service, execute a command, or
 compute over the run's data.
 
-- `http`. Make an HTTP request, capture response.
+- `http`. Make an HTTP request, capture response. Fields: `url` (required), `method` (required), `headers` (a map whose values may reference a declared secret as `$NAME`, resolved per use from the node's `secrets:` list), `body`, and `timeout` (seconds). It runs as a subprocess of the servitor binary's hidden `__http` command (ADR-0008): the worker spawns `[servitor __http <config>]` with the node's filtered secret env, so the HTTP client and the secret-bearing request headers never enter the runner's process. The result is `{ok, status, statusText, headers, body}`.
 - `shell`. Execute a command.
 - `transform`. Reshape, extract, or compute over previous nodes' JSON output, returning new JSON. Its `expression` field is JSONata (ADR-0020), evaluated against the node's `{event, steps}` input (ADR-0021). It runs as a subprocess of the servitor binary's hidden `__transform` command (ADR-0008).
 - `singer-tap`. Run a Singer tap with config, capture records and state.

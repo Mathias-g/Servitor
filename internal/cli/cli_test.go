@@ -2,6 +2,9 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -363,5 +366,102 @@ func TestEmailPollMissingSecretFails(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "not resolved") {
 		t.Fatalf("__email_poll stderr %q should mention the missing secret", errOut.String())
+	}
+}
+
+func TestHTTPNodeSubprocess(t *testing.T) {
+	// The __http subprocess makes the request with a secret-referenced header
+	// resolved from its env, and reports status/body as the node result.
+	var gotAuth string
+	var gotMethod string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotMethod = r.Method
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"hi":"there"}`))
+	}))
+	defer srv.Close()
+
+	cfg, err := json.Marshal(map[string]any{
+		"url":     srv.URL + "/things",
+		"method":  "POST",
+		"headers": map[string]any{"Authorization": "Bearer $API_TOKEN"},
+		"body":    map[string]any{"q": "x"},
+	})
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+
+	oldStdin := os.Stdin
+	t.Cleanup(func() { os.Stdin = oldStdin })
+	f, err := os.CreateTemp(t.TempDir(), "stdin-*.json")
+	if err != nil {
+		t.Fatalf("create stdin: %v", err)
+	}
+	if _, err := f.WriteString(`{}`); err != nil {
+		t.Fatalf("write stdin: %v", err)
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		t.Fatalf("seek: %v", err)
+	}
+	os.Stdin = f
+
+	t.Setenv("API_TOKEN", "secret123")
+	var out, errOut bytes.Buffer
+	if code := Run([]string{"__http", string(cfg)}, &out, &errOut); code != exitOK {
+		t.Fatalf("__http exit %d, want %d (stderr: %s)", code, exitOK, errOut.String())
+	}
+	if gotAuth != "Bearer secret123" {
+		t.Fatalf("Authorization = %q, want Bearer secret123", gotAuth)
+	}
+	if gotMethod != "POST" {
+		t.Fatalf("method = %q, want POST", gotMethod)
+	}
+	var res map[string]any
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
+		t.Fatalf("result not JSON: %v", err)
+	}
+	if res["ok"] != true || res["status"] != float64(200) {
+		t.Fatalf("result = %v, want ok 200", res)
+	}
+	if !strings.Contains(res["body"].(string), "hi") {
+		t.Fatalf("body = %q, want to contain hi", res["body"])
+	}
+}
+
+func TestHTTPNodeSubprocessMissingSecret(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cfg, err := json.Marshal(map[string]any{
+		"url":     srv.URL,
+		"method":  "GET",
+		"headers": map[string]any{"Authorization": "Bearer $NOPE"},
+	})
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	oldStdin := os.Stdin
+	t.Cleanup(func() { os.Stdin = oldStdin })
+	f, err := os.CreateTemp(t.TempDir(), "stdin-*.json")
+	if err != nil {
+		t.Fatalf("create stdin: %v", err)
+	}
+	if _, err := f.WriteString(`{}`); err != nil {
+		t.Fatalf("write stdin: %v", err)
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		t.Fatalf("seek: %v", err)
+	}
+	os.Stdin = f
+
+	var out, errOut bytes.Buffer
+	if code := Run([]string{"__http", string(cfg)}, &out, &errOut); code != exitFailure {
+		t.Fatalf("__http exit %d, want %d", code, exitFailure)
+	}
+	if !strings.Contains(errOut.String(), "NOPE") {
+		t.Fatalf("__http stderr %q should mention the missing secret", errOut.String())
 	}
 }

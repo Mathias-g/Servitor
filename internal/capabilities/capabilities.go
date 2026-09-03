@@ -18,6 +18,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/Mathias-g/Servitor/internal/components/mcp"
+	"github.com/Mathias-g/Servitor/internal/components/refs"
 	"github.com/Mathias-g/Servitor/internal/components/secret"
 	"github.com/Mathias-g/Servitor/internal/components/singer"
 	"github.com/Mathias-g/Servitor/internal/config"
@@ -197,7 +198,7 @@ func writeServers(dir string, resolver *secret.Resolver) error {
 // resolved; the probe then cannot authenticate.
 func resolveConnector(name string, s *config.Server, resolver *secret.Resolver) (mcp.HTTPConnector, bool) {
 	conn := mcp.HTTPConnector{URL: s.URL, Headers: s.Headers}
-	names := mcp.ReferencedSecrets(s.Headers)
+	names := refs.ReferencedSecrets(s.Headers)
 	if len(names) == 0 {
 		return conn, true
 	}
@@ -212,7 +213,7 @@ func resolveConnector(name string, s *config.Server, resolver *secret.Resolver) 
 	for k, v := range values {
 		env = append(env, k+"="+v)
 	}
-	resolved, err := mcp.ResolveHeaders(s.Headers, env)
+	resolved, err := refs.ResolveHeaders(s.Headers, env)
 	if err != nil {
 		return conn, false
 	}

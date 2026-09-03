@@ -2,7 +2,8 @@
 // engine compose (ADR-0046). Each subpackage is one reusable, mechanism-agnostic
 // piece: subprocess isolation (exec), expression evaluation (expression), the
 // record-streaming protocol (singer), the MCP client (mcp), the secret provider
-// + resolver (secret), and the running-binary path (selfexe).
+// + resolver (secret), the running-binary path (selfexe), and `$SECRET`
+// reference substitution (refs).
 //
 // # What belongs here, and what does not
 //

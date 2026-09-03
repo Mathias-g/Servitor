@@ -372,7 +372,7 @@ Closes two gaps in the "every step runs as a subprocess" model (ADR-0008): the
 flow nodes evaluate their JSONata expressions in the worker's process instead
 of in a subprocess.
 
-- [ ] **`http` node executor.** The `http` action node is registered with its
+- [x] **`http` node executor.** The `http` action node is registered with its
   schema (so it validates and appears in `capabilities`) but has no `Spawn`
   and no executor: running one falls through the worker's plain path and fails
   with `node type "http" has no command to run`. Build the executor following
@@ -381,7 +381,10 @@ of in a subprocess.
   and `{event, steps}` input, makes the request with `net/http` against the
   filtered secret env, and writes the structured response (status, headers,
   body) to stdout as the node's result. The capability gains a `Spawn`; the
-  worker's plain path runs it with no change.
+  worker's plain path runs it with no change. The `headers` values may
+  reference a declared secret as `$NAME`, resolved per use from the node's
+  filtered env via the shared `refs` component (the same substitution mcp-http
+  uses). The result is `{ok, status, statusText, headers, body}`.
 - [ ] **Flow-node expression evaluation moves to a subprocess.** `wait`
   (its `signal` name), `send-signal` (its `signal` name and `payload`), and
   `rerun-failed` (its `run_id`) evaluate their JSONata expressions in the
