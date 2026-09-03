@@ -33,18 +33,19 @@ a subprocess with a filtered environment, and each node's completion commits
 its result, dedupe record, downstream enqueues, and claim ack as one
 transaction (for Singer taps the bookmark is part of that same commit).
 
-- **Node types.** `shell`, `http` (outbound request), `transform` (JSONata),
-  and the flow nodes `switch` (route to one branch), `foreach` (fan a body out
+- **Action nodes.** `shell`, `http` (outbound request), `transform` (JSONata),
+  `singer-tap` and `singer-target` (record streaming with bookmark state and
+  schema discovery), and `mcp-stdio` and `mcp-http` (tool invocation over
+  stdio / Streamable HTTP).
+- **Flow nodes.** `switch` (route to one branch), `foreach` (fan a body out
   over a list, collect at a rejoin), `wait` (park the run and resume on a timer
   or a named signal, including a `wait` inside a `foreach` body), `send-signal`
   (wake a parked run in another workflow), and `rerun-failed` (re-run a failed
   run).
-- **Integrations.** `singer-tap` and `singer-target` (with bookmark state and
-  schema discovery), `mcp-stdio` and `mcp-http`, and the `email_received`
-  trigger (Gmail polling).
-- **Triggers.** `manual`, `cron`, `completed`, `failed`, and inbound webhooks
-  via the `hmac-webhook` and `standard-webhook` mechanisms, with receivers
-  declared in `servitor.config.yaml` and delivering the raw body.
+- **Triggers.** `manual`, `cron`, `completed`, `failed`, `email_received`
+  (Gmail polling), and inbound webhooks via the `hmac-webhook` and
+  `standard-webhook` mechanisms, with receivers declared in `servitor.config.yaml`
+  and delivering the raw body.
 - **Secrets.** Per-node, per-subprocess delivery through pluggable providers
   (`env`, `varlock`, `onbox`), a declared-secrets config with the `servitor
   secret` CLI, and secret invalidity/rotation semantics (missing fails fast,
