@@ -458,7 +458,7 @@ The connectors and secrets are declared in a local `servitor.config.yaml` (ADR-0
 - `standard-webhook`. Inbound HTTP receiver that verifies the Standard Webhooks
   envelope (a versioned, timestamped signature with a replay window) and
   delivers the body to the run (ADR-0049).
-- `email_received`. Inbound email parsed into a structured payload. Its `host`, `username`, and `secret` (a declared secret name) name the mailbox, and its `poll` schedule (default every 5 minutes) polls it for new mail, firing one run per new email. Built for Google Workspace via IMAP (app password); other providers are future helpers.
+- `email_received`. Inbound email parsed into a structured payload. Its `host`, `username`, and `secret` (a declared secret name) name the mailbox, and its `poll` schedule (default every 5 minutes) polls it for new mail, firing one run per new email. It authenticates over IMAP (Google Workspace app password).
 - `cron`. Honker scheduler.
 - `manual`. Invoked via CLI.
 - `completed`. Fired by another workflow's completion. Its `workflow` field names the workflow whose completion fires it; the run's event is `{trigger: "completed", from: <workflow name>, from_run: <completed run id>}`.
@@ -498,8 +498,8 @@ is rejected at submit. A webhook trigger whose path has no declared receiver is
 allowed: it matches nothing, and `webhook/receivers.yaml` shows the declared
 receivers so the author sees what is available.
 
-Both `hmac-webhook` and `standard-webhook` receivers are built and verify
-signatures. A receiver declared with an unknown `scheme` is rejected at load.
+Both `hmac-webhook` and `standard-webhook` receivers verify signatures, and a
+receiver declared with an unknown `scheme` is rejected at load.
 
 #### Using email triggers
 
@@ -659,7 +659,8 @@ Initial set (subject to your stack's priorities):
 - `grist`. Read, write, list, query.
 - `slack`. Post messages, read events.
 - `github`. Issues, PRs, releases.
-- `email`. Send, parse incoming.
+- `email`. Send (an SMTP node). The receive side is the `email_received`
+  trigger (SPEC: Using email triggers).
 
 (Atomic is reached via the `mcp-http` node type against its Streamable HTTP
 MCP endpoint, rather than a hand-written helper, since it is low-frequency
