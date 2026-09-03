@@ -760,11 +760,49 @@ func TestMCPNodeDispatchesAndMapsError(t *testing.T) {
 	}
 }
 
-func TestMCPHTTPNodeFailsCleanlyUntilBuilt(t *testing.T) {
-	// mcp-http is registered (so it validates and appears in capabilities) but
-	// its Streamable HTTP executor is not yet built. Running one must fail with
-	// a clear "not yet built" error, not be misread as a control node with no
-	// command (ADR-0047, PLAN Phase 17).
+func TestMCPHTTPNodeDispatchesAndMapsResult(t *testing.T) {
+	// An mcp-http node looks up its connector's URL and runs the hidden
+	// __mcp_http subprocess (stubbed here) against it. The subprocess result is
+	// mapped like mcp-stdio, including the isError -> structured error path
+	// (ADR-0047).
+	ext := extPath(t)
+	store, err := honker.Open(filepath.Join(t.TempDir(), "test.db"), ext)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	q := store.Queue("nodes", 30, 3)
+	w := New(store, q, "worker-1", Config{
+		Runner: stubRunner{out: map[string]any{"content": "found it", "isError": false}},
+		MCPConnectors: map[string]mcp.HTTPConnector{
+			"atomic": {URL: "https://search.example.com/mcp", Headers: map[string]string{"Authorization": "Bearer $SEARCH_TOKEN"}},
+		},
+	})
+
+	if _, err := q.Enqueue(NodeJob{
+		RunID: "run-mcp-http", WorkflowID: "wf", NodeID: "m", NodeName: "m",
+		NodeType: "mcp-http",
+		Config:   map[string]any{"server": "atomic", "tool": "search", "input": map[string]any{"query": "x"}, "mode": "stateless"},
+	}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	job, err := q.ClaimOne("worker-1")
+	if err != nil || job == nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := w.handle(context.Background(), job); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	res := claimResultJSON(t, store, "run-mcp-http", "m").(map[string]any)
+	if res["ok"] != true || res["content"] != "found it" {
+		t.Fatalf("result = %v, want ok with content", res)
+	}
+}
+
+func TestMCPHTTPNodeUnknownConnectorFails(t *testing.T) {
+	// An mcp-http node naming a server with no URL connector declared fails
+	// clearly, so the author sees the server is not declared as a URL-based
+	// server (ADR-0047).
 	ext := extPath(t)
 	store, err := honker.Open(filepath.Join(t.TempDir(), "test.db"), ext)
 	if err != nil {
@@ -785,8 +823,8 @@ func TestMCPHTTPNodeFailsCleanlyUntilBuilt(t *testing.T) {
 	if err != nil || job == nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if err := w.handle(context.Background(), job); err == nil || !strings.Contains(err.Error(), "not yet built") {
-		t.Fatalf("handle error = %v, want a 'not yet built' error", err)
+	if err := w.handle(context.Background(), job); err == nil || !strings.Contains(err.Error(), "no URL connector declared for server") {
+		t.Fatalf("handle error = %v, want a 'no URL connector' error", err)
 	}
 }
 

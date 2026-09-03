@@ -1,17 +1,19 @@
-// Package mcp implements the `mcp-stdio` node type (ADR-0015): invoking one
-// named tool on one named MCP server over stdio. An MCP server is a subprocess
-// that exposes named tools, each with a JSON Schema for its input, over
-// newline delimited JSON-RPC 2.0. The node runs the server with a filtered
-// secret env, sends a single `tools/call`, reads the structured JSON response,
-// and exits (client-mode executor, distinct from the singer run-and-read
-// executor).
+// Package mcp implements the `mcp-stdio` and `mcp-http` node types (ADR-0015,
+// ADR-0047): invoking one named tool on one named MCP server. An MCP server
+// exposes named tools, each with a JSON Schema for its input, over JSON-RPC 2.0.
+// `mcp-stdio` reaches a server as a subprocess over newline delimited JSON-RPC
+// on its stdin/stdout; `mcp-http` reaches a remote server over Streamable HTTP
+// (http.go). Each node sends a single `tools/call`, reads the structured JSON
+// response, and exits (client-mode executor, distinct from the singer
+// run-and-read executor).
 //
 // Protocol modes. The MCP spec was revised on 2026-07-28 to be stateless:
 // protocol version and capabilities travel inline in a `_meta` field on each
 // request and the `initialize`/`initialized` handshake was removed. Adoption is
 // uneven, so a server may still expect the original handshake. This package
-// supports both and detects which a server expects once at discovery; the
-// detected mode is carried into the Wafer so a node execution never re-probes.
+// supports both, for either transport, and detects which a server expects once
+// at discovery; the detected mode is carried into the Wafer so a node execution
+// never re-probes.
 package mcp
 
 import (

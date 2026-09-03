@@ -293,12 +293,24 @@ split the `mcp` group by transport.
   URL-only server validates, holds its URL, and is skipped by capabilities
   discovery rather than mis-probed). The mcp-http executor is deferred to its
   own task below.
-- [ ] **Build the `mcp-http` executor (Streamable HTTP).** The remaining half of
+- [x] **Build the `mcp-http` executor (Streamable HTTP).** The remaining half of
   the mcp-http mechanism (ADR-0047): the Streamable HTTP client, the connector
   registry (URL lookup from the config, which now carries `url`/`headers`), and
   worker dispatch so an `mcp-http` node runs instead of failing with the
   "not yet built" error. Unblocks the `search` URL-based server in
   `examples/servitor.config.yaml` (currently skipped by capabilities discovery).
+  The node runs as the hidden `servitor __mcp_http` subprocess (ADR-0008): the
+  worker looks up the server's URL from the boot-loaded connector registry
+  (`servitor.config.yaml` `mcp:` entries with a `url`), resolves the node's
+  declared secrets to the subprocess env, and spawns it, so the HTTP client and
+  the secret-bearing request headers never enter the runner's process. A header
+  may only reference a secret the node declares in `secrets:` (resolved per
+  use); a header naming any other secret fails like a missing secret. The
+  Streamable HTTP client (`internal/components/mcp/http.go`) supports both
+  protocol revisions (stateless `_meta`, classic initialize handshake) and
+  plain-JSON and SSE responses; `capabilities` now probes URL-based servers over
+  HTTP at refresh (with `$SECRET` header references resolved from the CLI's
+  resolver) instead of skipping them.
 - [x] **Route the leftover packages (ADR-0046, ADR-0048).** Move
   `internal/email` (a provider-agnostic, multi-consumer, mechanism-agnostic
   `Email` struct) to `internal/components/email`, and move `internal/gmail`
@@ -352,6 +364,45 @@ types (`grist_webhook`, `github_webhook`, `slack_event`, `atomic_event`) and the
   and a `webhook/receivers.yaml` listing the declared receivers, mirroring
   `singer/taps.yaml` and `mcp/servers.yaml` (ADR-0049, ADR-0018). SPEC's
   Triggers section is already updated.
+
+## Phase 19: HTTP node executor and flow-node expression evaluation in subprocesses
+
+Closes two gaps in the "every step runs as a subprocess" model (ADR-0008): the
+`http` action node is registered with a schema but has no executor, and three
+flow nodes evaluate their JSONata expressions in the worker's process instead
+of in a subprocess.
+
+- [ ] **`http` node executor.** The `http` action node is registered with its
+  schema (so it validates and appears in `capabilities`) but has no `Spawn`
+  and no executor: running one falls through the worker's plain path and fails
+  with `node type "http" has no command to run`. Build the executor following
+  the `transform` pattern (ADR-0008): a hidden `servitor __http` subcommand
+  that reads the node's config (`url`, `method`, `headers`, `body`, `timeout`)
+  and `{event, steps}` input, makes the request with `net/http` against the
+  filtered secret env, and writes the structured response (status, headers,
+  body) to stdout as the node's result. The capability gains a `Spawn`; the
+  worker's plain path runs it with no change.
+- [ ] **Flow-node expression evaluation moves to a subprocess.** `wait`
+  (its `signal` name), `send-signal` (its `signal` name and `payload`), and
+  `rerun-failed` (its `run_id`) evaluate their JSONata expressions in the
+  worker's process (`internal/worker/suspend.go`), unlike `switch`, `foreach`,
+  and `transform`, which evaluate in a subprocess. Move the expression
+  resolution into a subprocess, keeping only the durable store mutation
+  (parking the run, delivering the signal, performing the rerun) in the
+  worker's process, because the worker owns the single SQLite write connection
+  (ADR-0004) and cannot hand it to a subprocess. The split: the subprocess
+  computes (evaluates the expression), the worker mutates (the transaction).
+  The `wait` timer parsing (`timer.after`/`timer.at`) is not expression
+  evaluation and stays in-process. `dedupe_key` evaluation
+  (`internal/worker/worker.go`) shares the in-process pattern; whether it also
+  moves is an open question within this task, since it runs for every
+  dedupe-keyed node before the dedupe lookup.
+
+**Done when:** an `http` node runs as a subprocess and its response is the
+node's result, threaded into downstream `{event, steps}` input; `wait`,
+`send-signal`, and `rerun-failed` resolve their expressions in a subprocess and
+the store mutation still happens in one transaction in the worker's process;
+`go test ./...` stays green.
 
 ## Outstanding work
 

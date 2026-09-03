@@ -13,6 +13,7 @@ import (
 
 	"github.com/Mathias-g/Servitor/internal/capabilities"
 	"github.com/Mathias-g/Servitor/internal/components/expression"
+	"github.com/Mathias-g/Servitor/internal/components/mcp"
 	"github.com/Mathias-g/Servitor/internal/components/secret"
 	"github.com/Mathias-g/Servitor/internal/config"
 	"github.com/Mathias-g/Servitor/internal/daemon"
@@ -104,6 +105,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		// the list of new emails, so the worker can fan out one run per email
 		// (ADR-0027).
 		return cmdEmailPoll(args[1:], stdout, stderr)
+	case "__mcp_http":
+		// Hidden subprocess entrypoint: the worker runs an `mcp-http` node as a
+		// subprocess (ADR-0008) that makes the Streamable HTTP tools/call. It
+		// reads the URL, header templates, tool, input, and mode on stdin,
+		// resolves `$SECRET` header references from its own filtered env, and
+		// writes the structured tool result to stdout (ADR-0047).
+		return cmdMCPHTTP(args[1:], stdout, stderr)
 	}
 
 	// The remaining commands are daemon operations scheduled for later phases.
@@ -159,6 +167,9 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		// The webhook receivers are declared in the config and loaded once at
 		// boot (ADR-0049, THREATS.md), keyed by path.
 		WebhookReceivers: buildWebhookReceivers(stderr),
+		// The mcp-http connectors (URL and header templates) are declared in the
+		// config and loaded once at boot (ADR-0047), keyed by server name.
+		MCPConnectors: buildMCPConnectors(stderr),
 		Started: func(a string) {
 			_, _ = fmt.Fprintf(stdout, "servitor: daemon listening on %s (loopback only, ADR-0009)\n", a)
 		},
@@ -196,6 +207,25 @@ func buildWebhookReceivers(stderr io.Writer) map[string]*config.WebhookReceiver 
 		return nil
 	}
 	return cfg.Webhook
+}
+
+// buildMCPConnectors loads the declared mcp-http servers (those with a `url`)
+// from the config (ADR-0047), keyed by name, for the worker's connector lookup.
+// A missing or invalid config yields no connectors, with a warning, so the
+// runner boots without mcp-http rather than not at all.
+func buildMCPConnectors(stderr io.Writer) map[string]mcp.HTTPConnector {
+	cfg, err := config.Load("")
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: warning: %v; running with no mcp-http connectors\n", err)
+		return nil
+	}
+	out := map[string]mcp.HTTPConnector{}
+	for name, s := range cfg.MCP {
+		if s.URL != "" {
+			out[name] = mcp.HTTPConnector{URL: s.URL, Headers: s.Headers}
+		}
+	}
+	return out
 }
 
 func cmdStop(args []string, stdout, stderr io.Writer) int {
@@ -737,6 +767,58 @@ func cmdForeachNode(args []string, stdout, stderr io.Writer) int {
 	return exitOK
 }
 
+// cmdMCPHTTP is the hidden subprocess entrypoint for an `mcp-http` node
+// (ADR-0047). It reads a JSON object on stdin: `url` (the server's Streamable
+// HTTP endpoint), `headers` (header templates that may reference secrets as
+// `$NAME`), `tool`, `input`, and `mode`. It resolves the `$NAME` references
+// against its own filtered env, makes the tools/call over Streamable HTTP, and
+// writes the structured result to stdout. The worker runs this as a subprocess
+// (ADR-0008) so the HTTP client and the secret-bearing request headers never
+// enter the runner's process.
+func cmdMCPHTTP(args []string, stdout, stderr io.Writer) int {
+	if len(args) != 0 {
+		_, _ = fmt.Fprintf(stderr, "servitor: __mcp_http: unexpected arguments\n")
+		return exitUsage
+	}
+	data, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: __mcp_http: read input: %v\n", err)
+		return exitFailure
+	}
+	var payload struct {
+		URL     string            `json:"url"`
+		Headers map[string]string `json:"headers"`
+		Tool    string            `json:"tool"`
+		Input   map[string]any    `json:"input"`
+		Mode    string            `json:"mode"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: __mcp_http: input is not valid JSON: %v\n", err)
+		return exitFailure
+	}
+	headers, err := mcp.ResolveHeaders(payload.Headers, os.Environ())
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: __mcp_http: %v\n", err)
+		return exitFailure
+	}
+	res, rerr := mcp.HTTPCall(context.Background(), mcp.HTTPCallRequest{
+		Connector: mcp.HTTPConnector{URL: payload.URL, Headers: headers},
+		Mode:      mcp.Mode(payload.Mode),
+		Tool:      payload.Tool,
+		Input:     payload.Input,
+	})
+	if rerr != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: __mcp_http: %v\n", rerr)
+		return exitFailure
+	}
+	enc := json.NewEncoder(stdout)
+	if err := enc.Encode(res); err != nil {
+		_, _ = fmt.Fprintf(stderr, "servitor: __mcp_http: encode result: %v\n", err)
+		return exitFailure
+	}
+	return exitOK
+}
+
 // cmdEmailPoll is the hidden subprocess entrypoint for an `email_received`
 // trigger's poll (ADR-0027). It reads the mailbox config on stdin as
 // `{host, username, secret}`, where `secret` is the name of an env var holding
@@ -846,7 +928,7 @@ func cmdCapabilities(args []string, stdout, stderr io.Writer) int {
 		dir = args[0]
 	}
 
-	if err := capabilities.Write(dir); err != nil {
+	if err := capabilities.Write(dir, buildResolver(stderr)); err != nil {
 		_, _ = fmt.Fprintf(stderr, "servitor: %v\n", err)
 		return exitFailure
 	}

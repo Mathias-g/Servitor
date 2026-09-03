@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Mathias-g/Servitor/internal/components/mcp"
 	"github.com/Mathias-g/Servitor/internal/components/secret"
 	"github.com/Mathias-g/Servitor/internal/config"
 	"github.com/Mathias-g/Servitor/internal/honker"
@@ -76,6 +77,11 @@ type Config struct {
 	// boot and passed to the trigger receiver, which verifies inbound webhooks
 	// per receiver. A nil map means no receivers are declared.
 	WebhookReceivers map[string]*config.WebhookReceiver
+	// MCPConnectors are the declared mcp-http servers from servitor.config.yaml,
+	// keyed by name (URL and header templates), loaded once at boot (ADR-0047).
+	// They are passed to the worker, which looks up a server's URL to run an
+	// mcp-http node. A nil map means no URL-based servers are declared.
+	MCPConnectors map[string]mcp.HTTPConnector
 	// Workers is how many worker loops to run. When DBPath is set and Workers
 	// is zero, one worker runs; set Workers to 0 with DisableRunner to run
 	// the daemon without executing nodes.
@@ -685,6 +691,7 @@ func Run(ctx context.Context, cfg Config) error {
 			w := worker.New(srv.store, queue, fmt.Sprintf("worker-%d", i), worker.Config{
 				Resolver:         cfg.Resolver,
 				SecretRetryCount: cfg.SecretRetryCount,
+				MCPConnectors:    cfg.MCPConnectors,
 				// When a run completes, fire any workflow with a `completed`
 				// trigger naming the completed workflow (SPEC: `completed` trigger).
 				OnRunComplete: func(workflowID, runID string) {

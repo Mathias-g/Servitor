@@ -20,9 +20,9 @@ mcp:
     command: [npx, -y, "@example/inventory-mcp"]
     env: [INVENTORY_TOKEN]
   # A server reached over Streamable HTTP (mcp-http, ADR-0047): `url` is the
-  # endpoint and `headers` are secret-referenced, resolved per use. The
-  # mcp-http executor is not yet built; the entry validates, holds the URL in
-  # the config, and is skipped by capabilities discovery until then.
+  # endpoint and `headers` are secret-referenced, resolved per use. A Wafer
+  # that names this server in an mcp-http node declares SEARCH_TOKEN in its
+  # `secrets:` list, and capabilities probes it over HTTP at refresh.
   search:
     url: "https://search.example.com/mcp"
     headers:

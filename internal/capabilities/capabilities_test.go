@@ -1,6 +1,8 @@
 package capabilities
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,7 +30,7 @@ func writeTestConfig(t *testing.T, cfg *config.Config) {
 
 func TestWriteProducesGroupedFiles(t *testing.T) {
 	dir := t.TempDir()
-	if err := Write(dir); err != nil {
+	if err := Write(dir, nil); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
@@ -48,7 +50,7 @@ func TestWriteProducesGroupedFiles(t *testing.T) {
 
 func TestIndexListsMechanisms(t *testing.T) {
 	dir := t.TempDir()
-	if err := Write(dir); err != nil {
+	if err := Write(dir, nil); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(dir, "index.yaml"))
@@ -96,7 +98,7 @@ func TestIndexListsMechanisms(t *testing.T) {
 
 func TestEntryContainsSchemaAndExample(t *testing.T) {
 	dir := t.TempDir()
-	if err := Write(dir); err != nil {
+	if err := Write(dir, nil); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(dir, "core", "http.yaml"))
@@ -120,7 +122,7 @@ func TestEntryContainsSchemaAndExample(t *testing.T) {
 
 func TestEntryEmitsRoleAndDelivery(t *testing.T) {
 	dir := t.TempDir()
-	if err := Write(dir); err != nil {
+	if err := Write(dir, nil); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	// An action node carries role=action, no delivery.
@@ -161,7 +163,7 @@ func TestWriteSecretsFromDeclaredConfig(t *testing.T) {
 		},
 	})
 	dir := t.TempDir()
-	if err := Write(dir); err != nil {
+	if err := Write(dir, nil); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(dir, "secrets.yaml"))
@@ -186,7 +188,7 @@ func TestWriteSecretsFromDeclaredConfig(t *testing.T) {
 
 func TestWriteSecretResolutionGroupAndSources(t *testing.T) {
 	dir := t.TempDir()
-	if err := Write(dir); err != nil {
+	if err := Write(dir, nil); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(dir, "secret-resolution", "sources.yaml"))
@@ -225,7 +227,7 @@ esac
 	writeTestConfig(t, cfg)
 
 	out := t.TempDir()
-	if err := Write(out); err != nil {
+	if err := Write(out, nil); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(out, "singer", "taps.yaml"))
@@ -263,7 +265,7 @@ func TestWriteProducesReceiversReport(t *testing.T) {
 	writeTestConfig(t, cfg)
 
 	dir := t.TempDir()
-	if err := Write(dir); err != nil {
+	if err := Write(dir, nil); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(dir, "webhook", "receivers.yaml"))
@@ -312,7 +314,7 @@ for line in sys.stdin:
 	writeTestConfig(t, cfg)
 
 	out := t.TempDir()
-	if err := Write(out); err != nil {
+	if err := Write(out, nil); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(out, "mcp", "servers.yaml"))
@@ -337,17 +339,23 @@ for line in sys.stdin:
 	}
 }
 
-func TestWriteSkipsURLOnlyServerFromDiscovery(t *testing.T) {
-	// A URL-only (mcp-http) server has no command to spawn, and its Streamable
-	// HTTP client is not built yet. capabilities must skip it rather than
-	// mis-probe it as a subprocess (PLAN Phase 17).
+func TestWriteProbesURLOnlyServerOverHTTP(t *testing.T) {
+	// A URL-only (mcp-http) server is probed over Streamable HTTP, not spawned
+	// as a subprocess (ADR-0047). capabilities reports its mode and tools, so an
+	// agent can author an mcp-http node against it.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"search","inputSchema":{"type":"object"}}]}}`))
+	}))
+	defer srv.Close()
+
 	cfg := &config.Config{}
 	cfg.AddMCPServer("atomic", []string{"/bin/true"}, nil)
-	cfg.MCP["search"] = &config.Server{URL: "https://search.example.com/mcp"}
+	cfg.MCP["search"] = &config.Server{URL: srv.URL}
 	writeTestConfig(t, cfg)
 
 	out := t.TempDir()
-	if err := Write(out); err != nil {
+	if err := Write(out, nil); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(out, "mcp", "servers.yaml"))
@@ -358,9 +366,13 @@ func TestWriteSkipsURLOnlyServerFromDiscovery(t *testing.T) {
 	if err := yaml.Unmarshal(data, &rep); err != nil {
 		t.Fatalf("parse mcp/servers.yaml: %v", err)
 	}
+	found := false
 	for _, s := range rep.Servers {
-		if s.Name == "search" {
-			t.Fatalf("URL-only server %q should not be probed as a subprocess", s.Name)
+		if s.Name == "search" && len(s.Tools) == 1 && s.Tools[0].Name == "search" {
+			found = true
 		}
+	}
+	if !found {
+		t.Fatalf("servers report = %+v, want search with search tool probed over HTTP", rep.Servers)
 	}
 }

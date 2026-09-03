@@ -9,6 +9,7 @@
 package capabilities
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -58,7 +59,11 @@ type index struct {
 
 // Write materializes the capability set into dir. It creates the directory and
 // one subdirectory per mechanism, with one file per type, plus index.yaml.
-func Write(dir string) error {
+// resolver, when non-nil, is used to resolve secret-referenced headers when
+// probing URL-based (mcp-http) servers, so their tools can be discovered with
+// real auth (ADR-0047). A nil resolver probes such servers with only the
+// headers that carry no secret reference.
+func Write(dir string, resolver *secret.Resolver) error {
 	if dir == "" {
 		dir = DefaultDir
 	}
@@ -81,7 +86,7 @@ func Write(dir string) error {
 	if err := writeTaps(dir); err != nil {
 		return err
 	}
-	if err := writeServers(dir); err != nil {
+	if err := writeServers(dir, resolver); err != nil {
 		return err
 	}
 	if err := writeReceivers(dir); err != nil {
@@ -139,24 +144,39 @@ type serversReport struct {
 // declared MCP servers (ADR-0017, ADR-0018): each declared server, its protocol
 // mode, and its tool schemas. It sits beside the mcp-stdio node so an agent
 // sees both the type and what is declared. If a server cannot be probed, the
-// report records its error rather than failing.
-func writeServers(dir string) error {
+// report records its error rather than failing. Command-based (mcp-stdio)
+// servers are spawned as subprocesses; URL-based (mcp-http) servers are probed
+// over Streamable HTTP, with their `$SECRET` header references resolved from
+// the resolver when one is available (ADR-0047).
+func writeServers(dir string, resolver *secret.Resolver) error {
 	report := serversReport{Generated: true}
 	cfg, err := config.Load("")
 	if err != nil {
 		report.Note = "could not load config: " + err.Error()
 	} else {
 		declared := map[string][]string{}
+		var httpServers []mcp.DiscoveredServer
 		for name, s := range cfg.MCP {
-			// Only command-based (mcp-stdio) servers are probed for tools. A
-			// URL-based (mcp-http) server has no command to spawn; its Streamable
-			// HTTP client is not yet built, so it is skipped rather than
-			// mis-probed as a subprocess (PLAN Phase 17).
 			if len(s.Command) > 0 {
 				declared[name] = s.Command
+			} else if s.URL != "" {
+				conn, ok := resolveConnector(name, s, resolver)
+				ds := mcp.DiscoveredServer{Name: name}
+				if !ok {
+					ds.ProbeErr = "could not resolve the connector's secret-referenced headers"
+				} else {
+					d, derr := mcp.HTTPDiscover(context.Background(), conn)
+					if derr != nil {
+						ds.ProbeErr = derr.Error()
+					} else {
+						ds.Mode = d.Mode
+						ds.Tools = d.Tools
+					}
+				}
+				httpServers = append(httpServers, ds)
 			}
 		}
-		report.Servers = mcp.DiscoverServers(declared, nil)
+		report.Servers = append(mcp.DiscoverServers(declared, nil), httpServers...)
 	}
 	data, err := yaml.Marshal(report)
 	if err != nil {
@@ -169,6 +189,35 @@ func writeServers(dir string) error {
 		return fmt.Errorf("capabilities: write mcp/servers.yaml: %w", err)
 	}
 	return nil
+}
+
+// resolveConnector resolves a URL-based MCP server's header templates against
+// the resolver (ADR-0035), so capabilities can probe it with real auth. It
+// returns false when there is no resolver or a referenced secret cannot be
+// resolved; the probe then cannot authenticate.
+func resolveConnector(name string, s *config.Server, resolver *secret.Resolver) (mcp.HTTPConnector, bool) {
+	conn := mcp.HTTPConnector{URL: s.URL, Headers: s.Headers}
+	names := mcp.ReferencedSecrets(s.Headers)
+	if len(names) == 0 {
+		return conn, true
+	}
+	if resolver == nil {
+		return conn, false
+	}
+	values, _, err := resolver.Resolve(context.Background(), name, names)
+	if err != nil {
+		return conn, false
+	}
+	env := make([]string, 0, len(values))
+	for k, v := range values {
+		env = append(env, k+"="+v)
+	}
+	resolved, err := mcp.ResolveHeaders(s.Headers, env)
+	if err != nil {
+		return conn, false
+	}
+	conn.Headers = resolved
+	return conn, true
 }
 
 // receiverReport is one declared webhook receiver and the signing details a

@@ -23,6 +23,7 @@ import (
 	"github.com/Mathias-g/Servitor/internal/components/expression"
 	"github.com/Mathias-g/Servitor/internal/components/mcp"
 	"github.com/Mathias-g/Servitor/internal/components/secret"
+	"github.com/Mathias-g/Servitor/internal/components/selfexe"
 	"github.com/Mathias-g/Servitor/internal/components/singer"
 	"github.com/Mathias-g/Servitor/internal/honker"
 	"github.com/Mathias-g/Servitor/internal/registry"
@@ -158,6 +159,11 @@ type Config struct {
 	Singer SingerRunner
 	// MCP runs mcp-stdio subprocesses. Defaults to real subprocesses.
 	MCP MCPRunner
+	// MCPConnectors are the declared mcp-http servers, keyed by name (name ->
+	// URL and header templates), loaded once at boot from the config
+	// (ADR-0047). The worker looks up a server's URL here to run an mcp-http
+	// node. A nil map means no URL-based servers are declared.
+	MCPConnectors map[string]mcp.HTTPConnector
 	// OnRunComplete, if set, is called after a run transitions to completed
 	// (pending reaches zero). It lets the caller fire downstream work, such as
 	// the `completed` trigger (SPEC: `completed` trigger), without coupling the
@@ -191,6 +197,7 @@ type Worker struct {
 	runner        NodeRunner
 	singer        SingerRunner
 	mcp           MCPRunner
+	connectors    map[string]mcp.HTTPConnector
 	onDone        func(workflowID, runID string)
 	onFailed      func(workflowID, runID string)
 	onPoll        func(workflowID, kind string, items []any)
@@ -230,6 +237,7 @@ func New(store *honker.Store, queue *honker.Queue, workerID string, cfg Config) 
 		runner:        cfg.Runner,
 		singer:        cfg.Singer,
 		mcp:           cfg.MCP,
+		connectors:    cfg.MCPConnectors,
 		onDone:        cfg.OnRunComplete,
 		onFailed:      cfg.OnRunFailed,
 		onPoll:        cfg.OnPoll,
@@ -860,16 +868,14 @@ func (w *Worker) runSingerNode(ctx context.Context, sj NodeJob) (result any, ran
 	}
 }
 
-// runMCPNode runs an mcp-stdio node as a subprocess (SPEC: MCP,
-// ADR-0015). It spawns the named server with a filtered secret env, invokes one
-// tool, and maps an errored result onto Servitor's structured error format.
+// runMCPNode runs an mcp-stdio or mcp-http node (SPEC: MCP, ADR-0015,
+// ADR-0047). mcp-stdio spawns the named server with a filtered secret env and
+// speaks JSON-RPC over its stdio; mcp-http runs the hidden `__mcp_http`
+// subprocess against the server's declared URL. Both invoke one tool and map an
+// errored result onto Servitor's structured error format.
 func (w *Worker) runMCPNode(ctx context.Context, sj NodeJob) (result any, ran bool, state *honker.SingerState, err error) {
-	// mcp-http dispatches here too (RunKind RunMCP) but has no Spawn, so it has
-	// no command to run as a subprocess. Its Streamable HTTP executor is not yet
-	// built; fail cleanly instead of misreading an empty command as a control
-	// node (ADR-0047, PLAN Phase 17).
 	if sj.NodeType == "mcp-http" {
-		return nil, true, nil, fmt.Errorf("node type mcp-http is not yet built: the Streamable HTTP executor is not implemented")
+		return w.runMCPHTTPNode(ctx, sj)
 	}
 	if len(sj.Command) == 0 {
 		return nil, true, nil, fmt.Errorf("node type %q has no command to run", sj.NodeType)
@@ -908,6 +914,63 @@ func (w *Worker) runMCPNode(ctx context.Context, sj NodeJob) (result any, ran bo
 		return map[string]any{"ok": false, "path": se.Path, "code": se.Code, "message": se.Message, "suggestion": se.Suggestion}, true, nil, nil
 	}
 	return map[string]any{"ok": true, "content": res.Content, "data": res.Data}, true, nil, nil
+}
+
+// runMCPHTTPNode runs an mcp-http node (SPEC: MCP, ADR-0047). It looks up the
+// server's URL and header templates from the boot-loaded connector registry,
+// resolves the node's declared secrets to the subprocess env, and runs the
+// hidden `servitor __mcp_http` subprocess with the request on stdin. The
+// subprocess resolves the `$SECRET` header references from its own filtered
+// env and makes the Streamable HTTP call, so the HTTP client and the
+// secret-bearing request headers never enter the runner's process (ADR-0008).
+func (w *Worker) runMCPHTTPNode(ctx context.Context, sj NodeJob) (result any, ran bool, state *honker.SingerState, err error) {
+	server, _ := sj.Config["server"].(string)
+	if server == "" {
+		return nil, true, nil, fmt.Errorf("node type mcp-http requires a `server` name")
+	}
+	conn, ok := w.connectors[server]
+	if !ok || conn.URL == "" {
+		return nil, true, nil, fmt.Errorf("mcp-http: no URL connector declared for server %q", server)
+	}
+	tool, _ := sj.Config["tool"].(string)
+	if tool == "" {
+		return nil, true, nil, fmt.Errorf("node type requires a `tool` name")
+	}
+	input, _ := sj.Config["input"].(map[string]any)
+	mode := mcp.ModeUnknown
+	if m, ok := sj.Config["mode"].(string); ok {
+		mode = mcp.Mode(m)
+	}
+	env, missing, err := w.nodeEnv(ctx, sj.NodeName, sj.Secrets)
+	if err != nil {
+		return nil, true, nil, err
+	}
+	if len(missing) > 0 {
+		return nil, true, nil, fmt.Errorf("%w: %s", secret.ErrSecretMissing, strings.Join(missing, ", "))
+	}
+	res, rerr := w.runner.Run(ctx, exec.Request{
+		Command: []string{selfexe.Path(), "__mcp_http"},
+		Env:     env,
+		Input: map[string]any{
+			"url":     conn.URL,
+			"headers": conn.Headers,
+			"tool":    tool,
+			"input":   input,
+			"mode":    string(mode),
+		},
+	})
+	if rerr != nil {
+		return nil, true, nil, rerr
+	}
+	var cres mcp.CallResult
+	if raw, merr := json.Marshal(res.Output); merr == nil {
+		_ = json.Unmarshal(raw, &cres)
+	}
+	if cres.IsError {
+		se := mcp.AsStructuredError(tool, cres)
+		return map[string]any{"ok": false, "path": se.Path, "code": se.Code, "message": se.Message, "suggestion": se.Suggestion}, true, nil, nil
+	}
+	return map[string]any{"ok": true, "content": cres.Content, "data": cres.Data}, true, nil, nil
 }
 
 // threadInput builds a downstream node's input from a completing node's input

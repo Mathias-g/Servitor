@@ -2,13 +2,9 @@
 // on one named MCP server over Streamable HTTP (ADR-0047). It connects to the
 // server's declared URL with its secret-referenced token, sending one
 // `tools/call` request. The server's URL and headers are declared in the
-// config, not compiled in.
-//
-// The executor is not yet built. This mechanism is registered with its schema
-// so an agent can author and validate an `mcp-http` node and `capabilities`
-// reports it, but running one fails with a clear "not yet built" error until
-// the Streamable HTTP client and the connector lookup are implemented
-// (PLAN Phase 17).
+// config, not compiled in. The executor runs as the hidden `__mcp_http`
+// subprocess (ADR-0008); the worker looks up the server's URL from the
+// boot-loaded connector registry and spawns it (PLAN Phase 17).
 package http
 
 import (

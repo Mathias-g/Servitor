@@ -169,9 +169,11 @@ func TestRunKindForDispatchesThroughRegistry(t *testing.T) {
 
 func TestMCPTransportMechanisms(t *testing.T) {
 	// The mcp group splits by transport (ADR-0047): mcp-stdio spawns a server
-	// as a subprocess; mcp-http connects to a URL and has no Spawn (its
-	// Streamable HTTP executor is not yet built, so CommandFor returns nil, nil
-	// just like a control node, and the worker rejects it at run time).
+	// as a subprocess; mcp-http connects to a URL. Both have RunKind RunMCP, so
+	// the worker dispatches them through runMCPNode. mcp-http has no Spawn
+	// (there is no command to build; its URL comes from the connector registry
+	// and it runs as the hidden __mcp_http subprocess), so CommandFor returns
+	// nil, nil just like a control node, and the worker handles it.
 	if registry.Lookup("mcp-stdio") == nil {
 		t.Fatal("mcp-stdio should be registered")
 	}
@@ -182,7 +184,7 @@ func TestMCPTransportMechanisms(t *testing.T) {
 		t.Fatalf("mcp-stdio spawn = %v, %v; want [srv]", cmd, err)
 	}
 	if cmd, err := registry.CommandFor("mcp-http", map[string]any{"server": "atomic"}); err != nil || cmd != nil {
-		t.Fatalf("mcp-http spawn = %v, %v; want nil, nil (no executor yet)", cmd, err)
+		t.Fatalf("mcp-http spawn = %v, %v; want nil, nil (no command; worker dispatches it)", cmd, err)
 	}
 	if c := registry.Lookup("mcp-http"); c.RunKind != registry.RunMCP {
 		t.Fatalf("mcp-http run kind = %q, want mcp", c.RunKind)
