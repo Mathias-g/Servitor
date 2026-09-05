@@ -147,6 +147,19 @@ A separate idea that follows from the secrets model's v1 decision that a secret'
 
 Why it is hard: permission names are not standardized across services. GitHub's fine-grained permission matrix is very different from gmail's or Slack's, so a node's "needs permission X" only makes sense within a service context. Enforcing the match would require a per-service permission vocabulary that Servitor maintains and validates against, which is complex and may be impossible to do well. This is deliberately out of scope for v1.
 
+## Isolate secret resolution from the runner (the runner's own trust boundary)
+
+A research question that follows from the execution surface. The execution surface contains *nodes* (the untrusted subprocesses), but the **runner itself holds resolved secrets in memory** while it resolves them: per ADR-0033 the provider runs in-process, so the runner is a long-lived process that carries every secret it has resolved for its registered Wafers. If the runner is compromised, all the node containment is moot, because the runner can resolve every secret. The question is whether secret resolution should be **more isolated than "the runner just does it"**, so that a compromised runner does not automatically hold every secret's plaintext.
+
+This is distinct from the credential proxy (which keeps values out of *nodes*) and from the TPM-unlock interaction (which is a non-conflict, the runner resolves in its own process). This is about the trust boundary of the runner itself, a different axis.
+
+Open questions to research:
+
+- Whether a separate, more contained resolution process (the runner talks to it, it resolves and hands values back) meaningfully reduces the blast radius, or whether it just moves the trust boundary one step without closing the gap, since the runner must still receive the values to hand them to nodes.
+- Whether the honest ceiling is that the runner, as the orchestrator that must deliver secrets to nodes, is inherently a secret-holding process, and "isolate resolution" only helps against a narrow class of runner compromise (for example one that cannot call out to the provider) rather than the general case.
+- How it would compose with per-node delivery (ADR-0033): the resolver would still need to hand each value to the node, so the isolation is about where the value lives between resolve and delivery.
+- Whether it is worth doing at all given the execution surface already contains nodes, or whether the runner's trust boundary is simply accepted as the system's trusted base, like the kernel.
+
 ## A control plane for Servitor (web or native, a separate project)
 
 A dedicated app, "Servitor Control Plane", that an operator uses to view what Servitor is doing and, in narrow safety-only cases, act on it: run history, step outcomes, events, the state of registered workflows, and a "see what is running" view across one or more Servitor deployments. It is a **separate project from Servitor**, not built into it. The natural default is a **web app hosted on its own server**, reached in a browser; a **native app** (a Wails desktop shell) is an optional way to package the same frontend as a standalone download, not a separate product.
