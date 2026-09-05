@@ -431,6 +431,14 @@ This is how "what can this box do and how do I use it" is answered: the agent ru
 
 `servitor capabilities [dir]` writes files rather than printing, so the schemas never sit in the agent's context: one file per capability (its JSON Schema, role, and delivery, plus a derived example), grouped by **mechanism group** into top-level directories, plus a `secrets.yaml` reporting the declared secrets (name, account, permissions, and expiry, never the values) and an `index.yaml` listing the mechanism groups. A mechanism group (ADR-0031) is a family of mechanisms: `core` (universal primitives and scheduling), `webhook` (inbound HTTP reception), `singer` (record streaming), `mcp` (tool invocation), `helper` (compiled-in wrappers), `secret-resolution` (the available secret sources, the valid `source` values for `secrets.yaml`; ADR-0036), and `websocket` (inbound streaming, future). The individual types within a group are the mechanisms (for example `hmac-webhook` and `standard-webhook` are both mechanisms under `webhook`). The `secret-resolution` group is different in kind from the node-capability groups: it does not hold Wafer node types, it enumerates the secret providers an agent can name as a secret's `source` (SPEC: Secret resolution, ADR-0036). A service reached by several mechanisms appears in several groups; the type name carries the service (`singer-tap`, `mcp-stdio`, `hmac-webhook`). The declared connectors sit with their mechanism group: `singer/taps.yaml` lists the declared Singer taps, `mcp/servers.yaml` lists the declared MCP servers, and `webhook/receivers.yaml` lists the declared webhook receivers (ADR-0018, ADR-0049), so an agent sees both a capability and what is installed to run against it. The distinction between a standard envelope and a bespoke one (for example `standard-webhook` vs `hmac-webhook`) is a per-type detail within a mechanism group, not a separate group.
 
+Declared mechanism flavors (SPEC: Mechanism flavors) surface in `capabilities`
+as capabilities like any other, under their base mechanism's group, each with
+the base's schema and the pinned fields shown at their config values with their
+lock state, so an agent sees what it may set without reading the config file. A
+disabled capability (SPEC: Disable mechanisms) is reported with a disabled
+marker rather than removed, so an agent can see it exists but is off and explain
+why a Wafer using it fails.
+
 The mechanism source mirrors this grouping. Each mechanism has its own folder under its mechanism group's directory, and its package lives inside that folder and self-registers its capability and run behavior into the shared registry; the runner dispatches to a mechanism through the registry, never by naming it in a central switch (ADR-0045, ADR-0048). So a mechanism lives at `internal/registry/<group>/<mechanism>/`, for example `helper/email` registers the `email_received` mechanism. The mechanism's folder is the unit of deletion: removing it removes the mechanism from validation and `capabilities` with no central references left to edit. A service reachable by several mechanisms is one mechanism per mechanism group it appears in (for example a Grist helper under `helper/grist` and a Grist MCP mechanism under `mcp/grist`); they are separate code paths and independently removable.
 
 #### Adding a mechanism group
@@ -448,7 +456,7 @@ Reusable machinery that is mechanism-agnostic and shared by more than one consum
 
 For a **remote agent**, capabilities reach it the same way Wafers do: the pipeline (which already runs the CLI on the box) runs `servitor capabilities` and commits the generated directory into the git repo, and the agent reads the files from the repo on demand. Capabilities are still per-server because the directory is generated from that box's compiled-in set; committing it is a materialized snapshot, not a hand-written doc, so it cannot drift. A local agent (on the box, or the pipeline's own runner) can also run `capabilities` directly into a scratch directory.
 
-The connectors and secrets are declared in a local `servitor.config.yaml` (ADR-0018): the operator names each MCP server, Singer tap, and Singer target with its exact command (or, for an MCP server reached over HTTP, its URL and secret-referenced headers) and the env vars it needs, and each declared secret with its source and optional metadata (ADR-0035). `servitor mcp`/`tap`/`target`/`secret` add/list/remove manage this file; the actual software install is delegated to the ecosystem's package managers (npx, pipx, uv, Meltano). `capabilities` reports only what is declared, probing each once at refresh for its schemas; there is no PATH scan and no naming convention to break.
+The connectors and secrets are declared in a local `servitor.config.yaml` (ADR-0018): the operator names each MCP server, Singer tap, and Singer target with its exact command (or, for an MCP server reached over HTTP, its URL and secret-referenced headers) and the env vars it needs, and each declared secret with its source and optional metadata (ADR-0035). `servitor mcp`/`tap`/`target`/`secret` add/list/remove manage this file; the actual software install is delegated to the ecosystem's package managers (npx, pipx, uv, Meltano). `capabilities` reports only what is declared, probing each once at refresh for its schemas; there is no PATH scan and no naming convention to break. The same config file also carries the execution-surface configuration (SPEC: Execution surface and configuration): execution profiles, per-field lock markers, the `flavors:` section, the mechanism disable surface, and egress allow-lists.
 
 ### Triggers
 
@@ -520,7 +528,10 @@ trigger, handled by its own helper (ADR-0027).
 
 The body of a Wafer is its nodes. There are two kinds: **action nodes**, which do
 work mid-run, and **flow nodes**, which route or fan out. All nodes are part of
-the run's DAG and run as subprocesses (ADR-0008).
+the run's DAG and run as subprocesses (ADR-0008). A node may name an execution
+profile it uses (SPEC: Execution surface and configuration), and a node's
+`type` may be a declared mechanism flavor's name as well as a compiled-in
+mechanism.
 
 #### Action nodes
 
@@ -668,6 +679,191 @@ and the server is self-hostable.)
 
 Each helper uses declared secrets for auth and exposes its
 actions/triggers via `servitor capabilities`.
+
+---
+
+## Execution surface and configuration
+
+This section covers how a node is allowed to run and how the operator and author
+configure mechanism capabilities. It extends the node execution model (every
+node runs as a subprocess, ADR-0008) with a generalized execution surface, and
+it extends the declared config with the lock model, mechanism flavors, egress
+control, and per-deployment disablement.
+
+### The execution surface
+
+Every mechanism's node runs as a subprocess (ADR-0008). How a node is allowed to
+run is a set of orthogonal, mechanism-independent **execution parameters**,
+grouped into **execution parameter categories**. A mechanism has fields; a
+**function parameter** is a field on the function surface (what the node does,
+such as `url` or `command`); an **execution parameter** is a field on the
+execution surface (how the node is allowed to run). "Parameter" is a subclass of
+"field", and "execution parameter" is precisely a field on the execution
+surface.
+
+The categories, each independent, a node is set on each separately:
+
+- **containment**: filesystem and process isolation. What the node can reach and
+  trace on the box (mount masking, user namespace, PID namespace, subuid
+  mapping, seccomp, capability drop).
+- **egress**: network reach, opt-in. See Egress control below.
+- **resources**: memory, cpu, pids, time. cgroup limits and timeout. A
+  robustness dial, not a confidentiality one.
+- **secrets**: how a secret reaches the node. Env (per-node delivery, per
+  ADR-0033) is the default; proxy is an optional marginal mode; none is the case
+  of no secrets.
+- **identity**: the UID / subuid the node runs as and the capabilities it holds.
+- **data flow**: capture and redaction of node output (ADR-0050), always on.
+
+A named bundle of values across these execution parameters is an **execution
+profile**. A profile is declared in config and referenced by name in the Wafer
+(a node names the profile it uses), not spelled out inline, because an inline
+bundle becomes unreadable once long. A node whose requested profile cannot be
+satisfied (the host lacks a prerequisite such as unprivileged user namespaces or
+subuid ranges) fails loudly at validation or submit, never silently degrades to
+a weaker configuration.
+
+**The default rule**: a category is on by default if and only if it costs the
+user nothing and has no side effect that makes a legitimate node stop working.
+If there is zero reason for it not to be on, it is not a choice, it is just on.
+`data flow` (redaction) and the `secrets` env mode are on by default, not
+choices. `containment`, `identity`, and `egress` are choices because they
+restrict what a node can reach and need host capabilities. `resources` is a
+choice because a limit can break a legitimate long-running or memory-heavy node.
+
+### The lock model
+
+Every execution parameter, on every category, in every mechanism, has one
+cross-cutting question: who sets it. A parameter has one of three lock values,
+named for where it is set:
+
+- **config-locked**: the config pins the value, the Wafer cannot override it.
+  The security-hard case.
+- **config-default**: the config sets a default, the Wafer may override it. The
+  convenience case.
+- **wafer-set**: the config does not constrain the parameter at all, so the
+  value comes from the Wafer. The config simply does not set it, which is what
+  distinguishes wafer-set from config-default.
+
+The lock value is implicit in how a value is written in the config, not a
+separate setting: not in the config at all is wafer-set; a plain value, not
+marked locked, is config-default; a value marked `locked: true` is config-locked.
+The lock is expressed per field, as a `locked: true` marker beside that field.
+
+Precedence, applied per parameter: config-locked governs (a Wafer override is
+rejected at validation), config-default applies unless the Wafer overrides,
+wafer-set is the Wafer's choice, and an omitted wafer-set parameter is unset
+(no hidden default). One parameter is governed by exactly one lock value; there
+is no layering of locks within a single parameter.
+
+### Mechanism flavors
+
+A **flavor** is a config-declared, named, **synthetic** mechanism: it has no
+mechanism folder, it refers to a real base mechanism (which does have a folder)
+and pins a subset of its parameters. It surfaces in `servitor capabilities` like
+any other capability.
+
+- Flavors live in their own config section (for example `flavors:` in
+  `servitor.config.yaml`), distinct from the declared-connectors sections,
+  though a flavor may reference a connector by name as a pinned parameter.
+- A flavor is one level: it names a base mechanism, not another flavor, so there
+  is no stacking.
+- It inherits the base's Role, MechanismGroup, SideEffect, Delivery, and
+  RunKind, and pins configurable parameters on the function and execution
+  surfaces, each with a lock value.
+- It has its own name (the base name plus the configured flavor name) and is a
+  distinct capability from the base, with its own availability.
+- In `capabilities`, a flavor's schema is the base's, with pinned fields shown
+  at their config values and marked with their lock state (`locked: true` inline
+  for a config-locked field), so an agent sees what it may set and what the
+  config has fixed without a second lookup.
+
+Concrete flavors that motivate the framework: **scripts-only shell** (function
+surface config-locked to call a named script from an operator-gated folder; the
+script is delivered to the node like a secret and reads its `{event, steps}`
+input on stdin) and **sandboxed shell** (pins the execution surface, keeping
+shell's full power but running it contained).
+
+### Disable mechanisms
+
+An operator can disable any mechanism in `servitor.config.yaml`, making that
+capability impossible to use on this deployment without touching the binary.
+
+- Disable is **per capability, not per mechanism tree**. Each capability, the
+  base mechanism and each of its flavors, is independently disableable. A base
+  can be disabled while one of its flavors stays enabled.
+- It is a **blocklist**: the operator disables the specific capabilities they do
+  not want. An allowlist posture is expressible by disabling every capability
+  not wanted; there is no separate allowlist mode.
+- A mechanism group is disabled by disabling every capability in it, so a future
+  mechanism added to the group is not silently left enabled.
+- A disabled capability is impossible to use: validation rejects any Wafer that
+  uses it at dry-run and submit, its run handler is unreachable, and
+  `capabilities` reports it as disabled (for example a `disabled: true` marker)
+  rather than removing it, so an agent can explain why a Wafer fails and point at
+  the alternative.
+- Toggling a disable takes effect on **daemon restart**, since the config is
+  loaded once at boot.
+- A dependency on a disabled mechanism (a webhook receiver, a declared connector,
+  or a secret whose source mechanism is disabled) fails at config load with a
+  clear error, not later at use.
+
+### Egress control
+
+Egress is **opt-in**; the off-state is full network reach, the permissive
+default, matching how nodes behave today. When enabled, a node's outbound
+destinations must be **declared values**, not runtime data, and anything outside
+the declared allow-list is denied. A destination is declared if it is a literal
+in the Wafer or config, or a reference to a value declared in config (a
+connector endpoint, a config constant). A destination derived from runtime input
+(`{event}`, `steps`, a loop variable) is data, not declared, and is blocked. The
+point is that data cannot drive where a node connects: a hardcoded
+`curl https://api.github.com/...` passes, a `curl $URL` where `$URL` is runtime
+data is blocked.
+
+The allow-list is declared at **three levels**, composed through the lock model:
+
+- Config level, on a mechanism or flavor (operator policy, survives across
+  Wafers).
+- Config level, on a connector (a declared MCP server, Singer tap, or target
+  carries its own outbound scope beside its command and env, so a node using one
+  connector does not get the union of every installed connector's hosts).
+- Wafer level, on the node (the per-run destination).
+
+The lock value decides which governs, per the lock model: when config-locked the
+config list is authoritative and the Wafer cannot override it; when
+config-default the config sets the default but the Wafer may narrow or extend it;
+when wafer-set the Wafer's declaration governs.
+
+The mechanism used to enforce the allow-list depends on who owns the client,
+and Servitor uses the simplest one for each node kind: for a client Servitor
+owns (`http`, `mcp-http`, `email_received`) the node checks its own declared
+destination against the allow-list; for a cooperating third-party client (a
+Singer tap or any proxy-honoring tool) the connection goes through an
+application proxy that checks the destination from the handshake; for a
+non-cooperating client (a tool that opens its own TCP) enforcement is at the
+syscall level, with the destination attributed back to a hostname via
+controlled DNS resolution rather than IP-pinning. The egress proxy is a blind
+tunnel: it reads only the destination and never inspects payloads, so it does
+not become a place a granted secret is visible outside its node. Hostname
+semantics are best-effort, not a hard boundary.
+
+### Host requirements and the honest ceiling
+
+The execution surface, egress, containment, and subuid mapping need one-time
+host prerequisites, install-time, not per-workflow: unprivileged user namespaces
+enabled via an AppArmor profile for the Servitor daemon carrying the `userns`
+rule (not the system-wide sysctl, which weakens the whole host); `/etc/subuid`
+and `/etc/subgid` entries plus `newuidmap`/`newgidmap`; a cgroup v2 mount with
+delegated controllers; and a kernel with the needed namespaces and seccomp since
+roughly 2024.
+
+What no combination stops: a node that holds a granted secret can exfiltrate it,
+no sandbox stops that; the stack trusts the host kernel, so a kernel bug is an
+escape to the runner's UID; an allowed host that is redirected or fronted can
+still receive a secret (the allow-list checks the destination, not the other
+end); and the sandbox setup itself is trusted code, a bug there silently
+downgrades the sandbox.
 
 ---
 
