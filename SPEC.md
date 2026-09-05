@@ -690,7 +690,7 @@ node runs as a subprocess, ADR-0008) with a generalized execution surface, and
 it extends the declared config with the lock model, mechanism flavors, egress
 control, and per-deployment disablement.
 
-### The execution surface
+### Execution surface
 
 Every mechanism's node runs as a subprocess (ADR-0008). How a node is allowed to
 run is a set of orthogonal, mechanism-independent **execution parameters**,
