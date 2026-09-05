@@ -505,7 +505,13 @@ field on the execution surface.
 
 The execution parameter categories (each independent; a node is set on each
 separately). A named bundle of values across these execution parameters is an
-**execution profile**, which is what a flavor pins and a node applies:
+**execution profile**, which is what a flavor pins and a node applies. A profile
+is declared in config and **referenced by name** in the Wafer (a node names the
+profile it uses), not spelled out inline, because an inline bundle becomes
+unreadable once long. A node whose requested profile cannot be satisfied (the
+host lacks a prerequisite such as unprivileged user namespaces or subuid
+ranges) must **fail loudly at validation or submit**, never silently degrade to
+a weaker configuration.
 
 - **containment**: filesystem and process isolation. What the node can reach
   and trace on the box. Mount masking, user namespace, PID namespace, subuid
@@ -604,6 +610,12 @@ make syscalls and so bypasses seccomp), an empty capability bounding set plus
 Each layer closes a specific hole; none is optional if the goal is the full
 reduction.
 
+This composes cleanly with the secret model's TPM-unlock tier: containment
+hides the TPM (and the rest of `/dev`) from nodes, which is correct, and the
+runner still reaches it because secret resolution runs in the runner's own
+process (per ADR-0033), never inside a node's containment. The two do not
+conflict.
+
 The runner spawns the node through a launcher (bwrap, nsjail, or `systemd-run`)
 that performs the namespace and mount setup before exec; Go's `os/exec` handles
 user namespaces and UID/GID mapping natively but not the mount tree or Landlock.
@@ -641,26 +653,30 @@ the client, and Servitor can use the simplest one for each node kind:
   warn it must not be relied on as the sole security mechanism (its argument
   inspection is TOCTOU-racy if done carelessly).
 
-The allow-list is declared where the node's destinations are declared, at two
-levels that compose through the lock model (see the flavors idea):
+The allow-list is declared at three levels that compose through the lock model
+(see the lock-model idea):
 
-- **Config level** (operator): on a mechanism, a flavor, or a connector. This
-  is the policy home, the deployment's answer to "this shell may reach only
-  these domains" or "this Singer tap may reach only its endpoint". It survives
+- **Config level, on a mechanism or flavor** (operator): the deployment's
+  policy, the answer to "this shell may reach only these domains". It survives
   across Wafers.
+- **Config level, on a connector** (operator): a declared connector (an MCP
+  server, a Singer tap or target, as the spec defines) carries its own outbound
+  scope beside its command and env, the answer to "this Stripe tap may reach
+  only its own API". Without this, a mechanism using any connector would have
+  to allow the union of every installed connector's hosts, giving a node
+  access to hosts it should not reach.
 - **Wafer level** (author): on the node itself. This is the per-run
   declaration, the specific destination a node needs (an `http` node already
   carries its `url`; a shell node declares the domains its command needs).
 
-The lock value decides which governs, per the lock model (see its own idea).
-When egress is **config-locked**, the config list is authoritative and the
-Wafer cannot override it; the node runs within that policy and its own
-destination must fall inside it. When **config-default**, the config sets the
-default but the Wafer may narrow or extend it per node. When **wafer-set**,
-the config does not constrain it and the Wafer's declaration governs. Both
-levels are needed: the config level carries the operator's policy, the Wafer
-level carries the per-node declaration, and the lock model decides how they
-combine. A reviewed shell script's destinations are knowable (the script is
+The lock value decides which governs, per the lock model. When egress is
+**config-locked**, the config list is authoritative and the Wafer cannot
+override it; the node runs within that policy and its own destination must fall
+inside it. When **config-default**, the config sets the default but the Wafer
+may narrow or extend it per node. When **wafer-set**, the config does not
+constrain it and the Wafer's declaration governs. The egress on/off and the
+static allow-list follow the egress rules already defined; both are settable at
+each level. A reviewed shell script's destinations are knowable (the script is
 reviewed), so egress control can stay meaningful for shell.
 
 For `mcp-stdio`, the server is a **local subprocess** that Servitor spawns and
@@ -877,22 +893,6 @@ node at the same plumbing cost, but the value and cost are not uniform:
    ranges + newuidmap).
 6. Landlock as a final deny-by-default layer once the others are proven.
 
-Open questions:
-
-- Whether a profile is referenced by name or the categories are declared inline.
-- How a node whose requested categories cannot be satisfied (host lacks userns
-  or subuid) is handled: it must fail loudly at validation or submit, never
-  silently degrade. A hard requirement, not an open nicety.
-- Whether the category enforcers stay under the single `exec` component or
-  split per category.
-- Interaction with the TPM-unlock tier of the secret model: if a node's `/dev`
-  hides the TPM, the node cannot reach the unlock material, but the runner
-  still must.
-- How egress control is declared and turned on: a per-mechanism, per-flavor, or
-  per-connector allow-list, and whether it is a single on/off plus a static
-  list or has per-node granularity. It is opt-in by default (unrestricted when
-  off).
-
 ## The lock model: who sets a parameter, config or Wafer
 
 **Depends on:** nothing. It is a standalone generalized primitive; the
@@ -971,12 +971,6 @@ value is decided by the lock on each parameter:
 One parameter is governed by exactly one of these; there is no layering of
 locks within a single parameter.
 
-Open questions:
-
-- Whether a locked value in `capabilities` is shown with its lock state so an
-  agent can see what it may set (leaning: yes, it is critical for the agent to
-  know why a Wafer using a locked parameter fails).
-
 ## Mechanism flavors: config-declared synthetic capabilities
 
 **Depends on:** the lock model idea (a flavor is a base mechanism plus pinned
@@ -1005,7 +999,12 @@ exactly the lock value on each parameter.
 
 A flavor names a base mechanism and pins a subset of its parameters. It is one
 level: it names a base mechanism, not another flavor, so there is no stacking
-and no ambiguity about what the base is.
+and no ambiguity about what the base is. Flavors live in their **own config
+section** (for example `flavors:` in `servitor.config.yaml`), distinct from the
+declared-connectors sections: a flavor is a synthetic capability, not an
+installed connector, so it is not an extension of the connector sections,
+though a flavor may reference a connector by name as one of its pinned
+parameters.
 
 A flavor **inherits** the things that define what it is, and **pins** the things
 that configure it:
@@ -1016,6 +1015,14 @@ that configure it:
   are fixed by the base and cannot be changed by a flavor.
 - Pinned by the flavor: the configurable parameters, on the function surface
   and the execution surface, each with a lock value.
+
+A flavor is a **bundle of per-parameter config-level locks**, so no new
+precedence rule is needed when a Wafer names a flavor: each parameter follows
+its one lock value exactly as the lock model defines (config-locked governs and
+the Wafer cannot override, config-default applies unless the Wafer overrides,
+wafer-set is the Wafer's choice, and an omitted wafer-set parameter is unset).
+There is no layering or combination on a single parameter, and the flavor does
+not change how a parameter's lock is applied.
 
 Its capability is the base's schema, with the pinned parameters shown at their
 config values and marked with their lock state, and every unpinned parameter
@@ -1043,17 +1050,31 @@ Concrete shell flavors:
 
 - **Scripts-only shell.** A shell flavor whose function surface is
   config-locked to "call a named script from an operator-gated folder" instead
-  of an arbitrary inline command. The config names the folder; validation
-  rejects an inline command and any script name that does not resolve inside
-  the folder. The folder is a deploy artifact gated by the same reviewed PR
-  pipeline as Wafers, so the trust boundary becomes "reviewed scripts" instead
-  of "reviewed inline commands". It closes the data-to-code injection boundary
-  for shell (THREATS.md): the Wafer names a script, the script consumes data as
-  data, so runtime data can never become part of the code that runs. The script
-  still runs through the execution surface, so it composes with containment.
+  of an arbitrary inline command. The config names the folder of allowed
+  scripts; validation rejects an inline command and any script name that does
+  not resolve inside the folder. The folder is a deploy artifact gated by the
+  same reviewed PR pipeline as Wafers, so the trust boundary becomes "reviewed
+  scripts" instead of "reviewed inline commands". It closes the data-to-code
+  injection boundary for shell (THREATS.md): the Wafer names a script, the
+  script consumes data as data, so runtime data can never become part of the
+  code that runs.
+
+  The script is **delivered to the node like a secret**, not read from a shared
+  folder inside the sandbox. The node never gets access to the whole scripts
+  folder; it receives exactly the one script it is told to run, delivered
+  per-node the way a declared secret is delivered (through the filtered env /
+  the node's grant), and the script lives in a runner-managed location the node
+  cannot see. The mechanism executes that one script. This mirrors the secrets
+  model's trust boundary, a node gets only its own declared script, nothing
+  else, and it removes the "grant the scripts folder as a read-only path" from
+  the containment picture entirely.
+
   Because the script is reviewed, its outbound destinations are known, so
   egress control stays meaningful for shell. A script stays plain shell, with
-  no Servitor config embedded in it.
+  no Servitor config embedded in it. A script receives its `{event, steps}`
+  input on **stdin, the normal node contract**, not argv: a script is a node and
+  gets node input the node way, and stdin is the channel the sandbox already
+  preserves across its boundaries.
 - **Sandboxed shell.** A shell flavor that pins the execution surface
   (containment, egress, resources, identity) rather than the function surface.
   Keeps shell's full power but runs it contained. This is what the researched
@@ -1071,20 +1092,6 @@ never carried, so the flavor framework is a real new concept, not a mechanical
 extension. BSSN says do not build the generalized framework until it has real
 users; there are already two candidate flavors (scripts-only, sandboxed), and
 the disable idea is the same "mechanism configuration" family.
-
-Open questions:
-
-- Whether a script is called with its `{event, steps}` input on stdin (the
-  normal node contract) or with argv.
-- Whether the scripts folder sits inside the sandbox (it should: bind-mounted
-  read-only, so a script cannot read beyond it).
-- Whether flavors are their own config section or an extension of the existing
-  declared-connectors sections.
-- The precise precedence rule when a Wafer names a flavor: how config-default
-  and wafer-set combine with a flavor's locks. Needs rigid definition before
-  implementation.
-- Whether scripts-only shrinks the demand for full `shell` enough that the
-  "wants the dangerous version" cases are rarer than they look.
 
 ## Disable mechanisms per deployment (a config-level off switch)
 
@@ -1116,7 +1123,15 @@ passes.
 How it would behave:
 
 - The registry stays the compiled-in set; the config filters it at load. A
-  disabled mechanism is still registered but marked disabled.
+  disabled mechanism is still registered but marked disabled. Disable is a
+  **blocklist**, not an allowlist: the operator disables the specific
+  capabilities they do not want. An allowlist posture is expressible by
+  disabling every capability not wanted; there is no separate allowlist mode.
+- Disable applies **per capability**, and a mechanism group is disabled by
+  disabling every capability in it (for example disable all of `webhook`).
+  Group disablement matters so that a future mechanism added to a disabled
+  group is not silently left enabled: disabling the group means everything in
+  it, now and later, is off.
 - `capabilities` reports a disabled capability explicitly (for example a
   `disabled: true` marker on the entry and in the index), rather than letting
   it vanish. This is critical because Servitor is agent-first: "this exists here
@@ -1127,12 +1142,19 @@ How it would behave:
 - Validation rejects a Wafer that uses a disabled mechanism, at dry-run and at
   submit (and anywhere else a Wafer is validated), with a clear error naming
   the disabled mechanism and the config entry. A Wafer cannot be registered
-  with a disabled node or trigger type.
+  with a disabled node or trigger type. On top of validation, a disabled
+  capability's run handler is also unreachable, defense in depth, so even if
+  validation were bypassed the handler could not run.
+- The declared config is loaded once at boot, so toggling a disable takes
+  effect on **daemon restart**, consistent with the existing load-once-at-boot
+  pattern and its change-detection gap (THREATS.md); no change-detection
+  machinery is added now.
 - The disabled state composes with the rest of the declared config: a webhook
   receiver whose mechanism is disabled, a declared MCP server or Singer tap
   whose mechanism is disabled, and a secret whose `source` mechanism is
-  disabled (the secret-resolution group, ADR-0036) all fail at validation or
-  use with the same clear error.
+  disabled (the secret-resolution group, ADR-0036). A dependency on a disabled
+  mechanism **fails at config load** with a clear error, rather than failing
+  later at use: a broken deployment is caught early, at load, not at run time.
 
 Why it is attractive: it makes the trust boundary operator-declarable. The
 reviewed-PR pipeline vouches for a Wafer's content; this lets the operator
@@ -1145,28 +1167,6 @@ the registry load, validation, and the capabilities output shape. It is a real
 decision with alternatives (disable vs delete, blocklist vs allowlist, mark
 disabled vs vanish), so it earns an ADR before building, plus tests that pin
 the validation and capabilities behavior.
-
-Open questions:
-
-- Blocklist (disable a few, the rest on) vs allowlist (enable only these, the
-  rest off). Blocklist is the direct reading of "disable any mechanism";
-  allowlist is the safer default.
-- Mechanisms only, or mechanism groups too (for example disable all of
-  `webhook` at once).
-- Whether a disabled capability is marked disabled in `capabilities` (the
-  leaning, so dry-run errors are legible) or removed entirely.
-- How disabled state composes with the load-once-at-boot config pattern and its
-  change-detection gap (THREATS.md): does toggling a mechanism need a daemon
-  restart?
-- Whether a flavor is disabled independently of its base mechanism (can a
-  deployment disable the normal `shell` while keeping a `shell` flavor, or
-  disable one flavor and not another). Since the point of flavors is
-  per-deployment constrained variants, disabling should work at both levels:
-  a flavor and its base mechanism are each disableable.
-- Whether a disabled mechanism's run handler is unreachable as defense in
-  depth, or the gate is validation-only.
-- Whether disabling a mechanism that others depend on (a secret source used by
-  a node) is rejected at config load or fails at use.
 
 ## (Add more ideas here as they come up; delete them when they become ADRs or
 ## are discarded.)
