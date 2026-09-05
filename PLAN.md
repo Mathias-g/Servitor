@@ -408,6 +408,184 @@ node's result, threaded into downstream `{event, steps}` input; `wait`,
 the store mutation still happens in one transaction in the worker's process;
 `go test ./...` stays green.
 
+## Phase 20: The lock model
+
+Who sets a parameter, config or Wafer (ADR-0051, SPEC: The lock model). The
+foundational generalized primitive the execution surface, flavors, egress, and
+disable all rest on. A parameter has one of three lock values, implicit in how
+it is written in the config: absent is wafer-set, a plain value is config-default,
+a value marked `locked: true` is config-locked. The precedence rule: config-locked
+governs (a Wafer override is rejected at validation), config-default applies
+unless the Wafer overrides, wafer-set is the Wafer's choice, an omitted wafer-set
+parameter is unset.
+
+- [ ] **Config surface.** The declared config (`servitor.config.yaml`) gains a
+  per-field `locked: true` marker, turning a field from config-default into
+  config-locked. The marker is parsed with the rest of the config.
+- [ ] **Lock derivation and validation.** A field's lock value is derived from
+  how it appears (absent / plain / locked). When a Wafer sets a config-locked
+  parameter, validation rejects it with a structured error naming the field and
+  the config entry.
+- [ ] **Tests.** Precedence: config-locked rejects a Wafer override; config-default
+  is overridden by a Wafer value; wafer-set is free; an omitted wafer-set parameter
+  is unset. The implicit derivation maps absent / plain / locked to the three values.
+  `go test ./...` stays green.
+
+**Done when:** a config-locked parameter cannot be overridden by a Wafer, a
+config-default parameter is overridable, a wafer-set parameter is free, and the
+derivation and precedence are pinned by tests.
+
+## Phase 21: The execution surface
+
+How a node is allowed to run, generalized (ADR-0052, SPEC: The execution
+surface). Execution parameters grouped into categories (containment, egress,
+resources, secrets, identity, data flow), an execution profile as a named bundle
+referenced by name in the Wafer, the default rule for which categories are on by
+default, the fail-loudly rule for an unsatisfiable profile, and the researched
+containment baseline (Linux-only, host prerequisites).
+
+- [ ] **Profiles and the default rule.** An execution profile is a named config
+  object, referenced by name in a Wafer node. A node whose requested profile
+  cannot be satisfied fails loudly at validation or submit, never degrades.
+  `data flow` (redaction) and the `secrets` env mode stay on by default, not
+  choices; `containment`, `identity`, `egress`, and `resources` are choices.
+- [ ] **Containment: mount masking first.** The highest-value reduction for the
+  least machinery, works on every kernel: the node subprocess runs with an empty
+  root and read-only binds of only what it needs (fresh `/tmp` and `/proc`, no
+  path to the run DB, config, or secret material). Spawned through a launcher
+  (bwrap, nsjail, or `systemd-run`) that receives a grants descriptor and
+  translates it into mounts before exec.
+- [ ] **Containment: namespaces.** Add a user namespace, PID namespace, and
+  network namespace (loopback only) per contained node. Cross-namespace ptrace
+  and `/proc/<pid>/mem` are denied by the kernel; the node cannot see or signal
+  the runner.
+- [ ] **Containment: seccomp, capability drop, no_new_privs, cgroup.** A seccomp
+  deny-list (including `io_uring_setup`), an empty capability bounding set plus
+  `no_new_privs`, and a per-node cgroup.
+- [ ] **Containment: subuid mapping and Landlock.** Map the node to a different
+  host UID via `/etc/subuid` and `newuidmap` for DAC-level separation, and
+  Landlock as a deny-by-default backstop. Host prerequisite: subuid ranges and
+  the `newuidmap` helpers.
+- [ ] **Host prerequisites.** Documented and checked: unprivileged user namespaces
+  enabled via an AppArmor profile for the Servitor daemon carrying the `userns`
+  rule (not the system-wide sysctl), `/etc/subuid` and `/etc/subgid` plus
+  `newuidmap`/`newgidmap`, and a cgroup v2 mount with delegated controllers.
+- [ ] **Tests.** The fail-loudly rule, profile-by-name resolution, the default
+  rule, and containment behavior per layer as each is built. `go test ./...`
+  stays green.
+
+**Done when:** a node can be hardened through a shared profile with the researched
+containment stack on a Linux host that has the one-time prerequisites, the
+pure-compute nodes are left unhardened by default, and the fail-loudly rule and
+default rule are pinned by tests.
+
+## Phase 22: Egress control
+
+Opt-in destination allow-listing (ADR-0053, SPEC: Egress control). When enabled,
+a node's outbound destinations must be declared values, not runtime data, and
+anything outside the allow-list is denied. The allow-list is declared at three
+levels (config on mechanism or flavor, config on connector, Wafer on node),
+composed through the lock model. Depends on the execution surface's network
+namespace (Phase 21).
+
+- [ ] **Declared-destination semantics and validation.** A destination is
+  declared if it is a literal or a reference to a config-declared value; a
+  destination derived from runtime input (`{event}`, `steps`, a loop variable) is
+  data, not declared, and rejected when egress control is on. The three declaration
+  levels compose through the lock model, including per-connector scope so a node
+  using one connector does not reach another connector's hosts.
+- [ ] **Owned-client check.** For `http`, `mcp-http`, and `email_received`, the
+  node checks its own declared destination against the allow-list before
+  connecting. Hostname-exact, no proxy or syscall.
+- [ ] **Cooperating-client proxy path.** Route a cooperating third-party client
+  (a Singer tap, any proxy-honoring tool) through an application proxy that checks
+  the destination from the handshake.
+- [ ] **Non-cooperating syscall path.** Enforce at the syscall level with
+  seccomp-unotify (`SECCOMP_RET_USER_NOTIF`, fd injection via
+  `SECCOMP_IOCTL_NOTIF_ADDFD`), with the destination attributed back to a hostname
+  via controlled DNS resolution (observed resolution, deny an IP with no observed
+  allowed resolution) rather than IP-pinning.
+- [ ] **Transport.** A UNIX domain socket bind-mounted into the node's mount
+  namespace, in a Servitor-owned non-world-writable directory (the runner's state
+  directory, never `/tmp`), stale socket unlinked before binding, `SOCK_STREAM`
+  over `AF_UNIX`. A single daemon-owned proxy, one socket path per node, nothing
+  for the user to configure.
+- [ ] **Blind-tunnel rule.** The egress proxy reads only the destination and
+  never inspects, logs, or filters payloads, so it does not become a place a
+  granted secret is visible outside its node.
+- [ ] **Tests.** The declared-versus-data rule, per-connector scoping, lock
+  precedence across the three levels, and the blind-tunnel rule. `go test ./...`
+  stays green.
+
+**Done when:** an operator can enable egress control on a mechanism, flavor,
+connector, or node with a static allow-list, data-driven destinations are blocked,
+the owned, cooperating, and non-cooperating paths enforce it, and the proxy stays
+a blind tunnel.
+
+## Phase 23: Mechanism flavors
+
+Config-declared synthetic capabilities (ADR-0054, SPEC: Mechanism flavors). A
+flavor names a base mechanism and pins a subset of its parameters with lock
+values, surfaces in `capabilities` like any other capability, and composes with
+disable (a base can be disabled while its flavor stays enabled). Depends on the
+lock model (Phase 20) and the execution surface (Phase 21).
+
+- [ ] **Config surface.** A `flavors:` section in `servitor.config.yaml`, each
+  entry naming a base mechanism, a flavor name, and pinned parameters with lock
+  values. One level: a flavor names a base mechanism, not another flavor.
+- [ ] **Inherit and pin.** A flavor inherits the base's Role, MechanismGroup,
+  SideEffect, Delivery, and RunKind, and pins configurable parameters on the
+  function and execution surfaces, each with a lock value. It has its own name
+  (base name plus configured flavor name) and is a distinct capability.
+- [ ] **Capabilities surface.** A flavor surfaces as a capability like any other,
+  its schema the base's with pinned fields shown at their config values and marked
+  with their lock state (config-locked shows `locked: true` inline), so an agent
+  sees what it may set without reading the config file.
+- [ ] **Concrete flavors.** Scripts-only shell (function surface config-locked to
+  call a named script from an operator-gated folder, the script delivered to the
+  node like a secret and reading `{event, steps}` on stdin) and sandboxed shell
+  (pins the execution surface, running contained).
+- [ ] **Tests.** A flavor surfaces in `capabilities`, a config-locked pinned
+  parameter is rejected when a Wafer overrides it, inherited identity matches the
+  base, and a base can be disabled while its flavor stays enabled (with Phase 24).
+  `go test ./...` stays green.
+
+**Done when:** an operator can declare a flavor that constrains a base mechanism
+and an agent can discover and author against it in `capabilities`, with the lock
+state visible and enforced.
+
+## Phase 24: Disable mechanisms
+
+A config-level off switch (ADR-0055, SPEC: Disable mechanisms). Per capability,
+a base mechanism and each of its flavors independently disableable, surfaced as
+disabled (not removed), with validation rejection and defense-in-depth handler
+unreachability. Depends on the lock model (Phase 20) and flavors (Phase 23).
+
+- [ ] **Config surface.** A disable surface in `servitor.config.yaml` listing the
+  capabilities and mechanism groups to disable. Blocklist, not allowlist; a group
+  is disabled by disabling every capability in it, so a future mechanism added to
+  a disabled group is not silently left enabled.
+- [ ] **Validation and enforcement.** Validation rejects a Wafer that uses a
+  disabled mechanism at dry-run and submit, naming the mechanism and the config
+  entry. Defense in depth: a disabled capability's run handler is also unreachable.
+  Per capability, so a base can be disabled while its flavor stays enabled.
+- [ ] **Capabilities surface.** `capabilities` reports a disabled capability with
+  a disabled marker rather than removing it, so an agent can see it exists but is
+  off and explain why a Wafer using it fails and point at the alternative.
+- [ ] **Load-time dependency failures.** A dependency on a disabled mechanism (a
+  webhook receiver, a declared connector, a secret whose source mechanism is
+  disabled) fails at config load with a clear error. Toggling a disable takes
+  effect on daemon restart, consistent with the load-once-at-boot pattern.
+- [ ] **Tests.** Validation rejects a Wafer using a disabled mechanism, a base can
+  be disabled while its flavor stays enabled (the flavor's Wafer passes, the
+  base's fails), a group disablement covers a future mechanism added to the group,
+  `capabilities` marks rather than removes, and a dependency failure fails at
+  config load. `go test ./...` stays green.
+
+**Done when:** an operator can disable a mechanism or group per deployment and
+make it impossible to use without a fork, the disabled state is visible to agents
+and enforced at validation and in the handler, and dependencies fail at load.
+
 ## Outstanding work
 
 Everything still to do, consolidated from the review of SPEC/ADRs vs the code.
