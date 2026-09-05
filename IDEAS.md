@@ -75,19 +75,71 @@ Open questions:
 
 ## Credential proxy + OS sandbox for nodes (a stronger runtime boundary)
 
-A separate, more ambitious idea split out of the secrets model. The provider + per-node delivery model still hands each node its resolved secret value (narrowly, per node, eliminated after). This idea goes further: keep the real value out of the untrusted node process entirely, even while the node uses it.
+**Depends on:** the execution surface idea (it is the proxy mode of the
+secrets axis) and its blind-tunnel egress rule (the credential proxy is the
+deliberate exception to that rule, not a replacement for it).
 
-Each node subprocess runs in a sandbox whose only egress is a credential proxy. The node holds a placeholder; the proxy swaps in the real value only on a TLS-verified connection to an allowlisted host, and scrubs it from responses. A prompt-injected or compromised node cannot leak what it never held. This is the only approach that directly closes node exfiltration of secrets it legitimately needs to *use*.
+This is the **proxy mode** of the secrets axis of the execution surface: an
+opt-in alternative to env delivery (ADR-0033). Today each node receives its
+declared secrets in its subprocess env, per node, eliminated after. Proxy mode
+goes further: keep the real value out of the node entirely, even while the node
+uses it. The node holds a placeholder; the proxy swaps in the real value only
+on a TLS-verified connection to an allow-listed host, and scrubs it from
+responses. A compromised node cannot copy what it never held.
 
-Why it is separate: it is not part of the secret-resolution spine (provider + per-node delivery). It is independently buildable, probably should not gate the core model, and has its own deep engineering and open questions. It needs a local HTTPS-interception proxy (Servitor's own, or an adopted broker such as varlock's preview proxy) plus sandboxing each node (the subprocess model of ADR-0008 is the natural base).
+### The tension with the blind-tunnel egress proxy, resolved
+
+The egress proxy of the execution surface is a **blind tunnel**: it reads only
+the destination and never payloads, and that is load-bearing, so it cannot
+become a place secrets are visible. The credential proxy **must** read and
+rewrite payloads to inject the value. These are not the same proxy. The egress
+proxy is the default path for destination control and stays blind; the
+credential proxy is a separate, secret-aware component used only by nodes
+explicitly opted into it (secrets axis = proxy). It is the deliberate exception
+to the blind-tunnel rule, engineered to hold secrets by construction:
+transient (the value dies with the connection, like per-node delivery),
+contained, and daemon-owned. For nodes on this path the "blind" guarantee does
+not hold by design, which is acceptable because it is an explicit opt-in for a
+specific node, never the default.
+
+### What it actually buys
+
+The one thing proxy mode adds over env delivery plus the execution surface is:
+a compromised node cannot copy its own granted secret into its memory, because
+the value never reaches it. That is narrow. The execution surface already
+prevents the node from reaching other secrets (containment), limits it to its
+own declared secrets (per-node delivery), and the honest ceiling already accepts
+that a node holding a granted secret can exfiltrate it. Proxy mode closes one
+specific instance of that, the node copying its own secret, for a narrow set of
+nodes.
+
+### Costs and limits
+
+- It introduces a new secret-handling component, a place secrets are visible,
+  which is exactly the surface the blind-tunnel rule protects against. Its own
+  security rests on being transient, contained, and trusted, not on "never sees
+  secrets".
+- It only works for cooperating, HTTPS-speaking clients (it must see and
+  rewrite the request). Non-cooperating nodes (`shell`, `mcp-stdio`, singer)
+  cannot use wire-injection; they hold real values or the value never reaches
+  them, which is a different design.
+- The confused-deputy residual is unchanged: the proxy injects the value into a
+  request to an allow-listed host, and if that host is fronted or redirected the
+  secret goes there. It checks the destination, not the other end.
+- It is HTTP/1.1 + public-CA only.
+
+Net: the benefit is marginal against the execution surface plus env delivery,
+and it costs a new secret-exposure point for the narrowest node slice. It is
+kept as an idea because it is the only thing that closes the node-copies-its-
+own-secret case, but it is not load-bearing and may not be worth building.
 
 Open questions:
 
-- The proxy only covers proxied HTTPS to public-CA hosts. What to do for `shell`, `singer-tap`/`singer-target`, and `mcp-call` (stdio) nodes, which do not speak proxied HTTPS: give them a sandbox without the wire-injection, or accept they hold real values?
-- Whether the proxy is Servitor's own implementation or an adopted broker, and how it composes with per-node sandboxing.
-- It is HTTP/1.1 + public-CA only, which constrains non-HTTP node types.
-
-A caution against this idea: an egress allowlist does not need a proxy to exist; a sandbox-level egress allowlist provides that on its own. The proxy's only distinctive job is keeping the real value out of the node's memory, so a compromised node cannot copy it. It does **not** stop a node that, given egress to an allowed host, causes a request containing the credential to go to a destination it effectively controls (an allowlisted host that has been redirected or that the attacker fronts). For `shell` that is the same hole an allowlist-only boundary has, so the proxy adds little over a plain sandbox + allowlist. It is worth asking whether the proxy is justified for any node type, or whether per-node delivery plus a sandbox-level egress allowlist is the right ceiling.
+- Whether the marginal benefit ever justifies the new secret-handling surface,
+  or whether env delivery plus the execution surface is the right ceiling
+  (leaning: the latter).
+- Whether proxy mode, if built, is per-node opt-in with a human-gated grant, in
+  keeping with the lock model.
 
 ## Secret permission enforcement (beyond informational)
 
@@ -423,6 +475,11 @@ stays consistent with ADR-0008's single-subprocess-mode rule.
 
 ## The execution surface: isolation and runtime policy as generalized primitives
 
+**Depends on:** the lock model idea (the axes are the parameters the lock model
+governs). It does not depend on the credential-proxy idea: that idea is merely
+the proxy mode of the secrets axis, a mention, not a load-bearing dependency,
+and the execution surface stands without it. It is otherwise foundational.
+
 Every mechanism's node runs as a subprocess (ADR-0008), and how a node is
 allowed to run is a set of orthogonal, mechanism-independent axes. Today the
 runtime implements only a few of them (subprocess boundary, per-node secret
@@ -450,8 +507,10 @@ pins and a node applies:
   robustness dial (long-running or runaway-prone work), not a confidentiality
   one.
 - **secrets**: how a secret reaches the node. Env (value handed to the
-  subprocess, per ADR-0033) or proxy (value never reaches the node) or none.
-  The credential-proxy idea lives on this axis, not in containment.
+  subprocess, per ADR-0033) is the default. Proxy (value never reaches the
+  node) is an optional, marginal mode, the credential-proxy idea, not a
+  load-bearing part of this axis; none is the case of no secrets. The
+  credential-proxy idea lives on this axis, not in containment.
 - **identity**: the UID / subuid the node runs as and the capabilities it
   holds.
 - **data flow** (already exists): capture and redaction of node output
@@ -575,15 +634,17 @@ levels that compose through the lock model (see the flavors idea):
   declaration, the specific destination a node needs (an `http` node already
   carries its `url`; a shell node declares the domains its command needs).
 
-The lock value decides which governs. When egress is **operator-locked**, the
-config list is authoritative and the Wafer cannot override it; the node runs
-within that policy and its own destination must fall inside it. When
-**operator-default**, the config sets the default but the Wafer may narrow or
-extend it per node. When **author-free**, only the Wafer sets it. So both
-levels are needed: the config level carries the operator's policy, the Wafer
-level carries the per-node declaration, and the lock model decides how they
-combine. A reviewed shell script's destinations are knowable (the script is
-reviewed), so egress control can stay meaningful for shell.
+The lock value decides which governs, per the lock model (see its own idea).
+When egress is **operator-locked**, the config list is authoritative and the
+Wafer cannot override it; the node runs within that policy and its own
+destination must fall inside it. When **operator-default**, the config sets the
+default but the Wafer may narrow or extend it per node. When **author-free**,
+the config does not constrain it and the Wafer's declaration (or the
+mechanism's built-in default) governs. Both levels are needed: the config level
+carries the operator's policy, the Wafer level carries the per-node
+declaration, and the lock model decides how they combine. A reviewed shell
+script's destinations are knowable (the script is reviewed), so egress control
+can stay meaningful for shell.
 
 For `mcp-stdio`, the server is a **local subprocess** that Servitor spawns and
 controls (its command, env, and stdio), and in Servitor's model each declared
@@ -711,8 +772,12 @@ inert, which is the implementation failure to avoid.
 
 - **A granted secret can still be exfiltrated.** A node holds its declared
   secrets in env and can copy them into its JSON result or, with any granted
-  egress, send them to an allowed host. No sandbox stops this; only the
-  secrets axis' proxy mode (keeping the value out of the node entirely) does.
+  egress, send them to an allowed host. No sandbox stops this. The secrets
+  axis' proxy mode (the credential-proxy idea, keeping the value out of the
+  node entirely) would close the node-copies-its-own-secret case, but it is a
+  marginal, optional mode with its own secret-handling surface (see that
+  idea); the accepted state is that a node holding a granted secret can
+  exfiltrate it.
 - **Kernel bugs.** All of this trusts the host kernel; a vulnerability in any
   allowed syscall or reachable driver is an escape to the runner's UID.
   Removing that residual needs gVisor or a VM, both out of proportion for
@@ -811,7 +876,83 @@ Open questions:
   list or has per-node granularity. It is opt-in by default (unrestricted when
   off).
 
+## The lock model: who sets a parameter, config or Wafer
+
+**Depends on:** nothing. It is a standalone generalized primitive; the
+execution-surface axes are the parameters it governs, and the flavors, egress,
+and disable ideas consume it.
+
+Every mechanism parameter, on every execution-surface axis, is governed by one
+cross-cutting question: **who gets to set it?** The lock model answers that. It
+applies to any parameter, on any axis, in any mechanism, and it is what makes a
+flavor a real constraint rather than a wish, what makes egress policy
+operator-enforceable, and what makes disable a hard off switch. It is a
+generalized primitive in its own right, defined here once and referenced by the
+flavors, egress, and disable ideas.
+
+A parameter has one of three lock values:
+
+- **operator-locked**: the config pins the value and the Wafer cannot override
+  it. The security-hard case.
+- **operator-default**: the config sets a default and the Wafer may override
+  it. The convenience case.
+- **author-free**: the config does not constrain the parameter at all, no pin
+  and no default, so the value comes from the Wafer (or the mechanism's own
+  built-in default). It is not that the config is forbidden from setting a
+  value, it is that the config simply does not, which is what distinguishes it
+  from operator-default.
+
+### The lock value is implicit in how a value is written, not a separate setting
+
+There is no lock-mode field to remember to set. The lock value is derived from
+whether and how a parameter appears in the config:
+
+- **Not in the config at all** = author-free. Nothing constrains it, the Wafer
+  decides.
+- **In the config, as a plain value, not marked locked** = operator-default.
+  The config provides the starting value, the Wafer may override it. This is
+  the common case and the least surprising: a user who just wants a sensible
+  default writes the value and does nothing else.
+- **In the config, marked locked** = operator-locked. The config pins it, the
+  Wafer cannot override. Locking is the deliberate extra step for a security
+  constraint.
+
+So the operator makes one decision per parameter they write: do they also mark
+it locked? Writing a plain value is a default; writing it and locking it is a
+hard constraint; not writing it at all leaves it to the Wafer. There is nothing
+else to remember.
+
+### The precedence rule
+
+When a Wafer names a flavor (or sets a parameter on a node), the effective
+value is decided by the lock on each parameter:
+
+- operator-locked: the config value governs, the Wafer's value is rejected at
+  validation.
+- operator-default: the config value applies unless the Wafer overrides it.
+- author-free: the Wafer's value (or the mechanism's built-in default) applies.
+
+One parameter is governed by exactly one of these; there is no layering of
+locks within a single parameter.
+
+Open questions:
+
+- Whether a locked value in `capabilities` is shown with its lock state so an
+  agent can see what it may set (leaning: yes, it is critical for the agent to
+  know why a Wafer using a locked parameter fails).
+- Whether the "marked locked" is a boolean on each config entry or a distinct
+  locked section in the config.
+- Whether operator-default and author-free truly differ in effect when the
+  Wafer always sets the value anyway (they do differ in the case where the
+  Wafer omits the parameter: default applies in one, the mechanism's built-in
+  default in the other).
+
 ## Mechanism flavors: config-declared synthetic capabilities
+
+**Depends on:** the lock model idea (a flavor is a base mechanism plus pinned
+parameters, and the pinning is exactly the lock model) and the execution
+surface idea (a flavor can pin execution-surface axes, not just function
+parameters).
 
 A flavor is a config-declared, named, synthetic mechanism: a base mechanism
 plus a pinned subset of its parameters, surfaced in `servitor capabilities`
@@ -821,20 +962,13 @@ taps and a Wafer names an instance, from command/url/env parameters to any
 parameter, including the execution surface of the first idea.
 
 The part that makes a flavor a real constraint rather than a wish is the lock
-model on each pinned parameter. A parameter is one of:
-
-- **operator-locked**: config pins the value, the Wafer cannot override it. The
-  security-hard case.
-- **operator-default**: config sets a default, the Wafer may override it. The
-  convenience case.
-- **author-free**: only the Wafer sets it; config does not touch it.
-
-A flavor is a mix of these per parameter. "Shell, scripts-only, hardened
-execution profile, timeout locked at 5m" is a flavor where the function surface
-is partly operator-locked (scripts-only), some execution axes are locked
-(hardened), and the timeout is operator-default. The distinction between a
-security constraint and a convenience default is exactly the lock value on each
-parameter.
+model (see the lock-model idea). A flavor pins each of its parameters with one
+of the three lock values, and a flavor is a mix of them per parameter: "Shell,
+scripts-only, hardened execution profile, timeout locked at 5m" is a flavor
+where the function surface is partly operator-locked (scripts-only), some
+execution axes are locked (hardened), and the timeout is operator-default. The
+distinction between a security constraint and a convenience default is exactly
+the lock value on each parameter.
 
 ### How a flavor is shaped
 
@@ -897,6 +1031,10 @@ Open questions:
   "wants the dangerous version" cases are rarer than they look.
 
 ## Disable mechanisms per deployment (a config-level off switch)
+
+**Depends on:** the lock model idea (disabling a mechanism is the availability
+parameter operator-locked to off) and the flavors idea (disable can apply to a
+flavor as well as its base mechanism).
 
 The mechanism registry is the compiled-in set (ADR-0045, ADR-0048): every
 capability a deployment can use is there unless its folder is deleted, which
