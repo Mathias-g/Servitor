@@ -88,7 +88,8 @@ property. Base mechanism files stay pure schema; the flavor's per-type file is
 where the pins show.
 
 A flavor has its own name (the base mechanism's name with the configured flavor
-name appended) and is a distinct capability from the base, with its own
+name appended, joined by a hyphen, for example `shell-scripts-only`) and is a
+distinct capability from the base, with its own
 availability: a base mechanism can be disabled while one of its flavors stays
 enabled, and each flavor is independently disableable (ADR-0055).
 
@@ -143,9 +144,10 @@ disabled while its flavor stays enabled. `go test ./...` stays green.
 Adds a `flavors:` section to the declared config (`servitor.config.yaml`), each
 entry naming a base mechanism, a flavor name, and pinned parameters with lock
 values. Adds new node type names to the Wafer schema: a flavor's name (base name
-plus configured flavor name) is authorable as a node `type:`. The `capabilities`
-output gains a flavor entry per declared flavor, with the base's schema and the
-pinned fields shown at their config values with lock state. A Wafer node using a
+plus `-` plus configured flavor name, for example `shell-scripts-only`) is
+authorable as a node `type:`. The `capabilities` output gains a flavor entry per
+declared flavor, with the base's schema and the pinned fields shown at their
+config values with lock state. A Wafer node using a
 config-locked pinned parameter is rejected at validation.
 
 ## More information

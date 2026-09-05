@@ -817,8 +817,10 @@ any other capability.
 - It inherits the base's Role, MechanismGroup, SideEffect, Delivery, and
   RunKind, and pins configurable parameters on the function and execution
   surfaces, each with a lock value.
-- It has its own name (the base name plus the configured flavor name) and is a
-  distinct capability from the base, with its own availability.
+- It has its own name (the base mechanism's name with the configured flavor
+  name appended, joined by a hyphen, for example a flavor named `scripts-only`
+  of the `shell` base mechanism is `shell-scripts-only`) and is a distinct
+  capability from the base, with its own availability.
 - In `capabilities`, a flavor's schema is the base's, with pinned fields shown
   at their config values and marked with their lock state (`locked: true` inline
   for a config-locked field), so an agent sees what it may set and what the

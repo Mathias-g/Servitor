@@ -540,7 +540,8 @@ lock model (Phase 20) and the execution surface (Phase 21).
 - [ ] **Inherit and pin.** A flavor inherits the base's Role, MechanismGroup,
   SideEffect, Delivery, and RunKind, and pins configurable parameters on the
   function and execution surfaces, each with a lock value. It has its own name
-  (base name plus configured flavor name) and is a distinct capability.
+  (base name plus `-` plus configured flavor name, for example
+  `shell-scripts-only`) and is a distinct capability.
 - [ ] **Capabilities surface.** A flavor surfaces as a capability like any other,
   its schema the base's with pinned fields shown at their config values and marked
   with their lock state (config-locked shows `locked: true` inline), so an agent
