@@ -809,8 +809,8 @@ mechanism folder, it refers to a real base mechanism (which does have a folder)
 and pins a subset of its parameters. It surfaces in `servitor capabilities` like
 any other capability.
 
-- Flavors live in their own config section (for example `flavors:` in
-  `servitor.config.yaml`), distinct from the declared-connectors sections,
+- Flavors live in their own config section, the `flavors:` section in
+  `servitor.config.yaml`, distinct from the declared-connectors sections,
   though a flavor may reference a connector by name as a pinned parameter.
 - A flavor is one level: it names a base mechanism, not another flavor, so there
   is no stacking.

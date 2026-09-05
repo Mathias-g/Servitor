@@ -54,7 +54,7 @@ Chosen option: "Option B".
 A flavor names a base mechanism and pins a subset of its parameters. It is one
 level: it names a base mechanism, not another flavor, so there is no stacking
 and no ambiguity about what the base is. Flavors live in their own config
-section (for example `flavors:` in `servitor.config.yaml`), distinct from the
+section, the `flavors:` section in `servitor.config.yaml`, distinct from the
 declared-connectors sections: a flavor is a synthetic capability, not an
 installed connector, though a flavor may reference a connector by name as one of
 its pinned parameters.
