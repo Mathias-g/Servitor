@@ -417,7 +417,8 @@ it is written in the config: absent is wafer-set, a plain value is config-defaul
 a value marked `locked: true` is config-locked. The precedence rule: config-locked
 governs (a Wafer override is rejected at validation), config-default applies
 unless the Wafer overrides, wafer-set is the Wafer's choice, an omitted wafer-set
-parameter is unset.
+parameter is unset (no hidden default; an optional parameter that is not set
+behaves as off or absent).
 
 - [ ] **Config surface.** The declared config (`servitor.config.yaml`) gains a
   per-field `locked: true` marker, turning a field from config-default into
@@ -572,7 +573,8 @@ unreachability. Depends on the lock model (Phase 20) and flavors (Phase 23).
   so a future mechanism added to a disabled group is not silently left enabled.
 - [ ] **Validation and enforcement.** Validation rejects a Wafer that uses a
   disabled mechanism at dry-run and submit, naming the mechanism and the config
-  entry. Defense in depth: a disabled capability's run handler is also unreachable.
+  entry (with the `disabled_mechanism` error code). Defense in depth: a disabled
+  capability's run handler is also unreachable.
   Per capability, so a base can be disabled while its flavor stays enabled.
 - [ ] **Capabilities surface.** `capabilities` reports a disabled capability with
   a top-level `disabled: true` field on its entry file (omitted when enabled),
