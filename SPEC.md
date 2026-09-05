@@ -710,10 +710,10 @@ groups the execution parameters for that dimension. A Role describes the
 capability itself; an execution parameter category describes the runtime of a
 node of that capability.
 
-The execution parameter categories are **independent dimensions**: a node's
-runtime configuration carries a value for each execution parameter category,
-and setting one does not force or constrain the others. Each execution parameter
-category is:
+The execution parameter categories are **independent groupings**: a node's
+runtime configuration carries a value for each execution parameter, and setting
+one execution parameter does not force or constrain the others. The execution
+parameter categories are:
 
 - **containment**: filesystem and process isolation. What the node can reach and
   trace on the box (mount masking, user namespace, PID namespace, subuid
@@ -735,14 +735,46 @@ satisfied (the host lacks a prerequisite such as unprivileged user namespaces or
 subuid ranges) fails loudly at validation or submit, never silently degrades to
 a weaker configuration.
 
-**The default rule**: an execution parameter category is on by default if and
-only if it costs the user nothing and has no side effect that makes a legitimate
-node stop working. If there is zero reason for it not to be on, it is not a
-choice, it is just on.
-`data flow` (redaction) and the `secrets` env mode are on by default, not
-choices. `containment`, `identity`, and `egress` are choices because they
-restrict what a node can reach and need host capabilities. `resources` is a
-choice because a limit can break a legitimate long-running or memory-heavy node.
+**The default rule**: an execution parameter is on by default if and only if it
+costs the user nothing to gain its benefit and has no side effect that makes a
+legitimate node stop working. If there is zero reason for it not to be on, it is
+not a choice, it is just on. The rule is applied **per execution parameter, not
+per execution parameter category**: a category only groups parameters, and
+different parameters in the same category can have different defaults (for
+example the `resources` memory cap and timeout are separate parameters).
+
+Applying the rule to the parameters: the `data flow` capture-and-redaction
+parameter is on by default, not a choice. The `secrets` env-delivery parameter
+is likewise the working default, not a choice. The containment and identity
+parameters are choices, because each changes what a node can see and trace on
+the box and needs unprivileged user namespaces, subuid ranges, or cgroups. Each
+egress parameter is a choice, because it restricts which destinations a node may
+reach and its off-state is full network reach, the permissive default. Each
+resource parameter is a choice, because a limit can break a legitimate
+long-running or memory-heavy node and a good default cap is workload-dependent.
+
+**What a contained node cannot do.** A node with the containment parameters on
+runs in its own user, PID, mount, and network namespaces with a reduced
+capability set. The observable guarantees are that such a node cannot ptrace or
+read the memory of the runner's process, cannot see or signal the runner or
+other nodes, cannot reach the run database, the config, or the on-box secret
+material, and cannot reach the network except as the egress parameters allow.
+Its filesystem view is an empty root with read-only binds of only what it was
+granted. These are the behavioral guarantees a deployment relies on; the host
+prerequisites they need are listed under Host requirements below. The full
+research rationale for how these guarantees are achieved (user namespace and
+subuid semantics, the launcher) lives in ADR-0052.
+
+**Which nodes are hardened.** Containment and egress are applied to the nodes
+whose executed code is not Servitor's own and that hold secrets: `shell`,
+`mcp-stdio`, `singer-tap` and `singer-target`, and the `email_received` fetcher.
+The `http`, `mcp-http`, and `email_received` nodes get the cheap exact-egress
+treatment (their destination is declared in the node). The pure-compute nodes
+(`transform`, `switch`, `foreach`) are not hardened by default: they hold no
+secrets, need no egress, and sit on the hot loop where per-spawn overhead would
+be felt. Resource limits are applied to long-running or runaway-prone work
+(`singer-tap`, `mcp-stdio`, `shell`, the `email` poller), not to short-lived
+`http` or compute nodes.
 
 ### The lock model
 

@@ -70,10 +70,10 @@ groups the execution parameters for that dimension. A Role describes the
 capability itself; an execution parameter category describes the runtime of a
 node of that capability.
 
-The execution parameter categories are **independent dimensions**: a node's
-runtime configuration carries a value for each execution parameter category, and
-setting one does not force or constrain the others. Each execution parameter
-category is:
+The execution parameter categories are **independent groupings**: a node's
+runtime configuration carries a value for each execution parameter, and setting
+one execution parameter does not force or constrain the others. The execution
+parameter categories are:
 
 - **containment**: filesystem and process isolation. What the node can reach
   and trace on the box. Mount masking, user namespace, PID namespace, subuid
@@ -97,16 +97,28 @@ satisfied (the host lacks a prerequisite such as unprivileged user namespaces
 or subuid ranges) must fail loudly at validation or submit, never silently
 degrade to a weaker configuration.
 
-**The default rule**: an execution parameter category is on by default if and
-only if it costs the user nothing and has no side effect that makes a legitimate
-node stop working. If there is zero reason for it not to be on, it is not a
-choice, it is just on.
-Applying the rule: `data flow` (redaction) and the `secrets` env mode are on by
-default, not choices. `containment`, `identity`, and `egress` are choices
-because they restrict what a node can reach and need host capabilities; the
-`egress` off-state is full network reach, the permissive default. `resources`
-is a choice because a limit can break a legitimate long-running or
-memory-heavy node, and a good default cap is workload-dependent.
+**The default rule**: an execution parameter is on by default if and only if it
+costs the user nothing to gain its benefit and has no side effect that makes a
+legitimate node stop working. If there is zero reason for it not to be on, it is
+not a choice, it is just on. The rule is applied **per execution parameter, not
+per execution parameter category**: a category only groups parameters, and
+different parameters in the same category can have different defaults (for
+example the `resources` memory cap and timeout are separate parameters, and the
+`containment` mount masking and subuid mapping are separate parameters).
+
+Applying the rule to the parameters: the `data flow` capture-and-redaction
+parameter costs nothing and breaks nothing, so it is on by default, as it is
+today, not a choice. The `secrets` env-delivery parameter is likewise the
+working default, not a choice; it is how secrets reach a node at all. The
+containment and identity parameters are choices: each changes what a node can
+see and trace on the box, which can break a node that legitimately needs host
+access, and each needs unprivileged user namespaces, subuid ranges, or cgroups
+that not every deployment has. Each egress parameter is a choice: it restricts
+which destinations a node may reach, which can break a node that legitimately
+reaches arbitrary hosts, and its off-state is full network reach, the permissive
+default. Each resource parameter is a choice: a limit can break a legitimate
+long-running or memory-heavy node, and a good default cap is workload-dependent,
+so it cannot be a universal default.
 
 **The containment baseline (Linux-only)**. Research settled that containing a
 subprocess running as the same UID as the runner is achievable, with the honest
@@ -190,10 +202,11 @@ sit on the hot loop where per-spawn overhead is felt.
 
 Tests pin the fail-loudly rule (a node whose requested profile cannot be
 satisfied fails at validation or submit, never degrades), the profile-by-name
-resolution, and the default rule (which execution parameter categories are on
-by default). Containment behavior is verified per execution parameter category
-as each is built (mount masking first, then namespaces, then seccomp and
-cgroups). `go test ./...` stays green.
+resolution, and the default rule (which execution parameters are on by
+default). Containment behavior is verified per execution parameter category (for
+example the mount-masking and namespace layers each have tests asserting the
+node cannot reach the runner's process, run DB, or secret material).
+`go test ./...` stays green.
 
 ## Interface notes
 

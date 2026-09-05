@@ -440,16 +440,19 @@ derivation and precedence are pinned by tests.
 How a node is allowed to run, generalized (ADR-0052, SPEC: The execution
 surface). Execution parameters grouped into execution parameter categories
 (containment, egress, resources, secrets, identity, data flow), an execution
-profile as a named bundle referenced by name in the Wafer, the default rule for
-which execution parameter categories are on by default, the fail-loudly rule for
-an unsatisfiable profile, and the researched containment baseline (Linux-only,
+profile as a named bundle referenced by name in the Wafer, the default rule
+(which execution parameters are on by default), the fail-loudly rule for an
+unsatisfiable profile, and the researched containment baseline (Linux-only,
 host prerequisites).
 
 - [ ] **Profiles and the default rule.** An execution profile is a named config
   object, referenced by name in a Wafer node. A node whose requested profile
   cannot be satisfied fails loudly at validation or submit, never degrades.
-  `data flow` (redaction) and the `secrets` env mode stay on by default, not
-  choices; `containment`, `identity`, `egress`, and `resources` are choices.
+  The default rule is applied per execution parameter, not per execution
+  parameter category (a category only groups parameters). The `data flow`
+  capture-and-redaction and `secrets` env-delivery parameters are on by default,
+  not choices; the containment, identity, egress, and resource parameters are
+  choices.
 - [ ] **Containment: mount masking first.** The highest-value reduction for the
   least machinery, works on every kernel: the node subprocess runs with an empty
   root and read-only binds of only what it needs (fresh `/tmp` and `/proc`, no
@@ -478,7 +481,7 @@ host prerequisites).
 **Done when:** a node can be hardened through a shared profile with the researched
 containment stack on a Linux host that has the one-time prerequisites, the
 pure-compute nodes are left unhardened by default, and the fail-loudly rule and
-default rule are pinned by tests.
+the per-parameter default rule are pinned by tests.
 
 ## Phase 22: Egress control
 
