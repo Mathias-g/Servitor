@@ -421,292 +421,478 @@ dedicated small binary vs re-adding an in-process path; which mechanisms
 qualify (likely `transform` first, then `switch` and `foreach`); and how it
 stays consistent with ADR-0008's single-subprocess-mode rule.
 
-## Sandbox the shell node on Linux: user namespaces, mount masking, and an egress allow-list
+## The execution surface: isolation and runtime policy as generalized primitives
 
-`shell` is the most powerful node and the one the runtime contains least. It is
-arbitrary code running as the runner's user on the host. The subprocess
-boundary (ADR-0008) isolates the runner's process from the node, not the host
-from the node: a shell node can read the SQLite file, the config, and call the
-decryption service or TPM to obtain any on-box secret on demand (SPEC: Secret
-resolution admits exactly this). Today the real boundary around `shell` is the
-trusted Wafer author and the reviewed PR pipeline, not the runtime. This idea
-is the researched answer to "what OS-level isolation makes `shell` mostly
-safe". It is Linux-only by choice. The research (Sept 2026) settled the core
-question: containment of a same-UID child is achievable, with user namespaces
-and (better) subuid mapping, and the honest ceiling is the granted secret and
-the kernel, not the node's access to the box.
+Every mechanism's node runs as a subprocess (ADR-0008), and how a node is
+allowed to run is a set of orthogonal, mechanism-independent axes. Today the
+runtime implements only a few of them (subprocess boundary, per-node secret
+delivery, output capture and redaction). This idea makes the whole set a
+generalized feature: any current or future mechanism can be hardened without
+per-mechanism work, because the enforcement machinery is shared. It grew out of
+asking what it would take to make the shell node safe, but the answer is not a
+shell feature, it is a runtime primitive.
 
-The natural shape is a **separate mechanism, `sandboxed-shell`, alongside
-`shell`**, not a modification of it. This matches how Servitor already handles
-variants: `hmac-webhook` vs `standard-webhook`, `mcp-stdio` vs `mcp-http`, and
-`singer-tap` vs `singer-target` are separate mechanisms whose type name carries
-the variant (SPEC: How an agent discovers capabilities). The author picks which
-one a node uses, and the choice is visible in the Wafer. `shell` stays exactly
-as it is for deployments that want the dangerous version, so existing Wafers
-are untouched. The operator decides which exist: the disable idea can turn
-`shell` off while keeping `sandboxed-shell`, or delete the `core/shell/` folder
-outright (the mechanism folder is the unit of deletion, ADR-0048).
+The axes (each independent; a node is set on each separately). A named bundle
+of values across these axes is an **execution profile**, which is what a flavor
+pins and a node applies:
 
-There is a competing shape worth stating, from the same observation that the
-sandbox is a *how* (the way a node runs) and not a *what* (a different thing
-the node does). The product already declares preconfigured versions of
-mechanisms in config and surfaces them as capabilities: ADR-0018's declared
-connectors (`mcp/servers.yaml`, `singer/taps.yaml`) are named instances that
-pin the command and env, and a Wafer names an instance, never a per-instance
-type. A **mechanism flavor** would generalize that pattern from
-command/url/env parameters to behavioral parameters: the config could declare
-`sandboxed-shell` and `scripts-only-shell` as named preconfigurations of
-`shell` that appear as capabilities, derived from the base mechanism's schema
-with values pinned, the way `capabilities` already derives example fragments
-from schemas. That fits the declared-config philosophy (the box advertises what
-it supports, per deployment) and avoids a compiled-in type per combination.
-The honest caveat: the sandbox changes the execution harness, an axis the
-declared-connectors pattern never carried, so a flavor framework is a real new
-concept, not a mechanical extension. BSSN says do not build the generalized
-framework until it has real users; there are already two candidate flavors
-(`sandboxed-shell`, `scripts-only-shell`), and the disable idea is the same
-"mechanism configuration" family, so the choice is between keeping them as
-distinct capability names today and generalizing to flavors when a third real
-one appears.
+- **containment**: filesystem and process isolation. What the node can reach
+  and trace on the box. Mount masking, user namespace, PID namespace, subuid
+  mapping, seccomp, capability drop.
+- **egress**: network reach, opt-in. When enabled, a node's outbound
+  destinations must be static declared values, not runtime data, and it is
+  denied anything outside the declared allow-list. The point is not "we know
+  the destinations and list them", it is that data cannot drive where a node
+  connects: a hardcoded `curl https://api.github.com/...` passes, a
+  `curl $URL` with a data-derived `$URL` is blocked. Disabled (the default)
+  means unrestricted, matching how nodes behave today.
+- **resources**: memory, cpu, pids, time. cgroup limits and timeout. A
+  robustness dial (long-running or runaway-prone work), not a confidentiality
+  one.
+- **secrets**: how a secret reaches the node. Env (value handed to the
+  subprocess, per ADR-0033) or proxy (value never reaches the node) or none.
+  The credential-proxy idea lives on this axis, not in containment.
+- **identity**: the UID / subuid the node runs as and the capabilities it
+  holds.
+- **data flow** (already exists): capture and redaction of node output
+  (ADR-0050).
 
-### The key finding: same-UID containment is possible
+Why "isolation levels" is the wrong frame: there is no single isolation ladder.
+The credential-proxy never fit as a "level" because it is not a higher
+containment tier, it is a different axis (how secrets are delivered) that also
+happens to reduce what a node can exfiltrate.
 
-The earlier framing ("a same-UID sandbox is not a privilege boundary") was too
-absolute. It is true only without a user namespace:
+### The default rule: an axis is on by default only when it costs nothing and breaks nothing
+
+Whether an axis is a choice, or on by default, follows one rule: **an axis
+should be default-on if and only if it costs the user nothing to gain the
+benefit and has no side effect that would make a legitimate node stop working.
+If there is zero reason for it not to be on, it is not a choice, it is just on.**
+A hardening axis that restricts what a node can reach, or that can break a
+legitimate workload, or that depends on a host capability not every deployment
+has, is a choice, because turning it on has a real cost.
+
+Applying the rule to the axes:
+
+- **On by default, not a choice:** `data flow` (capture and redaction, ADR-0050)
+  costs nothing and breaks nothing, so it is always on, as it is today. The
+  `secrets` env mode is likewise the working default, not a choice; it is how
+  secrets reach a node at all.
+- **A choice, because it restricts reach:** `containment` and `identity` change
+  what a node can see and trace on the box, which can break a node that
+  legitimately needs host access, and they need unprivileged user namespaces,
+  subuid ranges, and cgroups that not every deployment has. `egress` restricts
+  which destinations a node may reach, which can break a node that legitimately
+  reaches arbitrary hosts, and its off-state is full network reach, the
+  permissive default.
+- **A choice, because it can break a workload:** `resources` imposes limits
+  that can break a legitimate long-running or memory-heavy node, and a good
+  default cap is workload-dependent, so it cannot be a universal default.
+
+So the hardening axes are opt-in because every one of them has a nonzero cost
+or side effect, and the costless ones are not choices at all. This is the
+load-bearing rule for why any axis is or is not a default.
+
+### The researched baseline for containment (Linux-only)
+
+Research (Sept 2026) settled the core containment question: containing a
+subprocess that runs as the same UID as the runner is achievable, and the
+honest ceiling is the granted secret and the kernel, not the node's access to
+the box.
+
+The earlier assumption ("a same-UID sandbox is not a privilege boundary") is
+true only without a user namespace:
 
 - **Without a user namespace**, a same-UID child is not containable against
-  the runner. On stock kernels (Yama ptrace_scope=0) it can ptrace the runner
-  and read its memory; on Ubuntu/Debian defaults (Yama=1) it cannot trace the
-  runner, but that protection is distribution-dependent and absent upstream,
+  the runner. On stock kernels it can ptrace the runner and read its memory; on
+  Ubuntu/Debian defaults the protection exists but is distribution-dependent,
   and it can still signal the runner and shares DAC file access.
 - **With the node in its own user namespace**, cross-namespace ptrace and
-  `/proc/<pid>/mem` access are denied unconditionally by the kernel's ptrace
-  access-mode check, regardless of Yama. This closes "trace the runner and read
-  its memory" as a kernel property, at the same UID.
+  `/proc/<pid>/mem` access are denied unconditionally by the kernel, regardless
+  of distro. This closes "trace the runner and read its memory" as a kernel
+  property, at the same UID.
 - **Mapping the node to a different host UID** (subuid mapping via
   `/etc/subuid` and `newuidmap`, the rootless-container mechanism) makes
   "cannot read the runner's files" true at the DAC/filesystem level, not by
-  policy: the run DB, config, and on-box secret material are simply another
-  user's files to the node. This is the biggest single win and works
-  unprivileged.
+  policy. This is the biggest single win and works unprivileged.
 
-So "mostly safe" is a real, reachable target: not a hard wall, but blast radius
-reduced to (mostly) the node's granted secrets and the kernel itself.
+The concrete stack per contained node: a user namespace, a PID namespace (can't
+see or signal the runner), a mount namespace with an empty root and read-only
+binds of only what the node needs (fresh `/tmp` and `/proc`, no path to the run
+DB, config, or secret material), a network namespace with only loopback so
+egress is controlled per the egress section below, a seccomp deny-list
+(including `io_uring_setup`, which executes work in kernel threads that never
+make syscalls and so bypasses seccomp), an empty capability bounding set plus
+`no_new_privs`, Landlock as a deny-by-default backstop, and a per-node cgroup.
+Each layer closes a specific hole; none is optional if the goal is the full
+reduction.
 
-### The concrete stack (Linux-only, kernels ~5.13+, better on 6.12+/7.x)
+The runner spawns the node through a launcher (bwrap, nsjail, or `systemd-run`)
+that performs the namespace and mount setup before exec; Go's `os/exec` handles
+user namespaces and UID/GID mapping natively but not the mount tree or Landlock.
+The launcher receives a small grants descriptor (paths, scratch dir, egress
+allow-list, seccomp profile, subuid) and translates it into mounts and rules, so
+the node never sees the mechanism. The existing data channels are unchanged:
+filtered env and stdin/stdout/stderr work across every boundary, and per-node
+secret delivery (ADR-0033) composes unchanged.
 
-Per shell node, spawn it as:
+### How egress enforcement works (the shape that works)
 
-1. **A new user namespace** (identity map, or the subuid map below).
-2. **A new PID namespace**: the node cannot see or signal the runner, and PID
-   1 reaps zombies.
-3. **A new mount namespace with an empty tmpfs root**, read-only binds of
-   exactly what the node needs (its command and runtime libs, any granted
-   data), a read-write scratch/output dir, fresh `/tmp` and `/proc`, and
-   nothing else: no path to the run DB, config, TPM socket, or key material.
-4. **A new network namespace with only loopback**, so all egress goes through a
-   runner-side proxy that enforces a per-connection host(+port) allow-list,
-   checking each new connection (and each redirect) as it happens.
-5. **seccomp**: deny the dangerous set outright (ptrace, process_vm_readv/
-   writev, mount, pivot_root, bpf, perf_event_open, keyctl, kexec) and deny
-   `io_uring_setup` and the io_uring family unconditionally. io_uring executes
-   work in kernel worker threads that never make syscalls, so seccomp does not
-   cover it and it bypasses the filter.
-6. **Capability bounding set dropped to empty** plus `no_new_privs`, so the
-   node can never exec its way back up.
-7. **Landlock** (kernel 6.7+ for TCP rules, 6.12+ for scopes) as a deny-by-
-   default filesystem and port backstop layered over the mount namespace. It is
-   the newest and least battle-tested layer; treat it as defense in depth, not
-   the primary boundary.
-8. **A per-node cgroup v2** with memory/pids/cpu limits and a BPF device
-   filter (no devices; the node's `/dev` is fresh), killed wholesale via
-   `cgroup.kill`.
+When egress control is enabled, the mechanism that works depends on who owns
+the client, and Servitor can use the simplest one for each node kind:
 
-Each layer closes a specific hole: userns closes tracing, PID ns closes signals
-and process visibility, mount ns closes file and store access, net ns + proxy
-closes arbitrary egress, seccomp shrinks the kernel attack surface, subuid
-closes DAC-level access to the runner's files.
+- **Servitor owns the client** (`http`, `mcp-http`, `email_received`): the
+  destination is already a declared value in the node (`http` carries the URL
+  in argv, `mcp-http` looks it up from the declared connector, email has its
+  IMAP host). The node checks its own destination against the allow-list before
+  connecting. Hostname-exact, no proxy or syscall needed.
+- **A cooperating third-party client** (Singer taps/targets, and any MCP
+  server or shell tool that honors `ALL_PROXY`/`http_proxy`): route it through
+  an application proxy that sees the hostname in the handshake and checks it
+  against the allow-list. Hostname semantics, proxy resolves per connection.
+- **A non-cooperating client** (an MCP server or shell tool that ignores proxy
+  configuration and opens its own TCP): enforce at the syscall level using
+  **seccomp-unotify** (`SECCOMP_RET_USER_NOTIF`, kernel 4.14+, with fd injection
+  via `SECCOMP_IOCTL_NOTIF_ADDFD` since 5.9). A filter returns USER_NOTIF on
+  `connect()`, the supervisor (Servitor) reads the destination address from the
+  syscall arguments, checks it against the allow-list, and either denies it or
+  performs the connect and injects the connected fd back into the node. This
+  works for any binary whether or not it cooperates. Because it intercepts
+  after resolution, it sees an IP, which is why the controlled-DNS attribution
+  above is needed for hostname semantics. Treat seccomp-unotify as the
+  enforcement layer over the netns, not the boundary itself; the kernel docs
+  warn it must not be relied on as the sole security mechanism (its argument
+  inspection is TOCTOU-racy if done carelessly).
 
-### What the runner must do
+The allow-list is declared where the node's destinations are declared, at two
+levels that compose through the lock model (see the flavors idea):
 
-- Spawn the node through a **launcher** (bwrap or nsjail, or `systemd-run`
-  with the equivalent systemd.exec options) that performs the namespace, mount,
-  mapping, and seccomp setup before exec, then execs the shell. Go's `os/exec`
-  handles user namespaces and UID/GID mapping natively via `SysProcAttr`
-  (`Cloneflags`, `UidMappings`, `GidMappings`), but the mount tree and Landlock
-  need a launcher: Go's runtime is multithreaded and `os/exec` has no pre-exec
-  mount hook.
-- Pass the node a small structured **grants descriptor** (read-only paths,
-  writable scratch dir, egress allow-list, seccomp profile, desired subuid).
-  The launcher, not the node, translates grants into mounts and rules, so the
-  node never sees the mechanism.
-- The existing data channels are unchanged and work across every boundary: the
-  filtered env (PATH + declared secrets) survives exec and all namespaces, and
-  stdin/stdout/stderr pipes work across UID and namespace boundaries. Per-node
-  secret delivery (ADR-0033) composes with the sandbox unchanged; the sandbox
-  hides everything else.
-- Teardown via SIGKILL through the PID namespace or `cgroup.kill`, then clean
-  the scratch dir.
+- **Config level** (operator): on a mechanism, a flavor, or a connector. This
+  is the policy home, the deployment's answer to "this shell may reach only
+  these domains" or "this Singer tap may reach only its endpoint". It survives
+  across Wafers.
+- **Wafer level** (author): on the node itself. This is the per-run
+  declaration, the specific destination a node needs (an `http` node already
+  carries its `url`; a shell node declares the domains its command needs).
 
-### Host requirements
+The lock value decides which governs. When egress is **operator-locked**, the
+config list is authoritative and the Wafer cannot override it; the node runs
+within that policy and its own destination must fall inside it. When
+**operator-default**, the config sets the default but the Wafer may narrow or
+extend it per node. When **author-free**, only the Wafer sets it. So both
+levels are needed: the config level carries the operator's policy, the Wafer
+level carries the per-node declaration, and the lock model decides how they
+combine. A reviewed shell script's destinations are knowable (the script is
+reviewed), so egress control can stay meaningful for shell.
 
-- **Unprivileged user namespaces enabled.** The one real friction point:
-  Ubuntu 23.10+ and 24.04+ restrict unprivileged userns by default via
-  AppArmor (`kernel.apparmor_restrict_unprivileged_userns=1`), which blocks the
-  bwrap/nsjail userns path for unconfined processes. The fix is an AppArmor
-  profile for the Servitor daemon carrying the `userns` rule, or the sysctl set
-  to 0. This is an install prerequisite to call out.
-- For subuid mapping: `/etc/subuid` and `/etc/subgid` entries for the runner's
-  user, and the `newuidmap`/`newgidmap` setuid helpers (shadow-utils).
-- For cgroups: a cgroup v2 mount with delegated controllers (systemd's
-  `Delegate=` handles it).
-- A kernel with userns, PID, mount, and net namespaces plus seccomp, and
-  (optional) Landlock; distro kernels since roughly 2024 qualify.
+For `mcp-stdio`, the server is a **local subprocess** that Servitor spawns and
+controls (its command, env, and stdio), and in Servitor's model each declared
+server is a bounded integration with a known destination, one API per server
+like a Singer tap. So the stdio server itself is local and its process is
+Servitor's to constrain, but the APIs its tools reach are remote, and the
+`mcp-http` mechanism connects to a remote server outright. Either way the
+destination it may reach is declarable per declared server, exactly like a
+Singer tap's endpoint. The one caveat is a
+server whose tool fetches a URL supplied as an argument, which makes the
+destination data-derived and therefore subject to the same egress restriction
+as any data-driven destination.
+
+#### Hostname semantics versus IP: what the allow-list actually checks
+
+The allow-list is written as hostnames, but for the non-cooperating syscall
+path the check happens after the program has resolved the name, so it sees an
+IP, not the hostname. Enforcing hostnames there requires controlling the
+program's resolution: route its DNS through a resolver Servitor observes,
+record each hostname it resolves, and attribute each connect IP back to the
+hostname that was allowed, denying any IP with no observed allowed resolution.
+Do not pin a fixed set of IPs: for any CDN or load-balanced destination the IPs
+rotate continuously (often on sub-minute TTLs), so a startup-pinned set becomes
+wrong within minutes and then silently blocks legitimate connections. Pinning
+is the trap to avoid; observed-resolution attribution is the working path.
+Even the observed-resolution path is best-effort, not a hard boundary: a
+compromised client or resolver can transiently point an allowed name at a
+disallowed IP (DNS rebinding), so it should not be documented as a
+cryptographic guarantee. The owned and cooperating paths see the hostname
+directly and need none of this.
+
+#### How a loopback-only netns node reaches the proxy (the transport)
+
+A node in a network namespace with only loopback has no route out to a
+host-side proxy, so the proxy cannot live on the host and be reached by
+address. The transport that works is a **UNIX domain socket bind-mounted into
+the node's mount namespace**: a filesystem-path UNIX socket is scoped by the
+mount namespace, so bind-mounting the proxy's socket file into the node's view
+makes it reachable even though the netns has only loopback. The node's only way
+out is that one socket, and every connection through it reaches the proxy,
+which checks the allow-list. The mount namespace and the netns work together:
+the mount ns makes the proxy socket reachable, the netns guarantees there is no
+other route. The socket must exist and be reachable at a path the node sees
+before the node runs, and it must be accessible to the node's UID. The socket's
+path must live in a Servitor-owned, non-world-writable directory (the runner's
+state directory, never `/tmp`): a UNIX socket is a filesystem object, so its
+protection is the directory's permissions, and a socket in a world-writable
+directory like `/tmp` is attackable through that shared path. Bind it in the
+runner's own directory with owner-only permissions, and only the node that is
+explicitly granted it (via the mount namespace) can reach it. A pathname
+socket file does not remove itself when the process exits: the runner must
+unlink a stale socket file before binding (or at startup), or a crash followed
+by a restart fails with `EADDRINUSE` even though nothing is listening. Abstract
+sockets avoid the cleanup problem but are the wrong choice here: they are
+scoped by the network namespace and have no filesystem access control, so
+anything in the node's netns could reach them. A pathname socket gets its
+access control from the filesystem for free; an abstract socket would force
+per-connection `SO_PEERCRED` checks on the server side instead, which is more
+code and easier to get wrong, and it still would not give the mount-namespace
+scoping the transport relies on.
+
+The socket is **`SOCK_STREAM`** over `AF_UNIX`. The node-to-proxy leg speaks a
+stream protocol (SOCKS5 or HTTP CONNECT), which has its own framing, so a
+byte-stream socket matches it; `SOCK_SEQPACKET` would only fit a message-
+boundary-preserving protocol, which this is not, and `SOCK_DGRAM` is
+connectionless and unreliable, wrong for a tunnel. Both ends must agree on the
+socket type, or the kernel reports a confusing protocol-mismatch error.
+
+### Lifecycle: one proxy, per-node socket, nothing for the user to configure
+
+The egress proxy is a **single daemon-owned process**, started and owned by the
+runner, used by every sandboxed node. It is not spun up per node: spawning a
+proxy per node multiplies process count, socket setup, and connection state for
+no benefit, and the allow-list logic is identical. Each sandboxed node gets its
+**own socket path** (created in the runner's state directory, bind-mounted into
+that node's mount namespace, and cleaned up when the node ends). A per-node
+socket path is what lets the proxy know which node a connection belongs to and
+apply that node's allow-list; a shared socket would force the proxy to
+identify the node some other way, which is more machinery and more room for
+error.
+
+Operationally, the user does not configure any of this. The proxy, launcher,
+namespaces, subuid, and cgroups are daemon-internal and default-off: a user who
+does nothing gets today's behavior, and egress turns on only when they opt in
+with a single allow-list. The only user-facing setup is the one-time host
+prerequisites (unprivileged user namespaces, subuid ranges, a cgroup mount),
+which are install-time, not per-workflow. There is no per-node or per-workflow
+proxy or socket configuration to do.
+
+The proxy is a **blind tunnel**: it reads only the destination from the
+handshake and then bridges bytes, and it must never inspect, log, or filter
+payloads. This is a load-bearing rule, not a style preference. The whole
+secrets architecture keeps a granted secret inside its node's subprocess
+(per-node env delivery, redaction, isolation); if the proxy started reading
+payloads, it would become a new place where those secrets are visible outside
+the node, undoing the isolation. And for TLS traffic (which carries most
+secrets) the proxy cannot read payloads anyway without becoming a man-in-the-
+middle CA, which must never be built. The proxy provides destination control,
+not confidentiality: a node that is allowed to reach a host can send its
+granted secret to that host, and the proxy will correctly let it through,
+because the destination is allowed (the confused-deputy caveat in the honest
+ceiling). No transport stops that; it is the node choosing to send a secret to
+a permitted destination.
+
+#### Where the check runs (the enforcement location)
+
+The allow-list check physically runs in one of three places depending on the
+client, and knowing which is the difference between correct and a silent gap:
+
+- **Owned client**: the check runs in the Servitor process that makes the
+  request (the `__http`/`__mcp_http` subprocess, or the worker before spawn),
+  which compares the node's declared destination to the allow-list it was
+  handed.
+- **Cooperating client**: the check runs in the proxy, which reads the
+  destination from the handshake.
+- **Non-cooperating client**: the check runs in the seccomp-unotify supervisor,
+  against the connect destination.
+
+The allow-list must be delivered to wherever the check runs: to the owned
+subprocess, to the proxy, or to the connect supervisor. If it is not handed to
+the right place, the check does not happen and the allow-list is silently
+inert, which is the implementation failure to avoid.
 
 ### The honest ceiling (what no combination stops)
 
-- **A granted secret can still be exfiltrated.** The node holds its declared
+- **A granted secret can still be exfiltrated.** A node holds its declared
   secrets in env and can copy them into its JSON result or, with any granted
   egress, send them to an allowed host. No sandbox stops this; only the
-  credential-proxy idea (keeping the value out of the node entirely) does. This
-  is the load-bearing reason that idea stays separate and is still worth its
-  own engineering.
+  secrets axis' proxy mode (keeping the value out of the node entirely) does.
 - **Kernel bugs.** All of this trusts the host kernel; a vulnerability in any
   allowed syscall or reachable driver is an escape to the runner's UID.
   Removing that residual needs gVisor or a VM, both out of proportion for
-  per-node shell spawns today.
+  per-node spawns today.
 - **The allow-list's confused deputy.** An allowed host that is redirected or
   fronted can still receive a secret; the allow-list checks the destination,
   not the other end.
 - The sandbox setup itself (launcher, mount recipe, mappings) is trusted code;
   a bug there silently downgrades the sandbox.
 
+### Which mechanisms benefit from which axes
+
+The machinery sits at the shared subprocess-spawn boundary, so it wraps any
+node at the same plumbing cost, but the value and cost are not uniform:
+
+- **Host-containment** (mount masking, userns, PID ns, subuid, seccomp, caps
+  drop) is worth as much as the executed code is untrusted. It matters most for
+  `shell` and the third-party connectors (`mcp-stdio`, `singer-tap`/`target`,
+  and the `email_received` fetcher): operator-installed or author-authored
+  arbitrary executables. It adds little for Servitor's own compiled binary,
+  where the threat is a bug in vetted code, not malice.
+- **Egress control** is worth as much as the destinations are declared and
+  static. Every node's destination is knowable once its content is known:
+  `http`/`mcp-http`/`email` have it in the node, a Singer tap has its config
+  endpoint, a bounded MCP server reaches one API, and a reviewed shell script
+  reaches known domains. Where it gets its value is blocking data-driven
+  destinations (a shell command that interpolates a URL from runtime data), so
+  the allow-list is what stops random links going where they were not declared
+  to go.
+- **Per-mechanism verdict**: full treatment (containment plus egress) for
+  `shell`, `mcp-stdio`, and `singer-tap`/`target`, where the executed code is
+  not Servitor's own and egress is enforced via proxy or syscall; cheap
+  exact-egress (destination checked in the node itself) for `http`, `mcp-http`,
+  and `email_received`; skip `transform`, `switch`, and `foreach` (hold no
+  secrets, no egress, and sit on the hot loop where per-spawn overhead is
+  felt); not applicable to `wait`, `send-signal`, `rerun-failed`, and the
+  triggers, which are worker-handled or in-daemon, not subprocess nodes.
+- **Resource limits follow a different axis.** They pay off for anything
+  long-running or runaway-prone: `singer-tap` (streaming), `mcp-stdio` (can
+  hang), `shell` (a command can loop), and the `email` poller. Short-lived
+  `http` and compute nodes barely need them.
+- The third-party connectors are declared in `servitor.config.yaml`
+  (ADR-0018), so their egress allow-lists are a natural per-connector config
+  field, and that composes with the flavors and disable ideas.
+
+### Host requirements
+
+- **Unprivileged user namespaces enabled.** The one real friction point: Ubuntu
+  23.10+ and 24.04+ restrict them by default via AppArmor, which blocks the
+  launcher's userns path for unconfined processes. The fix is an AppArmor
+  profile for the Servitor daemon carrying the `userns` rule. This is the only
+  recommended path, not one of two: it grants just the daemon the right to
+  create namespaces and leaves the system-wide restriction in place for
+  everything else. Do not use the `kernel.apparmor_restrict_unprivileged_userns=0`
+  sysctl as the fix, it disables the restriction system-wide for every process
+  on the box, weakening the whole host to benefit one service. The profile is a
+  one-time, install-time setup, like the bwrap AppArmor profile a
+  sandboxed-browser tool needs on the same distros: the operator sets it up
+  once when deploying Servitor, and it applies to everything the daemon runs
+  from then on. It is never per-node or per-workflow, and changing Wafers does
+  not require touching it.
+- For subuid mapping: `/etc/subuid` and `/etc/subgid` entries and the
+  `newuidmap`/`newgidmap` setuid helpers.
+- For cgroups: a cgroup v2 mount with delegated controllers.
+- A kernel with userns, PID, mount, and net namespaces plus seccomp, and
+  (optional) Landlock; distro kernels since roughly 2024 qualify.
+
 ### Build order (BSSN, each step independently valuable)
 
-1. Mount namespace masking alone (empty root, read-only binds, fresh `/tmp`
-   and `/proc`): the highest-value reduction for the least machinery, works on
-   every kernel.
+1. Mount namespace masking alone: the highest-value reduction for the least
+   machinery, works on every kernel.
 2. Add userns + PID + net namespaces: closes tracing, signals, process
    visibility, and raw egress.
-3. Add the egress allow-list proxy (per-connection).
+3. Add egress control per the egress section: the owned-client check, the
+   cooperating proxy path, and the seccomp-unotify path for non-cooperating
+   clients.
 4. Add the seccomp deny-list, capability drop, `no_new_privs`, and a per-node
    cgroup.
 5. Move to subuid mapping for real DAC separation (host prerequisite: subuid
    ranges + newuidmap).
 6. Landlock as a final deny-by-default layer once the others are proven.
 
-None of the sandbox machinery changes an existing capability: as a new
-mechanism this adds one node type (`sandboxed-shell`) and its schema to the
-Wafer surface and `capabilities`, and `shell` and every other node behave
-exactly as they do. The sandbox itself is confined to how that node's
-subprocess is spawned, so it composes with per-node secret delivery and the
-subprocess isolation model.
-
-Why it is separate: it is not part of the secret-resolution spine. It is a
-runtime-boundary question with its own engineering (host kernel features,
-profiles) and its own honest ceiling, and it is the shell half of the
-credential-proxy idea's open question about nodes that cannot speak proxied
-HTTPS (see its entry). It matters most for `shell`, which is why it is tracked
-here on its own.
-
 Open questions:
 
-- Launcher choice: bwrap vs nsjail vs `systemd-run` (`systemd-run` gives a full
-  maintained sandbox but couples the runner to systemd; bwrap/nsjail keep it
-  portable).
-- The separate-mechanism shape resolves the earlier per-node-flag question: the
-  opt-in is the author choosing `sandboxed-shell` over `shell`, and the
-  operator's control is which of the two exist (the disable idea, or folder
-  deletion). A per-node flag on `shell` would be a second, overlapping way to
-  say the same thing; BSSN leans to one mechanism. Because the sandbox has host
-  prerequisites (unprivileged user namespaces, subuid ranges, cgroups) not
-  every deployment has, `sandboxed-shell` is naturally opt-in per deployment: a
-  box without the prerequisites does not expose it. The load-bearing rule is
-  that a Wafer using `sandboxed-shell` on a host that cannot sandbox fails
-  loudly (at validation or submit), never silently degrades to unsandboxed.
-- Whether the egress allow-list is host(+port) or CIDR, and how it is declared
-  (config vs Wafer).
-- Whether subuid mapping is the default or an option (it changes the
-  file-ownership story for node scratch dirs).
-- Interaction with the TPM-unlock tier of the secret model: if the node's
-  `/dev` hides the TPM, a shell node simply cannot reach the unlock material,
-  which is a strengthening, but the runner still must reach it.
-- Whether this also covers the other node types. The machinery lives at the
-  subprocess-spawn boundary (ADR-0008), so it wraps any node at the same
-  plumbing cost, but the value and cost are not uniform and line up favorably.
-  The stack is really two halves that benefit different mechanisms:
-  - **Host-containment** (mount masking, userns, PID ns, subuid, seccomp,
-    caps drop) is worth as much as the executed code is untrusted. It matters
-    most for `shell` and the third-party connectors (`mcp-stdio`, `singer-tap`/
-    `target`, and the `email_received` fetcher): operator-installed or
-    author-authored arbitrary executables, where the threat is malicious or
-    broken code. It adds little for Servitor's own compiled binary, where the
-    threat is a bug in vetted code, not malice.
-  - **Egress control** (netns + per-connection allow-list proxy, Landlock
-    ports) is worth as much as the egress is declarable. `http`, `mcp-http`,
-    and the `email_received` fetcher get it almost for free and high value:
-    each has exactly one declared destination, so the allow-list is trivially
-    correct, blocks SSRF and redirect-based exfiltration, and costs near
-    nothing. `shell`, `mcp-stdio`, and the singer nodes need
-    operator-configured per-connector host lists, because Servitor cannot know
-    in advance which hosts a tap or MCP server reaches.
-  - **Per-mechanism verdict**: full treatment for `shell`, `mcp-stdio`, and
-    `singer-tap`/`target` (untrusted code, both halves); cheap exact-egress
-    allow-list plus light masking for `http`, `mcp-http`, and `email_received`;
-    skip `transform`, `switch`, and `foreach` (hold no secrets, no egress, and
-    sit on the hot loop where per-spawn overhead is felt); not applicable to
-    `wait`, `send-signal`, `rerun-failed`, and the triggers, which are
-    worker-handled or in-daemon, not subprocess nodes.
-  - **Resource limits follow a different axis.** cgroup limits pay off for
-    anything long-running or runaway-prone: `singer-tap` (streaming),
-    `mcp-stdio` (can hang), `shell` (a command can loop), and the `email`
-    poller. Short-lived `http` and compute nodes barely need them.
-  - The third-party connectors are declared in `servitor.config.yaml`
-    (ADR-0018), so their egress allow-lists are a natural per-connector config
-    field, and that composes with the disable-mechanisms idea.
+- Whether a profile is referenced by name or the axes are declared inline.
+- How a node whose requested axes cannot be satisfied (host lacks userns or
+  subuid) is handled: it must fail loudly at validation or submit, never
+  silently degrade. A hard requirement, not an open nicety.
+- Whether the axis enforcers stay under the single `exec` component or split
+  per axis.
+- Interaction with the TPM-unlock tier of the secret model: if a node's `/dev`
+  hides the TPM, the node cannot reach the unlock material, but the runner
+  still must.
+- How egress control is declared and turned on: a per-mechanism, per-flavor, or
+  per-connector allow-list, and whether it is a single on/off plus a static
+  list or has per-node granularity. It is opt-in by default (unrestricted when
+  off).
 
-## A scripts-only mode for shell (an operator-gated scripts folder)
+## Mechanism flavors: config-declared synthetic capabilities
 
-A middle ground between `shell` enabled and `shell` disabled, for deployments
-that want shell's power but not its open-endedness. The config declares a
-folder of allowed shell scripts, and a Wafer's shell node may not contain an
-arbitrary inline command: it may only call a named script from that folder.
-Whatever is not in the folder cannot run.
+A flavor is a config-declared, named, synthetic mechanism: a base mechanism
+plus a pinned subset of its parameters, surfaced in `servitor capabilities`
+like any other capability. It generalizes the existing declared-connectors
+pattern (ADR-0018), where the config declares named MCP servers and Singer
+taps and a Wafer names an instance, from command/url/env parameters to any
+parameter, including the execution surface of the first idea.
 
-How it would behave:
+The part that makes a flavor a real constraint rather than a wish is the lock
+model on each pinned parameter. A parameter is one of:
 
-- The config names the folder (a setting on the shell mechanism in
-  `servitor.config.yaml`).
-- A shell node in this mode has a `script: <name>` field instead of a free
-  `command:` string. Validation rejects an inline command and any script name
-  that does not resolve inside the folder.
-- The folder is a deploy artifact, gated by the same reviewed PR pipeline as
-  Wafers, so the trust boundary becomes "reviewed scripts" instead of
-  "reviewed inline commands".
-- It is a third, distinct state for shell in the disable idea: disabled /
-  scripts-only / full.
+- **operator-locked**: config pins the value, the Wafer cannot override it. The
+  security-hard case.
+- **operator-default**: config sets a default, the Wafer may override it. The
+  convenience case.
+- **author-free**: only the Wafer sets it; config does not touch it.
 
-Why it is attractive:
+A flavor is a mix of these per parameter. "Shell, scripts-only, hardened
+execution profile, timeout locked at 5m" is a flavor where the function surface
+is partly operator-locked (scripts-only), some execution axes are locked
+(hardened), and the timeout is operator-default. The distinction between a
+security constraint and a convenience default is exactly the lock value on each
+parameter.
 
-- It closes the data-to-code injection boundary for shell (THREATS.md). The
-  command is no longer a static template with runtime data interpolated into
-  it: the Wafer names a script, and the script consumes data as data (its
-  `{event, steps}` input), so data can never become part of the code that runs.
-- It keeps shell's real power (control flow, real scripts, tools) while
-  removing the most dangerous surface, arbitrary inline author code, and the
-  allowed set is CI/CD-reviewable like everything else.
-- It composes with the sandbox: the scripts still run through
-  `sandboxed-shell` when the deployment uses that mechanism.
+### How a flavor is shaped
+
+A flavor names a base mechanism and pins a subset of its parameters. Its
+capability is derived from the base's: the base's schema, with the pinned
+parameters fixed to their config values and every other parameter exposed to
+the Wafer according to its lock (author-free exposed, operator-default exposed
+but defaulted, operator-locked fixed and not overrideable). So a flavor's schema
+is the base's schema filtered through its locks. A flavor is one level: it names
+a base mechanism, not another flavor, so there is no stacking and no ambiguity
+about what the base is. It surfaces in `capabilities` as its own named
+capability with a marker distinguishing it from the base mechanism, and it
+carries its lock state so an agent can see, for each field, what it may set and
+what the operator has fixed.
+
+Concrete shell flavors:
+
+- **Scripts-only shell.** A shell flavor whose function surface is
+  operator-locked to "call a named script from an operator-gated folder" instead
+  of an arbitrary inline command. The config names the folder; validation
+  rejects an inline command and any script name that does not resolve inside
+  the folder. The folder is a deploy artifact gated by the same reviewed PR
+  pipeline as Wafers, so the trust boundary becomes "reviewed scripts" instead
+  of "reviewed inline commands". It closes the data-to-code injection boundary
+  for shell (THREATS.md): the Wafer names a script, the script consumes data as
+  data, so runtime data can never become part of the code that runs. The script
+  still runs through the execution surface, so it composes with containment.
+  Because the script is reviewed, its outbound destinations are known, so
+  egress control stays meaningful for shell. A script stays plain shell, with
+  no Servitor config embedded in it.
+- **Sandboxed shell.** A shell flavor that pins the execution surface
+  (containment, egress, resources, identity) rather than the function surface.
+  Keeps shell's full power but runs it contained. This is what the researched
+  containment stack enables as a usable capability.
+
+Why this shape: Servitor already treats variants as separate mechanisms
+(`hmac-webhook` vs `standard-webhook`, `mcp-stdio` vs `mcp-http`) whose type
+name carries the variant. A flavor is the generalization of that: instead of a
+compiled-in type per combination, the config declares the combination. It fits
+the declared-config philosophy (the box advertises what it supports, per
+deployment) and avoids a compiled-in type per variant. The honest caveat: the
+sandbox changes the execution harness, an axis the declared-connectors pattern
+never carried, so the flavor framework is a real new concept, not a mechanical
+extension. BSSN says do not build the generalized framework until it has real
+users; there are already two candidate flavors (scripts-only, sandboxed), and
+the disable idea is the same "mechanism configuration" family.
 
 Open questions:
 
 - Whether a script is called with its `{event, steps}` input on stdin (the
   normal node contract) or with argv.
-- Whether scripts-only is a config setting on the shell mechanism or its own
-  mechanism (a restricted `shell` vs a separate type).
-- Whether the folder sits inside the sandbox when `sandboxed-shell` is in use
-  (it should: the folder path is bind-mounted read-only, so a script cannot
-  read beyond it).
+- Whether the scripts folder sits inside the sandbox (it should: bind-mounted
+  read-only, so a script cannot read beyond it).
+- Whether flavors are their own config section or an extension of the existing
+  declared-connectors sections.
+- The precise precedence rule when a Wafer names a flavor: how operator-default
+  and author-free combine with a flavor's locks. Needs rigid definition before
+  implementation.
 - Whether scripts-only shrinks the demand for full `shell` enough that the
   "wants the dangerous version" cases are rarer than they look.
 
@@ -717,7 +903,11 @@ capability a deployment can use is there unless its folder is deleted, which
 means a rebuild and a permanent fork. This idea gives the operator the
 per-deployment alternative: disable any mechanism in `servitor.config.yaml`,
 so a deployment can, for example, turn off `core/shell` and make that
-capability unusable on this Servitor without touching the binary.
+capability unusable on this Servitor without touching the binary. In the
+generalized model this is the availability parameter, operator-locked to off,
+and it composes with flavors: a deployment can disable the normal `shell` and
+enable only a scripts-only or sandboxed flavor, so the constrained version is
+the only shell available.
 
 How it would behave:
 
@@ -725,9 +915,11 @@ How it would behave:
   disabled mechanism is still registered but marked disabled.
 - `capabilities` reports a disabled capability explicitly (for example a
   `disabled: true` marker on the entry and in the index), rather than letting
-  it vanish. "This exists here but is off" is different information from "this
-  server does not have it", and an agent that sees the capability listed can
-  understand why a Wafer using it fails.
+  it vanish. This is critical because Servitor is agent-first: "this exists here
+  but is off" is different information from "this server does not have it", and
+  an agent that sees the capability listed can tell the user why a Wafer using
+  it fails and point at the available alternative (for example "shell is
+  disabled; use the scripts-only flavor, add your script to the folder").
 - Validation rejects a Wafer that uses a disabled mechanism, at dry-run and at
   submit (and anywhere else a Wafer is validated), with a clear error naming
   the disabled mechanism and the config entry. A Wafer cannot be registered
@@ -741,7 +933,8 @@ How it would behave:
 Why it is attractive: it makes the trust boundary operator-declarable. The
 reviewed-PR pipeline vouches for a Wafer's content; this lets the operator
 decide which primitives are even available on the box. For a deployment that
-never wants `shell`, "disable it" beats "be careful" and beats a fork.
+never wants `shell`, "disable it" beats "be careful" and beats a fork, and the
+flavor version means "replace it with a constrained one" is available too.
 
 Why it is separate: it is a governance surface that touches the config schema,
 the registry load, validation, and the capabilities output shape. It is a real
@@ -761,6 +954,11 @@ Open questions:
 - How disabled state composes with the load-once-at-boot config pattern and its
   change-detection gap (THREATS.md): does toggling a mechanism need a daemon
   restart?
+- Whether a flavor is disabled independently of its base mechanism (can a
+  deployment disable the normal `shell` while keeping a `shell` flavor, or
+  disable one flavor and not another). Since the point of flavors is
+  per-deployment constrained variants, disabling should work at both levels:
+  a flavor and its base mechanism are each disableable.
 - Whether a disabled mechanism's run handler is unreachable as defense in
   depth, or the gate is validation-only.
 - Whether disabling a mechanism that others depend on (a secret source used by
