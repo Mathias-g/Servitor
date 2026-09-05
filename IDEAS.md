@@ -421,5 +421,350 @@ dedicated small binary vs re-adding an in-process path; which mechanisms
 qualify (likely `transform` first, then `switch` and `foreach`); and how it
 stays consistent with ADR-0008's single-subprocess-mode rule.
 
+## Sandbox the shell node on Linux: user namespaces, mount masking, and an egress allow-list
+
+`shell` is the most powerful node and the one the runtime contains least. It is
+arbitrary code running as the runner's user on the host. The subprocess
+boundary (ADR-0008) isolates the runner's process from the node, not the host
+from the node: a shell node can read the SQLite file, the config, and call the
+decryption service or TPM to obtain any on-box secret on demand (SPEC: Secret
+resolution admits exactly this). Today the real boundary around `shell` is the
+trusted Wafer author and the reviewed PR pipeline, not the runtime. This idea
+is the researched answer to "what OS-level isolation makes `shell` mostly
+safe". It is Linux-only by choice. The research (Sept 2026) settled the core
+question: containment of a same-UID child is achievable, with user namespaces
+and (better) subuid mapping, and the honest ceiling is the granted secret and
+the kernel, not the node's access to the box.
+
+The natural shape is a **separate mechanism, `sandboxed-shell`, alongside
+`shell`**, not a modification of it. This matches how Servitor already handles
+variants: `hmac-webhook` vs `standard-webhook`, `mcp-stdio` vs `mcp-http`, and
+`singer-tap` vs `singer-target` are separate mechanisms whose type name carries
+the variant (SPEC: How an agent discovers capabilities). The author picks which
+one a node uses, and the choice is visible in the Wafer. `shell` stays exactly
+as it is for deployments that want the dangerous version, so existing Wafers
+are untouched. The operator decides which exist: the disable idea can turn
+`shell` off while keeping `sandboxed-shell`, or delete the `core/shell/` folder
+outright (the mechanism folder is the unit of deletion, ADR-0048).
+
+There is a competing shape worth stating, from the same observation that the
+sandbox is a *how* (the way a node runs) and not a *what* (a different thing
+the node does). The product already declares preconfigured versions of
+mechanisms in config and surfaces them as capabilities: ADR-0018's declared
+connectors (`mcp/servers.yaml`, `singer/taps.yaml`) are named instances that
+pin the command and env, and a Wafer names an instance, never a per-instance
+type. A **mechanism flavor** would generalize that pattern from
+command/url/env parameters to behavioral parameters: the config could declare
+`sandboxed-shell` and `scripts-only-shell` as named preconfigurations of
+`shell` that appear as capabilities, derived from the base mechanism's schema
+with values pinned, the way `capabilities` already derives example fragments
+from schemas. That fits the declared-config philosophy (the box advertises what
+it supports, per deployment) and avoids a compiled-in type per combination.
+The honest caveat: the sandbox changes the execution harness, an axis the
+declared-connectors pattern never carried, so a flavor framework is a real new
+concept, not a mechanical extension. BSSN says do not build the generalized
+framework until it has real users; there are already two candidate flavors
+(`sandboxed-shell`, `scripts-only-shell`), and the disable idea is the same
+"mechanism configuration" family, so the choice is between keeping them as
+distinct capability names today and generalizing to flavors when a third real
+one appears.
+
+### The key finding: same-UID containment is possible
+
+The earlier framing ("a same-UID sandbox is not a privilege boundary") was too
+absolute. It is true only without a user namespace:
+
+- **Without a user namespace**, a same-UID child is not containable against
+  the runner. On stock kernels (Yama ptrace_scope=0) it can ptrace the runner
+  and read its memory; on Ubuntu/Debian defaults (Yama=1) it cannot trace the
+  runner, but that protection is distribution-dependent and absent upstream,
+  and it can still signal the runner and shares DAC file access.
+- **With the node in its own user namespace**, cross-namespace ptrace and
+  `/proc/<pid>/mem` access are denied unconditionally by the kernel's ptrace
+  access-mode check, regardless of Yama. This closes "trace the runner and read
+  its memory" as a kernel property, at the same UID.
+- **Mapping the node to a different host UID** (subuid mapping via
+  `/etc/subuid` and `newuidmap`, the rootless-container mechanism) makes
+  "cannot read the runner's files" true at the DAC/filesystem level, not by
+  policy: the run DB, config, and on-box secret material are simply another
+  user's files to the node. This is the biggest single win and works
+  unprivileged.
+
+So "mostly safe" is a real, reachable target: not a hard wall, but blast radius
+reduced to (mostly) the node's granted secrets and the kernel itself.
+
+### The concrete stack (Linux-only, kernels ~5.13+, better on 6.12+/7.x)
+
+Per shell node, spawn it as:
+
+1. **A new user namespace** (identity map, or the subuid map below).
+2. **A new PID namespace**: the node cannot see or signal the runner, and PID
+   1 reaps zombies.
+3. **A new mount namespace with an empty tmpfs root**, read-only binds of
+   exactly what the node needs (its command and runtime libs, any granted
+   data), a read-write scratch/output dir, fresh `/tmp` and `/proc`, and
+   nothing else: no path to the run DB, config, TPM socket, or key material.
+4. **A new network namespace with only loopback**, so all egress goes through a
+   runner-side proxy that enforces a per-connection host(+port) allow-list,
+   checking each new connection (and each redirect) as it happens.
+5. **seccomp**: deny the dangerous set outright (ptrace, process_vm_readv/
+   writev, mount, pivot_root, bpf, perf_event_open, keyctl, kexec) and deny
+   `io_uring_setup` and the io_uring family unconditionally. io_uring executes
+   work in kernel worker threads that never make syscalls, so seccomp does not
+   cover it and it bypasses the filter.
+6. **Capability bounding set dropped to empty** plus `no_new_privs`, so the
+   node can never exec its way back up.
+7. **Landlock** (kernel 6.7+ for TCP rules, 6.12+ for scopes) as a deny-by-
+   default filesystem and port backstop layered over the mount namespace. It is
+   the newest and least battle-tested layer; treat it as defense in depth, not
+   the primary boundary.
+8. **A per-node cgroup v2** with memory/pids/cpu limits and a BPF device
+   filter (no devices; the node's `/dev` is fresh), killed wholesale via
+   `cgroup.kill`.
+
+Each layer closes a specific hole: userns closes tracing, PID ns closes signals
+and process visibility, mount ns closes file and store access, net ns + proxy
+closes arbitrary egress, seccomp shrinks the kernel attack surface, subuid
+closes DAC-level access to the runner's files.
+
+### What the runner must do
+
+- Spawn the node through a **launcher** (bwrap or nsjail, or `systemd-run`
+  with the equivalent systemd.exec options) that performs the namespace, mount,
+  mapping, and seccomp setup before exec, then execs the shell. Go's `os/exec`
+  handles user namespaces and UID/GID mapping natively via `SysProcAttr`
+  (`Cloneflags`, `UidMappings`, `GidMappings`), but the mount tree and Landlock
+  need a launcher: Go's runtime is multithreaded and `os/exec` has no pre-exec
+  mount hook.
+- Pass the node a small structured **grants descriptor** (read-only paths,
+  writable scratch dir, egress allow-list, seccomp profile, desired subuid).
+  The launcher, not the node, translates grants into mounts and rules, so the
+  node never sees the mechanism.
+- The existing data channels are unchanged and work across every boundary: the
+  filtered env (PATH + declared secrets) survives exec and all namespaces, and
+  stdin/stdout/stderr pipes work across UID and namespace boundaries. Per-node
+  secret delivery (ADR-0033) composes with the sandbox unchanged; the sandbox
+  hides everything else.
+- Teardown via SIGKILL through the PID namespace or `cgroup.kill`, then clean
+  the scratch dir.
+
+### Host requirements
+
+- **Unprivileged user namespaces enabled.** The one real friction point:
+  Ubuntu 23.10+ and 24.04+ restrict unprivileged userns by default via
+  AppArmor (`kernel.apparmor_restrict_unprivileged_userns=1`), which blocks the
+  bwrap/nsjail userns path for unconfined processes. The fix is an AppArmor
+  profile for the Servitor daemon carrying the `userns` rule, or the sysctl set
+  to 0. This is an install prerequisite to call out.
+- For subuid mapping: `/etc/subuid` and `/etc/subgid` entries for the runner's
+  user, and the `newuidmap`/`newgidmap` setuid helpers (shadow-utils).
+- For cgroups: a cgroup v2 mount with delegated controllers (systemd's
+  `Delegate=` handles it).
+- A kernel with userns, PID, mount, and net namespaces plus seccomp, and
+  (optional) Landlock; distro kernels since roughly 2024 qualify.
+
+### The honest ceiling (what no combination stops)
+
+- **A granted secret can still be exfiltrated.** The node holds its declared
+  secrets in env and can copy them into its JSON result or, with any granted
+  egress, send them to an allowed host. No sandbox stops this; only the
+  credential-proxy idea (keeping the value out of the node entirely) does. This
+  is the load-bearing reason that idea stays separate and is still worth its
+  own engineering.
+- **Kernel bugs.** All of this trusts the host kernel; a vulnerability in any
+  allowed syscall or reachable driver is an escape to the runner's UID.
+  Removing that residual needs gVisor or a VM, both out of proportion for
+  per-node shell spawns today.
+- **The allow-list's confused deputy.** An allowed host that is redirected or
+  fronted can still receive a secret; the allow-list checks the destination,
+  not the other end.
+- The sandbox setup itself (launcher, mount recipe, mappings) is trusted code;
+  a bug there silently downgrades the sandbox.
+
+### Build order (BSSN, each step independently valuable)
+
+1. Mount namespace masking alone (empty root, read-only binds, fresh `/tmp`
+   and `/proc`): the highest-value reduction for the least machinery, works on
+   every kernel.
+2. Add userns + PID + net namespaces: closes tracing, signals, process
+   visibility, and raw egress.
+3. Add the egress allow-list proxy (per-connection).
+4. Add the seccomp deny-list, capability drop, `no_new_privs`, and a per-node
+   cgroup.
+5. Move to subuid mapping for real DAC separation (host prerequisite: subuid
+   ranges + newuidmap).
+6. Landlock as a final deny-by-default layer once the others are proven.
+
+None of the sandbox machinery changes an existing capability: as a new
+mechanism this adds one node type (`sandboxed-shell`) and its schema to the
+Wafer surface and `capabilities`, and `shell` and every other node behave
+exactly as they do. The sandbox itself is confined to how that node's
+subprocess is spawned, so it composes with per-node secret delivery and the
+subprocess isolation model.
+
+Why it is separate: it is not part of the secret-resolution spine. It is a
+runtime-boundary question with its own engineering (host kernel features,
+profiles) and its own honest ceiling, and it is the shell half of the
+credential-proxy idea's open question about nodes that cannot speak proxied
+HTTPS (see its entry). It matters most for `shell`, which is why it is tracked
+here on its own.
+
+Open questions:
+
+- Launcher choice: bwrap vs nsjail vs `systemd-run` (`systemd-run` gives a full
+  maintained sandbox but couples the runner to systemd; bwrap/nsjail keep it
+  portable).
+- The separate-mechanism shape resolves the earlier per-node-flag question: the
+  opt-in is the author choosing `sandboxed-shell` over `shell`, and the
+  operator's control is which of the two exist (the disable idea, or folder
+  deletion). A per-node flag on `shell` would be a second, overlapping way to
+  say the same thing; BSSN leans to one mechanism. Because the sandbox has host
+  prerequisites (unprivileged user namespaces, subuid ranges, cgroups) not
+  every deployment has, `sandboxed-shell` is naturally opt-in per deployment: a
+  box without the prerequisites does not expose it. The load-bearing rule is
+  that a Wafer using `sandboxed-shell` on a host that cannot sandbox fails
+  loudly (at validation or submit), never silently degrades to unsandboxed.
+- Whether the egress allow-list is host(+port) or CIDR, and how it is declared
+  (config vs Wafer).
+- Whether subuid mapping is the default or an option (it changes the
+  file-ownership story for node scratch dirs).
+- Interaction with the TPM-unlock tier of the secret model: if the node's
+  `/dev` hides the TPM, a shell node simply cannot reach the unlock material,
+  which is a strengthening, but the runner still must reach it.
+- Whether this also covers the other node types. The machinery lives at the
+  subprocess-spawn boundary (ADR-0008), so it wraps any node at the same
+  plumbing cost, but the value and cost are not uniform and line up favorably.
+  The stack is really two halves that benefit different mechanisms:
+  - **Host-containment** (mount masking, userns, PID ns, subuid, seccomp,
+    caps drop) is worth as much as the executed code is untrusted. It matters
+    most for `shell` and the third-party connectors (`mcp-stdio`, `singer-tap`/
+    `target`, and the `email_received` fetcher): operator-installed or
+    author-authored arbitrary executables, where the threat is malicious or
+    broken code. It adds little for Servitor's own compiled binary, where the
+    threat is a bug in vetted code, not malice.
+  - **Egress control** (netns + per-connection allow-list proxy, Landlock
+    ports) is worth as much as the egress is declarable. `http`, `mcp-http`,
+    and the `email_received` fetcher get it almost for free and high value:
+    each has exactly one declared destination, so the allow-list is trivially
+    correct, blocks SSRF and redirect-based exfiltration, and costs near
+    nothing. `shell`, `mcp-stdio`, and the singer nodes need
+    operator-configured per-connector host lists, because Servitor cannot know
+    in advance which hosts a tap or MCP server reaches.
+  - **Per-mechanism verdict**: full treatment for `shell`, `mcp-stdio`, and
+    `singer-tap`/`target` (untrusted code, both halves); cheap exact-egress
+    allow-list plus light masking for `http`, `mcp-http`, and `email_received`;
+    skip `transform`, `switch`, and `foreach` (hold no secrets, no egress, and
+    sit on the hot loop where per-spawn overhead is felt); not applicable to
+    `wait`, `send-signal`, `rerun-failed`, and the triggers, which are
+    worker-handled or in-daemon, not subprocess nodes.
+  - **Resource limits follow a different axis.** cgroup limits pay off for
+    anything long-running or runaway-prone: `singer-tap` (streaming),
+    `mcp-stdio` (can hang), `shell` (a command can loop), and the `email`
+    poller. Short-lived `http` and compute nodes barely need them.
+  - The third-party connectors are declared in `servitor.config.yaml`
+    (ADR-0018), so their egress allow-lists are a natural per-connector config
+    field, and that composes with the disable-mechanisms idea.
+
+## A scripts-only mode for shell (an operator-gated scripts folder)
+
+A middle ground between `shell` enabled and `shell` disabled, for deployments
+that want shell's power but not its open-endedness. The config declares a
+folder of allowed shell scripts, and a Wafer's shell node may not contain an
+arbitrary inline command: it may only call a named script from that folder.
+Whatever is not in the folder cannot run.
+
+How it would behave:
+
+- The config names the folder (a setting on the shell mechanism in
+  `servitor.config.yaml`).
+- A shell node in this mode has a `script: <name>` field instead of a free
+  `command:` string. Validation rejects an inline command and any script name
+  that does not resolve inside the folder.
+- The folder is a deploy artifact, gated by the same reviewed PR pipeline as
+  Wafers, so the trust boundary becomes "reviewed scripts" instead of
+  "reviewed inline commands".
+- It is a third, distinct state for shell in the disable idea: disabled /
+  scripts-only / full.
+
+Why it is attractive:
+
+- It closes the data-to-code injection boundary for shell (THREATS.md). The
+  command is no longer a static template with runtime data interpolated into
+  it: the Wafer names a script, and the script consumes data as data (its
+  `{event, steps}` input), so data can never become part of the code that runs.
+- It keeps shell's real power (control flow, real scripts, tools) while
+  removing the most dangerous surface, arbitrary inline author code, and the
+  allowed set is CI/CD-reviewable like everything else.
+- It composes with the sandbox: the scripts still run through
+  `sandboxed-shell` when the deployment uses that mechanism.
+
+Open questions:
+
+- Whether a script is called with its `{event, steps}` input on stdin (the
+  normal node contract) or with argv.
+- Whether scripts-only is a config setting on the shell mechanism or its own
+  mechanism (a restricted `shell` vs a separate type).
+- Whether the folder sits inside the sandbox when `sandboxed-shell` is in use
+  (it should: the folder path is bind-mounted read-only, so a script cannot
+  read beyond it).
+- Whether scripts-only shrinks the demand for full `shell` enough that the
+  "wants the dangerous version" cases are rarer than they look.
+
+## Disable mechanisms per deployment (a config-level off switch)
+
+The mechanism registry is the compiled-in set (ADR-0045, ADR-0048): every
+capability a deployment can use is there unless its folder is deleted, which
+means a rebuild and a permanent fork. This idea gives the operator the
+per-deployment alternative: disable any mechanism in `servitor.config.yaml`,
+so a deployment can, for example, turn off `core/shell` and make that
+capability unusable on this Servitor without touching the binary.
+
+How it would behave:
+
+- The registry stays the compiled-in set; the config filters it at load. A
+  disabled mechanism is still registered but marked disabled.
+- `capabilities` reports a disabled capability explicitly (for example a
+  `disabled: true` marker on the entry and in the index), rather than letting
+  it vanish. "This exists here but is off" is different information from "this
+  server does not have it", and an agent that sees the capability listed can
+  understand why a Wafer using it fails.
+- Validation rejects a Wafer that uses a disabled mechanism, at dry-run and at
+  submit (and anywhere else a Wafer is validated), with a clear error naming
+  the disabled mechanism and the config entry. A Wafer cannot be registered
+  with a disabled node or trigger type.
+- The disabled state composes with the rest of the declared config: a webhook
+  receiver whose mechanism is disabled, a declared MCP server or Singer tap
+  whose mechanism is disabled, and a secret whose `source` mechanism is
+  disabled (the secret-resolution group, ADR-0036) all fail at validation or
+  use with the same clear error.
+
+Why it is attractive: it makes the trust boundary operator-declarable. The
+reviewed-PR pipeline vouches for a Wafer's content; this lets the operator
+decide which primitives are even available on the box. For a deployment that
+never wants `shell`, "disable it" beats "be careful" and beats a fork.
+
+Why it is separate: it is a governance surface that touches the config schema,
+the registry load, validation, and the capabilities output shape. It is a real
+decision with alternatives (disable vs delete, blocklist vs allowlist, mark
+disabled vs vanish), so it earns an ADR before building, plus tests that pin
+the validation and capabilities behavior.
+
+Open questions:
+
+- Blocklist (disable a few, the rest on) vs allowlist (enable only these, the
+  rest off). Blocklist is the direct reading of "disable any mechanism";
+  allowlist is the safer default.
+- Mechanisms only, or mechanism groups too (for example disable all of
+  `webhook` at once).
+- Whether a disabled capability is marked disabled in `capabilities` (the
+  leaning, so dry-run errors are legible) or removed entirely.
+- How disabled state composes with the load-once-at-boot config pattern and its
+  change-detection gap (THREATS.md): does toggling a mechanism need a daemon
+  restart?
+- Whether a disabled mechanism's run handler is unreachable as defense in
+  depth, or the gate is validation-only.
+- Whether disabling a mechanism that others depend on (a secret source used by
+  a node) is rejected at config load or fails at use.
+
 ## (Add more ideas here as they come up; delete them when they become ADRs or
 ## are discarded.)
