@@ -438,11 +438,12 @@ derivation and precedence are pinned by tests.
 ## Phase 21: The execution surface
 
 How a node is allowed to run, generalized (ADR-0052, SPEC: The execution
-surface). Execution parameters grouped into categories (containment, egress,
-resources, secrets, identity, data flow), an execution profile as a named bundle
-referenced by name in the Wafer, the default rule for which categories are on by
-default, the fail-loudly rule for an unsatisfiable profile, and the researched
-containment baseline (Linux-only, host prerequisites).
+surface). Execution parameters grouped into execution parameter categories
+(containment, egress, resources, secrets, identity, data flow), an execution
+profile as a named bundle referenced by name in the Wafer, the default rule for
+which execution parameter categories are on by default, the fail-loudly rule for
+an unsatisfiable profile, and the researched containment baseline (Linux-only,
+host prerequisites).
 
 - [ ] **Profiles and the default rule.** An execution profile is a named config
   object, referenced by name in a Wafer node. A node whose requested profile

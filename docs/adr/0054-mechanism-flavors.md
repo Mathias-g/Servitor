@@ -45,7 +45,7 @@ flavor is a real constraint rather than a wish only because the lock model
   capabilities over a base mechanism.
 - Option C: Per-mechanism config knobs only (for example a `shell` config with a
   scripts-only boolean). Rejected: it does not generalize, and it cannot pin
-  execution-surface categories the way a flavor can.
+  execution parameter categories the way a flavor can.
 
 ## Decision outcome
 
@@ -111,11 +111,12 @@ Concrete shell flavors that motivate the framework:
   (containment, egress, resources, identity) rather than the function surface,
   keeping shell's full power but running it contained (ADR-0052, ADR-0053).
 
-The honest caveat: the sandbox changes the execution harness, a category the
-declared-connectors pattern never carried, so the flavor framework is a real new
-concept, not a mechanical extension. Per BSSN (ADR-0002), do not build the
-generalized framework until it has real users; there are already two candidate
-flavors (scripts-only, sandboxed), which justify building the framework.
+The honest caveat: the sandbox changes the execution harness, an execution
+parameter category the declared-connectors pattern never carried, so the flavor
+framework is a real new concept, not a mechanical extension. Per BSSN
+(ADR-0002), do not build the generalized framework until it has real users;
+there are already two candidate flavors (scripts-only, sandboxed), which justify
+building the framework.
 
 ### Consequences
 
@@ -151,6 +152,7 @@ config-locked pinned parameter is rejected at validation.
 
 - ADR-0018 (the declared-connectors pattern a flavor generalizes)
 - ADR-0051 (the lock model, which makes a flavor a real constraint)
-- ADR-0052 (the execution surface, whose categories a flavor can pin)
+- ADR-0052 (the execution surface, whose execution parameter categories a flavor
+  can pin)
 - ADR-0055 (disable, per-capability, so a base and its flavors are independent)
 - SPEC: Mechanism flavors

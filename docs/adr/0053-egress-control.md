@@ -15,7 +15,8 @@ interface-impact: new
 
 ## Context and problem statement
 
-Egress is one category of the execution surface (ADR-0052). It is large and
+Egress is one execution parameter category of the execution surface (ADR-0052).
+It is large and
 self-contained enough to be its own decision. When enabled, a node's outbound
 destinations must be declared values, not runtime data, and anything outside
 the declared allow-list is denied. The purpose is not "we know the destinations
@@ -198,13 +199,14 @@ Adds to the declared config (`servitor.config.yaml`): an egress allow-list on a
 mechanism or flavor, and on a declared connector beside its command and env,
 each governed by the lock model (ADR-0051). Adds to the Wafer: an egress
 declaration on a node. Adds to the execution surface (ADR-0052): the `egress`
-category, opt-in, default-off. The capabilities output surfaces a connector's
-declared egress scope. A destination derived from runtime data is rejected when
-egress control is enabled.
+execution parameter category, opt-in, default-off. The capabilities output
+surfaces a connector's declared egress scope. A destination derived from runtime
+data is rejected when egress control is enabled.
 
 ## More information
 
 - ADR-0051 (the lock model, which governs the egress declaration levels)
-- ADR-0052 (the execution surface, of which egress is one category)
+- ADR-0052 (the execution surface, of which egress is one execution parameter
+  category)
 - ADR-0033 (per-node secret delivery, which the blind-tunnel rule protects)
 - SPEC: Egress control

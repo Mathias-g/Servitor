@@ -15,14 +15,14 @@ interface-impact: new
 
 ## Context and problem statement
 
-Every parameter on a mechanism, on every execution-surface category (SPEC:
+Every parameter on a mechanism, on every execution parameter category (SPEC:
 Execution surface), has one cross-cutting question: who gets to set it? The
 answer decides whether a flavor is a real constraint or a wish, whether egress
 policy is operator-enforceable, and whether a disabled capability is a hard off
 switch. There is no single, reusable answer today, so each of those features
 would have to invent its own rule, and a future parameter would inherit nothing.
-We need one generalized answer that any parameter, on any category, in any
-mechanism, follows.
+We need one generalized answer that any parameter, on any execution parameter
+category, in any mechanism, follows.
 
 ## Decision drivers
 

@@ -216,6 +216,7 @@ stands and where it is re-homed:
 - Keep language plain and easy to understand. Avoid jargon where a clear phrase works.
 - Write docs in a way that a person with no prior context can follow.
 - When moving content in the docs, do it non-destructively: leave a pointer to where the content went, and verify no text was lost (compare word counts against the previous commit).
+- **Use defined terms by their full, defined name, every time.** When a term is given a precise definition (for example "execution parameter category", "execution profile", "config-locked"), refer to it by that full term on every use. Never abbreviate it to a bare word that could collide with another concept (for example writing just "category" when the defined term is "execution parameter category"). Do not "it isn't X" or "read as distinct from X" framing: define each term positively, once, on its own terms, and then use the full term consistently. A term that can be read as two different things is an ambiguous term and must be fixed. If a defined term reads awkwardly, that is a signal to rename the term, not to start dropping it.
 
 ## Building, testing, and releasing
 

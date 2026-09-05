@@ -701,16 +701,19 @@ execution surface (how the node is allowed to run). "Parameter" is a subclass of
 "field", and "execution parameter" is precisely a field on the execution
 surface.
 
-Two terms share the word "category" and must be read as distinct. A capability's
-**Role** is what kind of capability it is, trigger, action, or flow; it
-determines where the capability can be used (under `triggers:` or `nodes:`) and
-how it is treated. An **execution parameter category** is a dimension of how a
-node is allowed to run; the categories are containment, egress, resources,
-secrets, identity, and data flow, and each groups the execution parameters for
-that dimension. A Role describes the capability itself; an execution parameter
-category describes the runtime of a node of that capability.
+A capability's **Role** is what kind of capability it is, trigger, action, or
+flow; it determines where the capability can be used (under `triggers:` or
+`nodes:`) and how it is treated. An **execution parameter category** is a
+dimension of how a node is allowed to run; the execution parameter categories
+are containment, egress, resources, secrets, identity, and data flow, and each
+groups the execution parameters for that dimension. A Role describes the
+capability itself; an execution parameter category describes the runtime of a
+node of that capability.
 
-The categories, each independent, a node is set on each separately:
+The execution parameter categories are **independent dimensions**: a node's
+runtime configuration carries a value for each execution parameter category,
+and setting one does not force or constrain the others. Each execution parameter
+category is:
 
 - **containment**: filesystem and process isolation. What the node can reach and
   trace on the box (mount masking, user namespace, PID namespace, subuid
@@ -732,9 +735,10 @@ satisfied (the host lacks a prerequisite such as unprivileged user namespaces or
 subuid ranges) fails loudly at validation or submit, never silently degrades to
 a weaker configuration.
 
-**The default rule**: a category is on by default if and only if it costs the
-user nothing and has no side effect that makes a legitimate node stop working.
-If there is zero reason for it not to be on, it is not a choice, it is just on.
+**The default rule**: an execution parameter category is on by default if and
+only if it costs the user nothing and has no side effect that makes a legitimate
+node stop working. If there is zero reason for it not to be on, it is not a
+choice, it is just on.
 `data flow` (redaction) and the `secrets` env mode are on by default, not
 choices. `containment`, `identity`, and `egress` are choices because they
 restrict what a node can reach and need host capabilities. `resources` is a
@@ -742,8 +746,8 @@ choice because a limit can break a legitimate long-running or memory-heavy node.
 
 ### The lock model
 
-Every execution parameter, on every category, in every mechanism, has one
-cross-cutting question: who sets it. A parameter has one of three lock values,
+Every execution parameter, on every execution parameter category, in every
+mechanism, has one cross-cutting question: who sets it. A parameter has one of three lock values,
 named for where it is set:
 
 - **config-locked**: the config pins the value, the Wafer cannot override it.
