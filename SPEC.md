@@ -688,7 +688,7 @@ This section covers how a node is allowed to run and how the operator and author
 configure mechanism capabilities. It extends the node execution model (every
 node runs as a subprocess, ADR-0008) with a generalized execution surface, and
 it extends the declared config with the lock model, mechanism flavors, egress
-control, and per-deployment disablement.
+control, and per-deployment mechanism disablement.
 
 ### Execution surface
 
@@ -700,6 +700,15 @@ such as `url` or `command`); an **execution parameter** is a field on the
 execution surface (how the node is allowed to run). "Parameter" is a subclass of
 "field", and "execution parameter" is precisely a field on the execution
 surface.
+
+Two terms share the word "category" and must be read as distinct. A capability's
+**Role** is what kind of capability it is, trigger, action, or flow; it
+determines where the capability can be used (under `triggers:` or `nodes:`) and
+how it is treated. An **execution parameter category** is a dimension of how a
+node is allowed to run; the categories are containment, egress, resources,
+secrets, identity, and data flow, and each groups the execution parameters for
+that dimension. A Role describes the capability itself; an execution parameter
+category describes the runtime of a node of that capability.
 
 The categories, each independent, a node is set on each separately:
 
@@ -753,7 +762,8 @@ The lock is expressed per field, as a `locked: true` marker beside that field.
 Precedence, applied per parameter: config-locked governs (a Wafer override is
 rejected at validation), config-default applies unless the Wafer overrides,
 wafer-set is the Wafer's choice, and an omitted wafer-set parameter is unset
-(no hidden default). One parameter is governed by exactly one lock value; there
+(no hidden default; an optional parameter that is not set behaves as off or
+absent). One parameter is governed by exactly one lock value; there
 is no layering of locks within a single parameter.
 
 ### Mechanism flavors
@@ -789,19 +799,22 @@ shell's full power but running it contained).
 An operator can disable any mechanism in `servitor.config.yaml`, making that
 capability impossible to use on this deployment without touching the binary.
 
-- Disable is **per capability, not per mechanism tree**. Each capability, the
-  base mechanism and each of its flavors, is independently disableable. A base
-  can be disabled while one of its flavors stays enabled.
+- Disable applies **per capability, not per mechanism as a whole**. Each
+  capability, the base mechanism and each of its flavors, is independently
+  disableable. A base can be disabled while one of its flavors stays enabled.
 - It is a **blocklist**: the operator disables the specific capabilities they do
   not want. An allowlist posture is expressible by disabling every capability
   not wanted; there is no separate allowlist mode.
-- A mechanism group is disabled by disabling every capability in it, so a future
-  mechanism added to the group is not silently left enabled.
+- A mechanism group can itself be disabled, which disables every capability in
+  it, so a future mechanism added to the group is not silently left enabled.
 - A disabled capability is impossible to use: validation rejects any Wafer that
   uses it at dry-run and submit, its run handler is unreachable, and
-  `capabilities` reports it as disabled (for example a `disabled: true` marker)
-  rather than removing it, so an agent can explain why a Wafer fails and point at
-  the alternative.
+  `capabilities` reports it as disabled rather than removing it, so an agent can
+  see it exists but is off and explain why a Wafer using it fails and point at
+  the alternative. Concretely, a disabled capability's entry file carries a
+  top-level `disabled: true` field (beside `role` and `delivery`, omitted when
+  the capability is enabled), and the type stays listed in `index.yaml` under
+  its mechanism group.
 - Toggling a disable takes effect on **daemon restart**, since the config is
   loaded once at boot.
 - A dependency on a disabled mechanism (a webhook receiver, a declared connector,
@@ -836,14 +849,21 @@ config-default the config sets the default but the Wafer may narrow or extend it
 when wafer-set the Wafer's declaration governs.
 
 The mechanism used to enforce the allow-list depends on who owns the client,
-and Servitor uses the simplest one for each node kind: for a client Servitor
-owns (`http`, `mcp-http`, `email_received`) the node checks its own declared
-destination against the allow-list; for a cooperating third-party client (a
-Singer tap or any proxy-honoring tool) the connection goes through an
-application proxy that checks the destination from the handshake; for a
-non-cooperating client (a tool that opens its own TCP) enforcement is at the
-syscall level, with the destination attributed back to a hostname via
-controlled DNS resolution rather than IP-pinning. The egress proxy is a blind
+and Servitor uses the simplest one for each node kind. Two terms distinguish
+how a third-party client reaches the network. A **cooperating** client is one
+that honors standard proxy environment variables (`ALL_PROXY`, `http_proxy`),
+so it voluntarily routes its connections through a proxy, and the proxy can
+read the destination from the handshake. A **non-cooperating** client ignores
+proxy configuration and opens its own TCP connection directly to the
+destination, so a proxy never sees it and the connection must be checked at the
+syscall level instead. For a client Servitor owns (`http`, `mcp-http`,
+`email_received`) the node checks its own declared destination against the
+allow-list; for a cooperating third-party client (a Singer tap or any
+proxy-honoring tool) the connection goes through an application proxy that
+checks the destination from the handshake; for a non-cooperating client (a tool
+that opens its own TCP) enforcement is at the syscall level, with the
+destination attributed back to a hostname via controlled DNS resolution rather
+than IP-pinning. The egress proxy is a blind
 tunnel: it reads only the destination and never inspects payloads, so it does
 not become a place a granted secret is visible outside its node. Hostname
 semantics are best-effort, not a hard boundary.

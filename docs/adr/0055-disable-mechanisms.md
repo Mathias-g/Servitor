@@ -29,7 +29,7 @@ impossible to use on this Servitor without touching the binary.
   without a rebuild or a fork.
 - Disabled must mean impossible to use, not merely unlisted: validation rejects
   a Wafer that uses it, and its run handler is unreachable.
-- Disable is per capability, not per mechanism tree: a base mechanism can be
+- Disable applies per capability, not per mechanism as a whole: a base mechanism can be
   disabled while one of its flavors stays enabled (ADR-0054).
 - Servitor is agent-first, so a disabled capability must stay visible as
   disabled, not vanish, so an agent can explain why a Wafer fails and point at
@@ -57,7 +57,7 @@ decision that a capability does not exist on this deployment. A disabled
 capability is impossible to use: validation rejects any Wafer that uses it, its
 run handler is unreachable, and `capabilities` surfaces it as disabled.
 
-Disable is per capability, not per mechanism tree. Each capability, the base
+Disable is per capability, not per mechanism as a whole. Each capability, the base
 mechanism and each of its flavors, is independently disableable. A base mechanism
 can be disabled while one of its flavors stays enabled, which is the point of
 flavors: an operator who thinks "shell is dangerous, I want a more constrained
@@ -70,17 +70,19 @@ How it behaves:
 - The registry stays the compiled-in set; the config filters it at load. A
   disabled mechanism is still registered but marked disabled. Disable is a
   blocklist: the operator disables the specific capabilities they do not want.
-- Disable applies per capability, and a mechanism group is disabled by disabling
-  every capability in it (for example disable all of `webhook`). Group
-  disablement matters so that a future mechanism added to a disabled group is
-  not silently left enabled: disabling the group means everything in it, now and
+- Disable applies per capability, and a mechanism group can itself be disabled,
+  which disables every capability in it (for example disable all of `webhook`).
+  Group disablement matters so that a future mechanism added to a disabled group
+  is not silently left enabled: disabling the group means everything in it, now and
   later, is off.
-- `capabilities` reports a disabled capability explicitly (for example a
-  `disabled: true` marker on the entry and in the index), rather than letting it
-  vanish. This is critical because Servitor is agent-first: "this exists here but
-  is off" is different information from "this server does not have it", and an
-  agent that sees the capability listed can tell the user why a Wafer using it
-  fails and point at the available alternative.
+- `capabilities` reports a disabled capability explicitly: the entry file
+  carries a top-level `disabled: true` field (beside `role` and `delivery`,
+  omitted when the capability is enabled), and the type stays listed in
+  `index.yaml` under its mechanism group, rather than letting it vanish. This is
+  critical because Servitor is agent-first: "this exists here but is off" is
+  different information from "this server does not have it", and an agent that
+  sees the capability listed can tell the user why a Wafer using it fails and
+  point at the available alternative.
 - Validation rejects a Wafer that uses a disabled mechanism, at dry-run and at
   submit, with a clear error naming the disabled mechanism and the config entry.
   A Wafer cannot be registered with a disabled node or trigger type. On top of
@@ -121,11 +123,12 @@ mechanism fails at config load. `go test ./...` stays green.
 
 Adds to the declared config (`servitor.config.yaml`): a disable surface listing
 the capabilities and mechanism groups to disable. Adds to the `capabilities`
-output: a `disabled: true` marker on a disabled capability's entry and in the
-index. Adds to validation: a clear error when a Wafer uses a disabled mechanism,
-and a config-load error when a dependency (a receiver, a connector, or a secret
-source) is disabled. Existing Wafers and deployments are unaffected unless a
-capability they use is disabled.
+output: a top-level `disabled: true` field on a disabled capability's entry file
+(omitted when enabled), with the type still listed in `index.yaml` under its
+mechanism group. Adds to validation: a clear error when a Wafer uses a disabled
+mechanism, and a config-load error when a dependency (a receiver, a connector, or
+a secret source) is disabled. Existing Wafers and deployments are unaffected
+unless a capability they use is disabled.
 
 ## More information
 

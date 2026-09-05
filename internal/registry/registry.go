@@ -35,8 +35,14 @@ type Field struct {
 	Examples []any
 }
 
-// Role is the category of thing a capability is, which determines where it may
-// be used (under `on:` or `nodes:`) and how it is treated.
+// Role is what kind of capability this is: trigger, action, or flow. It
+// determines where the capability may be used (under `triggers:` or `nodes:`)
+// and how it is treated.
+//
+// A Role is distinct from an execution parameter category (containment, egress,
+// resources, secrets, identity, data flow; SPEC: Execution surface and
+// configuration). A Role describes the capability itself; an execution parameter
+// category describes how a node of that capability is allowed to run.
 type Role string
 
 const (

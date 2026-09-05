@@ -562,16 +562,18 @@ disabled (not removed), with validation rejection and defense-in-depth handler
 unreachability. Depends on the lock model (Phase 20) and flavors (Phase 23).
 
 - [ ] **Config surface.** A disable surface in `servitor.config.yaml` listing the
-  capabilities and mechanism groups to disable. Blocklist, not allowlist; a group
-  is disabled by disabling every capability in it, so a future mechanism added to
-  a disabled group is not silently left enabled.
+  capabilities and mechanism groups to disable. Blocklist, not allowlist; a
+  mechanism group can itself be disabled, which disables every capability in it,
+  so a future mechanism added to a disabled group is not silently left enabled.
 - [ ] **Validation and enforcement.** Validation rejects a Wafer that uses a
   disabled mechanism at dry-run and submit, naming the mechanism and the config
   entry. Defense in depth: a disabled capability's run handler is also unreachable.
   Per capability, so a base can be disabled while its flavor stays enabled.
 - [ ] **Capabilities surface.** `capabilities` reports a disabled capability with
-  a disabled marker rather than removing it, so an agent can see it exists but is
-  off and explain why a Wafer using it fails and point at the alternative.
+  a top-level `disabled: true` field on its entry file (omitted when enabled),
+  the type still listed in `index.yaml` under its group, rather than removing it,
+  so an agent can see it exists but is off and explain why a Wafer using it fails
+  and point at the alternative.
 - [ ] **Load-time dependency failures.** A dependency on a disabled mechanism (a
   webhook receiver, a declared connector, a secret whose source mechanism is
   disabled) fails at config load with a clear error. Toggling a disable takes

@@ -58,6 +58,15 @@ the node is allowed to run). "Parameter" is a subclass of "field", and
 "execution parameter" is precisely a field on the execution surface. The JSON
 Schema keyword `properties` is only the rendering of fields, not a concept.
 
+Two terms share the word "category" and are distinct. A capability's **Role** is
+what kind of capability it is, trigger, action, or flow; it determines where the
+capability can be used (under `triggers:` or `nodes:`) and how it is treated. An
+**execution parameter category** is a dimension of how a node is allowed to run;
+the categories are containment, egress, resources, secrets, identity, and data
+flow, and each groups the execution parameters for that dimension. A Role
+describes the capability itself; an execution parameter category describes the
+runtime of a node of that capability.
+
 The execution parameter categories, each independent, a node is set on each
 separately:
 
