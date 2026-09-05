@@ -76,10 +76,10 @@ Open questions:
 ## Credential proxy + OS sandbox for nodes (a stronger runtime boundary)
 
 **Depends on:** the execution surface idea (it is the proxy mode of the
-secrets axis) and its blind-tunnel egress rule (the credential proxy is the
+secrets category) and its blind-tunnel egress rule (the credential proxy is the
 deliberate exception to that rule, not a replacement for it).
 
-This is the **proxy mode** of the secrets axis of the execution surface: an
+This is the **proxy mode** of the secrets category of the execution surface: an
 opt-in alternative to env delivery (ADR-0033). Today each node receives its
 declared secrets in its subprocess env, per node, eliminated after. Proxy mode
 goes further: keep the real value out of the node entirely, even while the node
@@ -95,7 +95,7 @@ become a place secrets are visible. The credential proxy **must** read and
 rewrite payloads to inject the value. These are not the same proxy. The egress
 proxy is the default path for destination control and stays blind; the
 credential proxy is a separate, secret-aware component used only by nodes
-explicitly opted into it (secrets axis = proxy). It is the deliberate exception
+explicitly opted into it (secrets category = proxy). It is the deliberate exception
 to the blind-tunnel rule, engineered to hold secrets by construction:
 transient (the value dies with the connection, like per-node delivery),
 contained, and daemon-owned. For nodes on this path the "blind" guarantee does
@@ -475,42 +475,60 @@ stays consistent with ADR-0008's single-subprocess-mode rule.
 
 ## The execution surface: isolation and runtime policy as generalized primitives
 
-**Depends on:** the lock model idea (the axes are the parameters the lock model
-governs). It does not depend on the credential-proxy idea: that idea is merely
-the proxy mode of the secrets axis, a mention, not a load-bearing dependency,
-and the execution surface stands without it. It is otherwise foundational.
+**Depends on:** the lock model idea (the execution parameters are what the lock
+model governs). It does not depend on the credential-proxy idea: that idea is
+merely the proxy mode of the secrets category, a mention, not a load-bearing
+dependency, and the execution surface stands without it. It is otherwise
+foundational.
 
 Every mechanism's node runs as a subprocess (ADR-0008), and how a node is
-allowed to run is a set of orthogonal, mechanism-independent axes. Today the
-runtime implements only a few of them (subprocess boundary, per-node secret
-delivery, output capture and redaction). This idea makes the whole set a
-generalized feature: any current or future mechanism can be hardened without
-per-mechanism work, because the enforcement machinery is shared. It grew out of
-asking what it would take to make the shell node safe, but the answer is not a
-shell feature, it is a runtime primitive.
+allowed to run is a set of orthogonal, mechanism-independent **execution
+parameters**, grouped into **execution parameter categories** (containment,
+egress, resources, secrets, identity, data flow). The term "category" in this
+idea means an execution parameter category, not a capability's Role (which the
+registry also calls a category) and not a mechanism group. Today the runtime
+implements only a few of them (subprocess boundary, per-node secret delivery,
+output capture and redaction). This idea makes the whole set a generalized
+feature: any current or future mechanism can be hardened without per-mechanism
+work, because the enforcement machinery is shared. It grew out of asking what
+it would take to make the shell node safe, but the answer is not a shell
+feature, it is a runtime primitive.
 
-The axes (each independent; a node is set on each separately). A named bundle
-of values across these axes is an **execution profile**, which is what a flavor
-pins and a node applies:
+Terminology: a mechanism has **fields**, the existing term for a settable
+attribute (the `Field` type in the registry, "fields" in the SPEC). A
+**function parameter** is a field on the function surface (what the node does,
+such as `url` or `command`); an **execution parameter** is a field on the
+execution surface (how the node is allowed to run). `properties` is only the
+JSON Schema keyword for rendering fields, not a concept. So "parameter" is a
+subclass of "field", not a rival word, and "execution parameter" is precisely a
+field on the execution surface.
+
+The execution parameter categories (each independent; a node is set on each
+separately). A named bundle of values across these execution parameters is an
+**execution profile**, which is what a flavor pins and a node applies:
 
 - **containment**: filesystem and process isolation. What the node can reach
   and trace on the box. Mount masking, user namespace, PID namespace, subuid
   mapping, seccomp, capability drop.
 - **egress**: network reach, opt-in. When enabled, a node's outbound
-  destinations must be static declared values, not runtime data, and it is
-  denied anything outside the declared allow-list. The point is not "we know
-  the destinations and list them", it is that data cannot drive where a node
-  connects: a hardcoded `curl https://api.github.com/...` passes, a
-  `curl $URL` with a data-derived `$URL` is blocked. Disabled (the default)
-  means unrestricted, matching how nodes behave today.
+  destinations must be **declared values**, not runtime data, and it is denied
+  anything outside the declared allow-list. "Declared" means a literal in the
+  Wafer or config, or a reference to a value declared in config (a connector
+  endpoint, a config constant). A destination derived from runtime input
+  (`{event}`, `steps`, a loop variable) is data, not declared, and is blocked.
+  The point is not "we know the destinations and list them", it is that data
+  cannot drive where a node connects: a hardcoded
+  `curl https://api.github.com/...` passes, a `curl $URL` where `$URL` is
+  runtime data is blocked. Disabled (the default) means unrestricted, matching
+  how nodes behave today.
 - **resources**: memory, cpu, pids, time. cgroup limits and timeout. A
   robustness dial (long-running or runaway-prone work), not a confidentiality
   one.
 - **secrets**: how a secret reaches the node. Env (value handed to the
   subprocess, per ADR-0033) is the default. Proxy (value never reaches the
   node) is an optional, marginal mode, the credential-proxy idea, not a
-  load-bearing part of this axis; none is the case of no secrets. The
-  credential-proxy idea lives on this axis, not in containment.
+  load-bearing part of this category; none is the case of no secrets. The
+  credential-proxy idea lives in this category, not in containment.
 - **identity**: the UID / subuid the node runs as and the capabilities it
   holds.
 - **data flow** (already exists): capture and redaction of node output
@@ -518,20 +536,20 @@ pins and a node applies:
 
 Why "isolation levels" is the wrong frame: there is no single isolation ladder.
 The credential-proxy never fit as a "level" because it is not a higher
-containment tier, it is a different axis (how secrets are delivered) that also
-happens to reduce what a node can exfiltrate.
+containment tier, it is a different parameter (how secrets are delivered) that
+also happens to reduce what a node can exfiltrate.
 
-### The default rule: an axis is on by default only when it costs nothing and breaks nothing
+### The default rule: an execution parameter category is on by default only when it costs nothing and breaks nothing
 
-Whether an axis is a choice, or on by default, follows one rule: **an axis
-should be default-on if and only if it costs the user nothing to gain the
-benefit and has no side effect that would make a legitimate node stop working.
-If there is zero reason for it not to be on, it is not a choice, it is just on.**
-A hardening axis that restricts what a node can reach, or that can break a
+Whether a category is a choice, or on by default, follows one rule: **a
+category should be default-on if and only if it costs the user nothing to gain
+the benefit and has no side effect that would make a legitimate node stop
+working. If there is zero reason for it not to be on, it is not a choice, it is
+just on.** A category that restricts what a node can reach, or that can break a
 legitimate workload, or that depends on a host capability not every deployment
 has, is a choice, because turning it on has a real cost.
 
-Applying the rule to the axes:
+Applying the rule to the categories:
 
 - **On by default, not a choice:** `data flow` (capture and redaction, ADR-0050)
   costs nothing and breaks nothing, so it is always on, as it is today. The
@@ -548,9 +566,9 @@ Applying the rule to the axes:
   that can break a legitimate long-running or memory-heavy node, and a good
   default cap is workload-dependent, so it cannot be a universal default.
 
-So the hardening axes are opt-in because every one of them has a nonzero cost
-or side effect, and the costless ones are not choices at all. This is the
-load-bearing rule for why any axis is or is not a default.
+So the hardening categories are opt-in because every one of them has a nonzero
+cost or side effect, and the costless ones are not choices at all. This is the
+load-bearing rule for why any category is or is not a default.
 
 ### The researched baseline for containment (Linux-only)
 
@@ -635,16 +653,15 @@ levels that compose through the lock model (see the flavors idea):
   carries its `url`; a shell node declares the domains its command needs).
 
 The lock value decides which governs, per the lock model (see its own idea).
-When egress is **operator-locked**, the config list is authoritative and the
+When egress is **config-locked**, the config list is authoritative and the
 Wafer cannot override it; the node runs within that policy and its own
-destination must fall inside it. When **operator-default**, the config sets the
-default but the Wafer may narrow or extend it per node. When **author-free**,
-the config does not constrain it and the Wafer's declaration (or the
-mechanism's built-in default) governs. Both levels are needed: the config level
-carries the operator's policy, the Wafer level carries the per-node
-declaration, and the lock model decides how they combine. A reviewed shell
-script's destinations are knowable (the script is reviewed), so egress control
-can stay meaningful for shell.
+destination must fall inside it. When **config-default**, the config sets the
+default but the Wafer may narrow or extend it per node. When **wafer-set**,
+the config does not constrain it and the Wafer's declaration governs. Both
+levels are needed: the config level carries the operator's policy, the Wafer
+level carries the per-node declaration, and the lock model decides how they
+combine. A reviewed shell script's destinations are knowable (the script is
+reviewed), so egress control can stay meaningful for shell.
 
 For `mcp-stdio`, the server is a **local subprocess** that Servitor spawns and
 controls (its command, env, and stdio), and in Servitor's model each declared
@@ -773,7 +790,7 @@ inert, which is the implementation failure to avoid.
 - **A granted secret can still be exfiltrated.** A node holds its declared
   secrets in env and can copy them into its JSON result or, with any granted
   egress, send them to an allowed host. No sandbox stops this. The secrets
-  axis' proxy mode (the credential-proxy idea, keeping the value out of the
+  category's proxy mode (the credential-proxy idea, keeping the value out of the
   node entirely) would close the node-copies-its-own-secret case, but it is a
   marginal, optional mode with its own secret-handling surface (see that
   idea); the accepted state is that a node holding a granted secret can
@@ -788,7 +805,7 @@ inert, which is the implementation failure to avoid.
 - The sandbox setup itself (launcher, mount recipe, mappings) is trusted code;
   a bug there silently downgrades the sandbox.
 
-### Which mechanisms benefit from which axes
+### Which mechanisms benefit from which execution parameter categories
 
 The machinery sits at the shared subprocess-spawn boundary, so it wraps any
 node at the same plumbing cost, but the value and cost are not uniform:
@@ -815,7 +832,7 @@ node at the same plumbing cost, but the value and cost are not uniform:
   secrets, no egress, and sit on the hot loop where per-spawn overhead is
   felt); not applicable to `wait`, `send-signal`, `rerun-failed`, and the
   triggers, which are worker-handled or in-daemon, not subprocess nodes.
-- **Resource limits follow a different axis.** They pay off for anything
+- **Resource limits follow a different category.** They pay off for anything
   long-running or runaway-prone: `singer-tap` (streaming), `mcp-stdio` (can
   hang), `shell` (a command can loop), and the `email` poller. Short-lived
   `http` and compute nodes barely need them.
@@ -862,12 +879,12 @@ node at the same plumbing cost, but the value and cost are not uniform:
 
 Open questions:
 
-- Whether a profile is referenced by name or the axes are declared inline.
-- How a node whose requested axes cannot be satisfied (host lacks userns or
-  subuid) is handled: it must fail loudly at validation or submit, never
+- Whether a profile is referenced by name or the categories are declared inline.
+- How a node whose requested categories cannot be satisfied (host lacks userns
+  or subuid) is handled: it must fail loudly at validation or submit, never
   silently degrade. A hard requirement, not an open nicety.
-- Whether the axis enforcers stay under the single `exec` component or split
-  per axis.
+- Whether the category enforcers stay under the single `exec` component or
+  split per category.
 - Interaction with the TPM-unlock tier of the secret model: if a node's `/dev`
   hides the TPM, the node cannot reach the unlock material, but the runner
   still must.
@@ -879,43 +896,61 @@ Open questions:
 ## The lock model: who sets a parameter, config or Wafer
 
 **Depends on:** nothing. It is a standalone generalized primitive; the
-execution-surface axes are the parameters it governs, and the flavors, egress,
-and disable ideas consume it.
+execution-surface categories are the execution parameters it governs, and the
+flavors, egress, and disable ideas consume it.
 
-Every mechanism parameter, on every execution-surface axis, is governed by one
-cross-cutting question: **who gets to set it?** The lock model answers that. It
-applies to any parameter, on any axis, in any mechanism, and it is what makes a
+Every mechanism parameter, on every execution-surface category, is governed by
+one cross-cutting question: **who gets to set it?** The lock model answers
+that. It applies to any parameter, on any category, in any mechanism, and it is
+what makes a
 flavor a real constraint rather than a wish, what makes egress policy
 operator-enforceable, and what makes disable a hard off switch. It is a
 generalized primitive in its own right, defined here once and referenced by the
 flavors, egress, and disable ideas.
 
-A parameter has one of three lock values:
+A parameter has one of three lock values, named for where it is set:
 
-- **operator-locked**: the config pins the value and the Wafer cannot override
+- **config-locked**: the config pins the value and the Wafer cannot override
   it. The security-hard case.
-- **operator-default**: the config sets a default and the Wafer may override
+- **config-default**: the config sets a default and the Wafer may override
   it. The convenience case.
-- **author-free**: the config does not constrain the parameter at all, no pin
-  and no default, so the value comes from the Wafer (or the mechanism's own
-  built-in default). It is not that the config is forbidden from setting a
-  value, it is that the config simply does not, which is what distinguishes it
-  from operator-default.
+- **wafer-set**: the config does not constrain the parameter at all, no pin
+  and no default, so the value comes from the Wafer. It is not that the config
+  is forbidden from setting a value, it is that the config simply does not,
+  which is what distinguishes it from config-default.
+
+A parameter that is wafer-set and omitted by the Wafer is simply unset: an
+optional parameter that is not set behaves as off or absent, with no hidden
+default. There is no separate "built-in default" concept in the mechanism
+metadata today, and none is introduced here.
 
 ### The lock value is implicit in how a value is written, not a separate setting
 
 There is no lock-mode field to remember to set. The lock value is derived from
 whether and how a parameter appears in the config:
 
-- **Not in the config at all** = author-free. Nothing constrains it, the Wafer
+- **Not in the config at all** = wafer-set. Nothing constrains it, the Wafer
   decides.
-- **In the config, as a plain value, not marked locked** = operator-default.
+- **In the config, as a plain value, not marked locked** = config-default.
   The config provides the starting value, the Wafer may override it. This is
   the common case and the least surprising: a user who just wants a sensible
   default writes the value and does nothing else.
-- **In the config, marked locked** = operator-locked. The config pins it, the
+- **In the config, marked locked** = config-locked. The config pins it, the
   Wafer cannot override. Locking is the deliberate extra step for a security
   constraint.
+
+The lock is expressed per field, as a `locked: true` marker on that field in
+the config. For example:
+
+```yaml
+shell:
+  egress:
+    allow: [github.com]
+    locked: true
+```
+
+Here egress is config-locked to `[github.com]`. A plain value without
+`locked: true` would be config-default, and an absent entry is wafer-set.
 
 So the operator makes one decision per parameter they write: do they also mark
 it locked? Writing a plain value is a default; writing it and locking it is a
@@ -927,10 +962,11 @@ else to remember.
 When a Wafer names a flavor (or sets a parameter on a node), the effective
 value is decided by the lock on each parameter:
 
-- operator-locked: the config value governs, the Wafer's value is rejected at
+- config-locked: the config value governs, the Wafer's value is rejected at
   validation.
-- operator-default: the config value applies unless the Wafer overrides it.
-- author-free: the Wafer's value (or the mechanism's built-in default) applies.
+- config-default: the config value applies unless the Wafer overrides it.
+- wafer-set: the Wafer's value applies; if the Wafer omits it, the parameter
+  is unset.
 
 One parameter is governed by exactly one of these; there is no layering of
 locks within a single parameter.
@@ -940,54 +976,73 @@ Open questions:
 - Whether a locked value in `capabilities` is shown with its lock state so an
   agent can see what it may set (leaning: yes, it is critical for the agent to
   know why a Wafer using a locked parameter fails).
-- Whether the "marked locked" is a boolean on each config entry or a distinct
-  locked section in the config.
-- Whether operator-default and author-free truly differ in effect when the
-  Wafer always sets the value anyway (they do differ in the case where the
-  Wafer omits the parameter: default applies in one, the mechanism's built-in
-  default in the other).
 
 ## Mechanism flavors: config-declared synthetic capabilities
 
 **Depends on:** the lock model idea (a flavor is a base mechanism plus pinned
 parameters, and the pinning is exactly the lock model) and the execution
-surface idea (a flavor can pin execution-surface axes, not just function
+surface idea (a flavor can pin execution-surface categories, not just function
 parameters).
 
-A flavor is a config-declared, named, synthetic mechanism: a base mechanism
-plus a pinned subset of its parameters, surfaced in `servitor capabilities`
-like any other capability. It generalizes the existing declared-connectors
-pattern (ADR-0018), where the config declares named MCP servers and Singer
-taps and a Wafer names an instance, from command/url/env parameters to any
-parameter, including the execution surface of the first idea.
+A flavor is a config-declared, named, **synthetic** mechanism: it has no
+mechanism folder of its own, it refers to a real base mechanism (which does
+have a folder) and pins a subset of its parameters. It surfaces in `servitor
+capabilities` like any other capability. It generalizes the existing
+declared-connectors pattern (ADR-0018), where the config declares named MCP
+servers and Singer taps and a Wafer names an instance, from command/url/env
+parameters to any parameter, including the execution surface of the first idea.
 
 The part that makes a flavor a real constraint rather than a wish is the lock
 model (see the lock-model idea). A flavor pins each of its parameters with one
 of the three lock values, and a flavor is a mix of them per parameter: "Shell,
 scripts-only, hardened execution profile, timeout locked at 5m" is a flavor
-where the function surface is partly operator-locked (scripts-only), some
-execution axes are locked (hardened), and the timeout is operator-default. The
-distinction between a security constraint and a convenience default is exactly
-the lock value on each parameter.
+where the function surface is partly config-locked (scripts-only), some
+execution categories are locked (hardened), and the timeout is config-default.
+The distinction between a security constraint and a convenience default is
+exactly the lock value on each parameter.
 
 ### How a flavor is shaped
 
-A flavor names a base mechanism and pins a subset of its parameters. Its
-capability is derived from the base's: the base's schema, with the pinned
-parameters fixed to their config values and every other parameter exposed to
-the Wafer according to its lock (author-free exposed, operator-default exposed
-but defaulted, operator-locked fixed and not overrideable). So a flavor's schema
-is the base's schema filtered through its locks. A flavor is one level: it names
-a base mechanism, not another flavor, so there is no stacking and no ambiguity
-about what the base is. It surfaces in `capabilities` as its own named
-capability with a marker distinguishing it from the base mechanism, and it
-carries its lock state so an agent can see, for each field, what it may set and
-what the operator has fixed.
+A flavor names a base mechanism and pins a subset of its parameters. It is one
+level: it names a base mechanism, not another flavor, so there is no stacking
+and no ambiguity about what the base is.
+
+A flavor **inherits** the things that define what it is, and **pins** the things
+that configure it:
+
+- Inherited from the base: its `Role` (trigger, action, or flow), its
+  `MechanismGroup` (it appears under the base's group), its `SideEffect` and
+  `Delivery` properties, and its `RunKind` (it runs the same harness). These
+  are fixed by the base and cannot be changed by a flavor.
+- Pinned by the flavor: the configurable parameters, on the function surface
+  and the execution surface, each with a lock value.
+
+Its capability is the base's schema, with the pinned parameters shown at their
+config values and marked with their lock state, and every unpinned parameter
+exposed to the Wafer (config-default exposed but overrideable, wafer-set
+exposed and free, config-locked fixed and not overrideable). It carries its
+lock state so an agent can see, for each field, what it may set and what the
+config has fixed, without a second lookup into the config file.
+
+The representation in `capabilities` mirrors how config writes it (a deliberate
+extension of what is otherwise a pure-schema view): a config-locked field shows
+its value plus `locked: true` next to it in the schema, a config-default field
+shows its value with no locked marker, and a wafer-set field is a plain settable
+property. This is the same notation an agent uses to write config and Wafers,
+so the flavor's entry reads naturally and the fixed-versus-free split is visible
+inline. Base mechanism files stay pure schema; the flavor's per-type file is
+where the pins show.
+
+A flavor has its **own name** (the base mechanism's name with the configured
+flavor name appended) and is a **distinct capability** from the base, with its
+own availability: a base mechanism can be disabled while one of its flavors
+stays enabled, and each flavor is independently disableable (see the disable
+idea).
 
 Concrete shell flavors:
 
 - **Scripts-only shell.** A shell flavor whose function surface is
-  operator-locked to "call a named script from an operator-gated folder" instead
+  config-locked to "call a named script from an operator-gated folder" instead
   of an arbitrary inline command. The config names the folder; validation
   rejects an inline command and any script name that does not resolve inside
   the folder. The folder is a deploy artifact gated by the same reviewed PR
@@ -1010,7 +1065,8 @@ name carries the variant. A flavor is the generalization of that: instead of a
 compiled-in type per combination, the config declares the combination. It fits
 the declared-config philosophy (the box advertises what it supports, per
 deployment) and avoids a compiled-in type per variant. The honest caveat: the
-sandbox changes the execution harness, an axis the declared-connectors pattern
+sandbox changes the execution harness, a category the declared-connectors
+pattern
 never carried, so the flavor framework is a real new concept, not a mechanical
 extension. BSSN says do not build the generalized framework until it has real
 users; there are already two candidate flavors (scripts-only, sandboxed), and
@@ -1024,28 +1080,38 @@ Open questions:
   read-only, so a script cannot read beyond it).
 - Whether flavors are their own config section or an extension of the existing
   declared-connectors sections.
-- The precise precedence rule when a Wafer names a flavor: how operator-default
-  and author-free combine with a flavor's locks. Needs rigid definition before
+- The precise precedence rule when a Wafer names a flavor: how config-default
+  and wafer-set combine with a flavor's locks. Needs rigid definition before
   implementation.
 - Whether scripts-only shrinks the demand for full `shell` enough that the
   "wants the dangerous version" cases are rarer than they look.
 
 ## Disable mechanisms per deployment (a config-level off switch)
 
-**Depends on:** the lock model idea (disabling a mechanism is the availability
-parameter operator-locked to off) and the flavors idea (disable can apply to a
-flavor as well as its base mechanism).
+**Depends on:** the flavors idea (a flavor is a distinct capability that can
+be disabled independently of its base mechanism).
 
 The mechanism registry is the compiled-in set (ADR-0045, ADR-0048): every
 capability a deployment can use is there unless its folder is deleted, which
 means a rebuild and a permanent fork. This idea gives the operator the
 per-deployment alternative: disable any mechanism in `servitor.config.yaml`,
 so a deployment can, for example, turn off `core/shell` and make that
-capability unusable on this Servitor without touching the binary. In the
-generalized model this is the availability parameter, operator-locked to off,
-and it composes with flavors: a deployment can disable the normal `shell` and
-enable only a scripts-only or sandboxed flavor, so the constrained version is
-the only shell available.
+capability impossible to use on this Servitor without touching the binary.
+
+Disable is **not** a lock on a fake "availability parameter": it is a
+config-level decision that a capability does not exist on this deployment. A
+disabled capability is impossible to use: validation rejects any Wafer that
+uses it, its run handler is unreachable, and `capabilities` surfaces it as
+disabled.
+
+Disable is **per capability, not per mechanism tree**. Each capability, the
+base mechanism and each of its flavors, is independently disableable. A base
+mechanism can be disabled while one of its flavors stays enabled, which is the
+whole point of flavors: an operator who thinks "shell is dangerous, I want a
+more constrained version" makes a flavor and disables the base, leaving the
+flavor as the only shell available. Validation checks the specific capability
+named in the Wafer, so `type: shell` fails while `type: shell-scripts-only`
+passes.
 
 How it would behave:
 
