@@ -21,7 +21,8 @@ capability a deployment can use is there unless its folder is deleted, which
 means a rebuild and a permanent fork. This decision gives the operator the
 per-deployment alternative: disable any mechanism in `servitor.config.yaml`, so
 a deployment can, for example, turn off `core/shell` and make that capability
-impossible to use on this Servitor without touching the binary.
+impossible to use on this Servitor, without deleting the mechanism or rebuilding
+the binary.
 
 ## Decision drivers
 

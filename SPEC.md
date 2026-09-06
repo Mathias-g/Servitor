@@ -765,15 +765,18 @@ prerequisites they need are listed under Host requirements below. The full
 research rationale for how these guarantees are achieved (user namespace and
 subuid semantics, the launcher) lives in ADR-0052.
 
-**Which nodes are hardened.** Containment and egress are applied to the nodes
-whose executed code is not Servitor's own and that hold secrets: `shell`,
-`mcp-stdio`, `singer-tap` and `singer-target`, and the `email_received` fetcher.
-The `http`, `mcp-http`, and `email_received` nodes get the cheap exact-egress
-treatment (their destination is declared in the node). The pure-compute nodes
-(`transform`, `switch`, `foreach`) are not hardened by default: they hold no
+**Which nodes are worth hardening.** None of the hardening is on by default:
+containment, egress, and resource parameters are choices a deployment turns on
+(SPEC: The default rule). The question answered here is which nodes a deployment
+would choose to harden. Containment and egress pay off most for the nodes whose
+executed code is not Servitor's own and that hold secrets: `shell`, `mcp-stdio`,
+`singer-tap` and `singer-target`, and the `email_received` fetcher. The
+`http`, `mcp-http`, and `email_received` nodes get cheap exact-egress when egress
+is enabled, because their destination is declared in the node. The pure-compute
+nodes (`transform`, `switch`, `foreach`) are not worth hardening: they hold no
 secrets, need no egress, and sit on the hot loop where per-spawn overhead would
-be felt. Resource limits are applied to long-running or runaway-prone work
-(`singer-tap`, `mcp-stdio`, `shell`, the `email` poller), not to short-lived
+be felt. Resource limits pay off for long-running or runaway-prone work
+(`singer-tap`, `mcp-stdio`, `shell`, the `email` poller), not for short-lived
 `http` or compute nodes.
 
 ### The lock model
@@ -835,7 +838,8 @@ shell's full power but running it contained).
 ### Disable mechanisms
 
 An operator can disable any mechanism in `servitor.config.yaml`, making that
-capability impossible to use on this deployment without touching the binary.
+capability impossible to use on this deployment, without deleting the mechanism
+or rebuilding the binary.
 
 - Disable applies **per capability, not per mechanism as a whole**. Each
   capability, the base mechanism and each of its flavors, is independently
