@@ -94,8 +94,10 @@ profile**. A profile is declared in config and referenced by name in the Wafer
 (a node names the profile it uses), not spelled out inline, because an inline
 bundle becomes unreadable once long. A node whose requested profile cannot be
 satisfied (the host lacks a prerequisite such as unprivileged user namespaces
-or subuid ranges) must fail loudly at validation or submit, never silently
-degrade to a weaker configuration.
+or subuid ranges) must fail loudly at submit (and at first run), when the
+daemon checks the host, never silently
+degrade to a weaker configuration. An unknown profile name is a Wafer-syntax
+error, rejected at validation.
 
 **The default rule**: an execution parameter is on by default if and only if it
 costs the user nothing to gain its benefit and has no side effect that makes a
@@ -200,10 +202,11 @@ sit on the hot loop where per-spawn overhead is felt.
 
 ### Confirmation
 
-Tests pin the fail-loudly rule (a node whose requested profile cannot be
-satisfied fails at validation or submit, never degrades), the profile-by-name
-resolution, and the default rule (which execution parameters are on by
-default). Containment behavior is verified per execution parameter category (for
+Tests pin the fail-loudly rule (an unknown profile name is rejected at
+validation; a profile the host cannot satisfy fails at submit, never degrades),
+the profile-by-name resolution, and the default rule (which execution parameters
+are on by default). Containment behavior is verified per execution parameter
+category (for
 example the mount-masking and namespace layers each have tests asserting the
 node cannot reach the runner's process, run DB, or secret material).
 `go test ./...` stays green.
@@ -215,8 +218,9 @@ bundles of values across the execution parameters, referenced by name. A node in
 a Wafer may name the profile it uses. The `egress` execution parameter category
 is defined in ADR-0053. Host prerequisites (unprivileged user namespaces with an AppArmor
 profile, subuid ranges, cgroup mount) are documented as one-time install-time
-setup, not per-workflow configuration. A node requesting a profile the host
-cannot satisfy fails at validation or submit.
+setup, not per-workflow configuration. An unknown profile name is rejected at
+validation; a node requesting a profile the host cannot satisfy fails at submit
+(and first run).
 
 ## More information
 

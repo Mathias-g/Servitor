@@ -447,30 +447,43 @@ unsatisfiable profile, and the researched containment baseline (Linux-only,
 host prerequisites).
 
 - [ ] **Profiles and the default rule.** An execution profile is a named config
-  object, referenced by name in a Wafer node. A node whose requested profile
-  cannot be satisfied fails loudly at validation or submit, never degrades.
+  object, referenced by name in a Wafer node. An unknown profile name is rejected
+  at validation; a node whose requested profile cannot be satisfied because the
+  host lacks a prerequisite fails loudly at submit (and first run), never
+  degrades.
   The default rule is applied per execution parameter, not per execution
   parameter category (a category only groups parameters). The `data flow`
   capture-and-redaction and `secrets` env-delivery parameters are on by default,
   not choices; the containment, identity, egress, and resource parameters are
   choices.
-- [ ] **Containment: mount masking first.** The highest-value reduction for the
-  least machinery, works on every kernel: the node subprocess runs with an empty
-  root and read-only binds of only what it needs (fresh `/tmp` and `/proc`, no
-  path to the run DB, config, or secret material). Spawned through a launcher
+  **Verified when:** a node can name a profile, an unknown profile name is
+  rejected at validation, and an unsatisfiable profile fails loudly (SPEC: The
+  execution surface, fail-loudly rule).
+- [ ] **Containment: mount masking (first increment).** The highest-value reduction
+  for the least machinery, works on every kernel: the node subprocess runs with an
+  empty root and read-only binds of only what it needs (fresh `/tmp` and `/proc`,
+  no path to the run DB, config, or secret material). Spawned through a launcher
   (bwrap, nsjail, or `systemd-run`) that receives a grants descriptor and
   translates it into mounts before exec.
-- [ ] **Containment: namespaces.** Add a user namespace, PID namespace, and
-  network namespace (loopback only) per contained node. Cross-namespace ptrace
-  and `/proc/<pid>/mem` are denied by the kernel; the node cannot see or signal
-  the runner.
-- [ ] **Containment: seccomp, capability drop, no_new_privs, cgroup.** A seccomp
-  deny-list (including `io_uring_setup`), an empty capability bounding set plus
-  `no_new_privs`, and a per-node cgroup.
-- [ ] **Containment: subuid mapping and Landlock.** Map the node to a different
-  host UID via `/etc/subuid` and `newuidmap` for DAC-level separation, and
-  Landlock as a deny-by-default backstop. Host prerequisite: subuid ranges and
-  the `newuidmap` helpers.
+  **Verified when:** a test asserts the node cannot read the run DB, config, or
+  secret material from inside its mount namespace.
+- [ ] **Containment: namespaces (second increment).** Add a user namespace, PID
+  namespace, and network namespace (loopback only) per contained node.
+  Cross-namespace ptrace and `/proc/<pid>/mem` are denied by the kernel; the node
+  cannot see or signal the runner.
+  **Verified when:** a test asserts the node cannot ptrace or read the memory of
+  the runner's process, and cannot signal it.
+- [ ] **Containment: seccomp, capability drop, no_new_privs, cgroup (third
+  increment).** A seccomp deny-list (including `io_uring_setup`), an empty
+  capability bounding set plus `no_new_privs`, and a per-node cgroup.
+  **Verified when:** a test asserts a denied syscall fails, the node runs with an
+  empty capability set, and the cgroup enforces a resource limit.
+- [ ] **Containment: subuid mapping and Landlock (fourth increment).** Map the node
+  to a different host UID via `/etc/subuid` and `newuidmap` for DAC-level
+  separation, and Landlock as a deny-by-default backstop. Host prerequisite:
+  subuid ranges and the `newuidmap` helpers.
+  **Verified when:** a test asserts the node runs as a different host UID and
+  cannot read the runner's files at the filesystem level.
 - [ ] **Host prerequisites.** Documented and checked: unprivileged user namespaces
   enabled via an AppArmor profile for the Servitor daemon carrying the `userns`
   rule (not the system-wide sysctl), `/etc/subuid` and `/etc/subgid` plus
@@ -479,13 +492,15 @@ host prerequisites).
   in the README's system-requirements / getting-started section, so an operator
   knows what the box needs before a hardened node can run.
 - [ ] **Tests.** The fail-loudly rule, profile-by-name resolution, the default
-  rule, and containment behavior per layer as each is built. `go test ./...`
+  rule, and containment behavior per increment as each is built. `go test ./...`
   stays green.
 
 **Done when:** a node can be hardened through a shared profile with the researched
 containment stack on a Linux host that has the one-time prerequisites, the
 pure-compute nodes are left unhardened by default, and the fail-loudly rule and
-the per-parameter default rule are pinned by tests.
+the per-parameter default rule are pinned by tests. The four containment
+increments are independently shippable: each lands with its own verification
+test, and later increments depend on earlier ones.
 
 ## Phase 22: Egress control
 
@@ -508,11 +523,15 @@ namespace (Phase 21).
 - [ ] **Cooperating-client proxy path.** Route a cooperating third-party client
   (a Singer tap, any proxy-honoring tool) through an application proxy that checks
   the destination from the handshake.
-- [ ] **Non-cooperating syscall path.** Enforce at the syscall level with
-  seccomp-unotify (`SECCOMP_RET_USER_NOTIF`, fd injection via
+- [ ] **Non-cooperating syscall path (deferrable).** Enforce at the syscall level
+  with seccomp-unotify (`SECCOMP_RET_USER_NOTIF`, fd injection via
   `SECCOMP_IOCTL_NOTIF_ADDFD`), with the destination attributed back to a hostname
   via controlled DNS resolution (observed resolution, deny an IP with no observed
-  allowed resolution) rather than IP-pinning.
+  allowed resolution) rather than IP-pinning. This is the hardest of the three
+  paths and can be deferred: it is kernel- and glibc-sensitive and does not block
+  the owned and cooperating paths shipping. If deferred, the declared allow-list
+  is enforced for owned and cooperating clients only, and the non-cooperating
+  gap is tracked as an open limitation.
 - [ ] **Transport.** A UNIX domain socket bind-mounted into the node's mount
   namespace, in a Servitor-owned non-world-writable directory (the runner's state
   directory, never `/tmp`), stale socket unlinked before binding, `SOCK_STREAM`
@@ -551,12 +570,19 @@ lock model (Phase 20) and the execution surface (Phase 21).
   with their lock state (config-locked shows `locked: true` inline), so an agent
   sees what it may set without reading the config file.
 - [ ] **Concrete flavors.** Scripts-only shell (function surface config-locked to
-  call a named script from an operator-gated folder, the script delivered to the
-  node like a secret and reading `{event, steps}` on stdin) and sandboxed shell
-  (pins the execution surface, running contained).
+  call a named script from an operator-gated folder) and sandboxed shell (pins
+  the execution surface, running contained).
+- [ ] **Script delivery for scripts-only (its own feature).** A scripts-only
+  flavor's script is delivered to the node like a secret: the node receives
+  exactly the one script it is told to run, delivered per-node the way a declared
+  secret is delivered, and the script lives in a runner-managed location the node
+  cannot see. The script reads its `{event, steps}` input on stdin. This is its
+  own nontrivial delivery mechanism, separate from the flavor framework.
 - [ ] **Tests.** A flavor surfaces in `capabilities`, a config-locked pinned
   parameter is rejected when a Wafer overrides it, inherited identity matches the
   base, and a base can be disabled while its flavor stays enabled (with Phase 24).
+  For scripts-only: a test asserts the node receives exactly its one script and
+  cannot read the runner-managed scripts location.
   `go test ./...` stays green.
 
 **Done when:** an operator can declare a flavor that constrains a base mechanism
@@ -574,6 +600,10 @@ unreachability. Depends on the lock model (Phase 20) and flavors (Phase 23).
   capabilities and mechanism groups to disable. Blocklist, not allowlist; a
   mechanism group can itself be disabled, which disables every capability in it,
   so a future mechanism added to a disabled group is not silently left enabled.
+  Disable is keyed by the capability's full name: a flavor is disabled by its
+  full flavor name (base name plus `-` plus flavor name, for example
+  `shell-scripts-only`), not by its base mechanism, so a base and its flavors are
+  independently disableable.
 - [ ] **Validation and enforcement.** Validation rejects a Wafer that uses a
   disabled mechanism at dry-run and submit, naming the mechanism and the config
   entry (with the `disabled_mechanism` error code). Defense in depth: a disabled
