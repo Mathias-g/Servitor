@@ -475,6 +475,9 @@ host prerequisites).
   enabled via an AppArmor profile for the Servitor daemon carrying the `userns`
   rule (not the system-wide sysctl), `/etc/subuid` and `/etc/subgid` plus
   `newuidmap`/`newgidmap`, and a cgroup v2 mount with delegated controllers.
+  These are one-time, install-time, Linux-only setup, and they are documented
+  in the README's system-requirements / getting-started section, so an operator
+  knows what the box needs before a hardened node can run.
 - [ ] **Tests.** The fail-loudly rule, profile-by-name resolution, the default
   rule, and containment behavior per layer as each is built. `go test ./...`
   stays green.
