@@ -765,11 +765,13 @@ prerequisites they need are listed under Host requirements below. The full
 research rationale for how these guarantees are achieved (user namespace and
 subuid semantics, the launcher) lives in ADR-0052.
 
-**Which nodes are worth hardening.** None of the hardening is on by default:
-containment, egress, and resource parameters are choices a deployment turns on
-(SPEC: The default rule). The question answered here is which nodes a deployment
-would choose to harden. Containment and egress pay off most for the nodes whose
-executed code is not Servitor's own and that hold secrets: `shell`, `mcp-stdio`,
+**Which nodes are worth hardening.** The containment, egress, and resource
+parameters are not on by default; they are choices a deployment turns on, per
+the default rule (SPEC: The default rule). The `data flow` capture-and-redaction
+parameter is on by default, but it applies to every node already. The question
+answered here is which nodes a deployment would choose to harden. Containment
+and egress pay off most for the nodes whose executed code is not Servitor's own
+and that hold secrets: `shell`, `mcp-stdio`,
 `singer-tap` and `singer-target`, and the `email_received` fetcher. The
 `http`, `mcp-http`, and `email_received` nodes get cheap exact-egress when egress
 is enabled, because their destination is declared in the node. The pure-compute
