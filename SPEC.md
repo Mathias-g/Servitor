@@ -894,25 +894,49 @@ config list is authoritative and the Wafer cannot override it; when
 config-default the config sets the default but the Wafer may narrow or extend it;
 when wafer-set the Wafer's declaration governs.
 
-The mechanism used to enforce the allow-list depends on who owns the client,
-and Servitor uses the simplest one for each node kind. Two terms distinguish
-how a third-party client reaches the network. A **cooperating** client is one
-that honors standard proxy environment variables (`ALL_PROXY`, `http_proxy`),
-so it voluntarily routes its connections through a proxy, and the proxy can
-read the destination from the handshake. A **non-cooperating** client ignores
-proxy configuration and opens its own TCP connection directly to the
-destination, so a proxy never sees it and the connection must be checked at the
-syscall level instead. For a client Servitor owns (`http`, `mcp-http`,
-`email_received`) the node checks its own declared destination against the
-allow-list; for a cooperating third-party client (a Singer tap or any
-proxy-honoring tool) the connection goes through an application proxy that
-checks the destination from the handshake; for a non-cooperating client (a tool
-that opens its own TCP) enforcement is at the syscall level, with the
-destination attributed back to a hostname via controlled DNS resolution rather
-than IP-pinning. The egress proxy is a blind
-tunnel: it reads only the destination and never inspects payloads, so it does
-not become a place a granted secret is visible outside its node. Hostname
-semantics are best-effort, not a hard boundary.
+The mechanism used to enforce the allow-list depends on the node type and the
+egress mode, and Servitor uses the simplest mechanism for each. A node's egress
+has a **mode**, one field on every node, with two values:
+
+- **`default`** (the default when `mode` is omitted): the node's normal egress
+  behavior. For a node whose network operation is built into Servitor (`http`,
+  `mcp-http`, `email_received`), that is checking the declared destination
+  against the allow-list in-process, hostname-exact. For a node that runs an
+  external command (`shell`, `mcp-stdio`, `singer-tap`/`target`), that is
+  reaching allowed destinations through an application proxy that reads the
+  destination from the handshake, hostname-exact, for tools that honor the
+  proxy.
+- **`fallback`**: use the network-boundary path instead of the default, for a
+  node whose default behavior will not work (for example a `shell` tool that
+  ignores the proxy and opens its own TCP). Setting `mode: fallback` is the
+  whole act of opting in, and it works for any node type without breaking it.
+
+The egress proxy is a blind tunnel: it reads only the destination and never
+inspects payloads, so it does not become a place a granted secret is visible
+outside its node.
+
+**The `fallback` mode uses the network boundary.** In `fallback`, the node's
+outbound traffic passes through a single network boundary that is enforced at
+the packet layer, so every packet the node emits must transit it, regardless of
+which syscall, protocol, or file descriptor produced it (TCP, UDP, raw,
+`AF_PACKET`, inherited fds, io_uring). This is a real, kernel-enforced,
+topological boundary, not a syscall interceptor, so there is no path that
+bypasses it. We deliberately do not use seccomp-unotify for this boundary: the
+kernel documents that seccomp-unotify cannot be used to implement a security
+policy, because syscall interception leaves other egress paths untouched,
+whereas a packet boundary has none. This mode is rarely needed in Servitor's
+bounded-integration model, where
+most nodes use their default behavior.
+
+**Hostname semantics at the packet boundary.** At the packet layer the check
+sees IPs, not hostnames. Enforcing hostnames there requires routing the node's
+DNS through a resolver Servitor observes and maintaining each allowed
+hostname's current IP set at the boundary (refreshed on TTL, so CDN and
+load-balanced destinations keep working), denying any IP with no observed
+allowed resolution. Do not pin a fixed set of IPs. This is best-effort for
+semantics (hostname-vs-IP, DNS rebinding), but it is a real boundary for whether
+traffic can escape the gate. The `default` paths see the hostname
+directly and need none of this.
 
 ### Host requirements and the honest ceiling
 
@@ -922,7 +946,8 @@ enabled via an AppArmor profile for the Servitor daemon carrying the `userns`
 rule (not the system-wide sysctl, which weakens the whole host); `/etc/subuid`
 and `/etc/subgid` entries plus `newuidmap`/`newgidmap`; a cgroup v2 mount with
 delegated controllers; and a kernel with the needed namespaces and seccomp since
-roughly 2024.
+roughly 2024. The `fallback` egress mode additionally needs nftables or
+cgroup/BPF packet filtering, which the same kernel-era requirement covers.
 
 What no combination stops: a node that holds a granted secret can exfiltrate it,
 no sandbox stops that; the stack trusts the host kernel, so a kernel bug is an

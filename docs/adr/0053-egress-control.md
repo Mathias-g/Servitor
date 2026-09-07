@@ -62,39 +62,54 @@ endpoint, a config constant). A destination derived from runtime input
 Egress control is opt-in: disabled (the default) means unrestricted, matching
 how nodes behave today.
 
-**Enforcement paths, keyed on who owns the client**:
+**The egress mode**. Every node has an `egress.mode`, one field with two
+values, which selects how the allow-list is enforced:
 
-- Servitor owns the client (`http`, `mcp-http`, `email_received`): the
-  destination is already a declared value in the node. The node checks its own
-  destination against the allow-list before connecting. Hostname-exact, no
-  proxy or syscall needed.
-- A cooperating third-party client (Singer taps and targets, and any MCP server
-  or shell tool that honors `ALL_PROXY`/`http_proxy`): route it through an
-  application proxy that sees the hostname in the handshake and checks it
-  against the allow-list. Hostname semantics, the proxy resolves per
-  connection.
-- A non-cooperating client (an MCP server or shell tool that ignores proxy
-  configuration and opens its own TCP): enforce at the syscall level using
-  seccomp-unotify (`SECCOMP_RET_USER_NOTIF`, kernel 4.14+, with fd injection
-  via `SECCOMP_IOCTL_NOTIF_ADDFD` since 5.9). A filter returns USER_NOTIF on
-  `connect()`, the supervisor reads the destination address from the syscall
-  arguments, checks it against the allow-list, and either denies it or performs
-  the connect and injects the connected fd back into the node. Because it
-  intercepts after resolution, it sees an IP, so hostname semantics require
-  observed-DNS attribution. Treat seccomp-unotify as the enforcement layer over
-  the netns, not the boundary itself; its argument inspection is TOCTOU-racy if
-  done carelessly.
+- **`default`** (the default when `mode` is omitted): the node's normal egress
+  behavior. For a node whose network operation is built into Servitor (`http`,
+  `mcp-http`, `email_received`), the destination is already a declared value in
+  the node and the node checks it against the allow-list in-process,
+  hostname-exact, no proxy. For a node that runs an external command (`shell`,
+  `mcp-stdio`, `singer-tap`/`target`), the node reaches allowed destinations
+  through an application proxy that reads the hostname from the handshake and
+  checks it against the allow-list, hostname-exact, for tools that honor the
+  proxy.
+- **`fallback`**: use the network-boundary path instead of the default, for a
+  node whose default behavior will not work (for example a `shell` tool that
+  ignores the proxy and opens its own TCP). Setting `mode: fallback` is the
+  whole act of opting in, and it works for any node type without breaking it.
+
+**The `fallback` mode uses a packet boundary**. In `fallback`, the node's
+outbound traffic passes through a single packet boundary: every packet the node
+emits must transit it, regardless of which syscall, protocol, or file descriptor
+produced it (TCP, UDP, raw, `AF_PACKET`, inherited fds, io_uring). This is a
+real, kernel-enforced, topological boundary, not a syscall interceptor, so there
+is no path that bypasses it. We deliberately do not use seccomp-unotify for this
+boundary: the kernel documents that seccomp-unotify cannot be used to implement
+a security policy, because syscall interception leaves other egress paths
+untouched, whereas a packet boundary has none.
+
+**No classification is required**. Servitor does not detect or label a node as
+owned, cooperating, or non-cooperating, and the operator does not configure
+which enforcement mechanism a node uses beyond the single `mode` field. The
+`default` behavior is chosen by the node type. Neither the `default` nor the
+`fallback` path is auto-detected: detection is not used because a non-cooperating
+binary can only be recognized by running it and watching whether it honors the
+proxy, but by then it has already made the connection it should not have, so
+detection cannot be the enforcement. Setting `mode: fallback` is the explicit,
+per-node choice that grants the packet-boundary path.
 
 **Hostname semantics versus IP**. The allow-list is written as hostnames, but
-for the non-cooperating syscall path the check happens after the program has
-resolved the name, so it sees an IP. Enforcing hostnames there requires
-controlling the program's resolution: route its DNS through a resolver Servitor
-observes, record each hostname it resolves, and attribute each connect IP back
-to the hostname that was allowed, denying any IP with no observed allowed
-resolution. Do not pin a fixed set of IPs. Even the observed-resolution path is
-best-effort, not a hard boundary: a compromised client or resolver can
+for the `fallback` mode the check happens on resolved
+packets, so it sees IPs, not hostnames. Enforcing hostnames there requires
+controlling the node's resolution: route its DNS through a resolver Servitor
+observes, record each hostname it resolves, and maintain the current IP set for
+each allowed hostname at the packet boundary (refreshed on TTL, so CDN and
+load-balanced destinations keep working), denying any IP with no observed
+allowed resolution. Do not pin a fixed set of IPs. Even the observed-resolution
+path is best-effort, not a hard boundary: a compromised client or resolver can
 transiently point an allowed name at a disallowed IP (DNS rebinding), so it
-should not be documented as a cryptographic guarantee. The owned and cooperating
+should not be documented as a cryptographic guarantee. The owned and default
 paths see the hostname directly and need none of this.
 
 **Transport**. A node in a network namespace with only loopback has no route
@@ -135,10 +150,10 @@ proxy provides destination control, not confidentiality: a node that is allowed
 to reach a host can send its granted secret to that host and the proxy lets it
 through, because the destination is allowed. No transport stops that.
 
-**Where the check runs**. The allow-list check runs in one of three places
-depending on the client: the Servitor process that makes the request (owned
-client), the proxy (cooperating client), or the seccomp-unotify supervisor
-(non-cooperating client). The allow-list must be delivered to wherever the check
+**Where the check runs**. The allow-list check runs in one of the places the
+`mode` selects: the Servitor process that makes the request (an owned node's
+`default`), the proxy (an external-command node's `default`), or the packet
+boundary (the `fallback` mode). The allow-list must be delivered to wherever the check
 runs. If it is not handed to the right place, the check does not happen and the
 allow-list is silently inert, which is the implementation failure to avoid.
 
@@ -160,9 +175,10 @@ authoritative and the Wafer cannot override it. When config-default, the config
 sets the default but the Wafer may narrow or extend it per node. When wafer-set,
 the config does not constrain it and the Wafer's declaration governs.
 
-**Per-mechanism mapping**: cheap exact-egress for `http`, `mcp-http`, and
-`email_received` (destination checked in the node itself); full treatment for
-`shell`, `mcp-stdio`, and `singer-tap`/`target` (enforced via proxy or syscall).
+**Per-mechanism mapping**: an owned node (`http`, `mcp-http`, `email_received`)
+checks its declared destination in the node itself (its `default`); an
+external-command node (`shell`, `mcp-stdio`, `singer-tap`/`target`) uses the
+proxy in its `default`, or the packet boundary in `fallback`.
 For `mcp-stdio`, the server is a local subprocess Servitor spawns and controls,
 and in Servitor's model each declared server is a bounded integration with one
 API per server, so its destination is declarable per declared server. A reviewed
@@ -177,8 +193,13 @@ egress control stays meaningful for shell.
   every installed connector's hosts.
 - Good: the blind-tunnel rule keeps the proxy from becoming a secret-exposure
   point.
-- Bad: the non-cooperating path is best-effort, not a hard boundary (DNS
-  rebinding), and the observed-DNS attribution is real engineering.
+- Good: the `fallback` mode is a real, kernel-enforced, topological
+  boundary, not a syscall interceptor with
+  un-intercepted paths. Its residual weaknesses are semantic (hostname-vs-IP
+  and DNS rebinding), not structural (traffic escaping the gate).
+- Bad: the `fallback` mode needs real IP networking in the
+  node (a network boundary, routing, DNS), a change from the loopback-only model, and the
+  observed-DNS attribution is real engineering.
 - Bad: it needs the host prerequisites and the netns from ADR-0052, so it is
   not available where those are not.
 - Neutral: egress is opt-in and default-off, so existing Wafers and deployments
@@ -195,13 +216,14 @@ built. `go test ./...` stays green.
 
 ## Interface notes
 
-Adds to the declared config (`servitor.config.yaml`): an egress allow-list on a
-mechanism or flavor, and on a declared connector beside its command and env,
-each governed by the lock model (ADR-0051). Adds to the Wafer: an egress
-declaration on a node. Adds to the execution surface (ADR-0052): the `egress`
-execution parameter category, opt-in, default-off. The capabilities output
-surfaces a connector's declared egress scope. A destination derived from runtime
-data is rejected when egress control is enabled.
+Adds to the declared config (`servitor.config.yaml`): an egress allow-list and
+an egress `mode` (`default`/`fallback`) on a mechanism or flavor, and on a
+declared connector beside its command and env, each governed by the lock model
+(ADR-0051). Adds to the Wafer: an egress declaration on a node. Adds to the
+execution surface (ADR-0052): the `egress` execution parameter category,
+opt-in, default-off. The capabilities output surfaces a connector's declared
+egress scope. A destination derived from runtime data is rejected when egress
+control is enabled.
 
 ## More information
 
