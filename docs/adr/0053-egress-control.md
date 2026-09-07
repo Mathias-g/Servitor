@@ -50,8 +50,7 @@ paths, the transport, and the declaration levels.
 
 Chosen option: "Option C".
 
-Egress control is opt-in: disabled (the default) means unrestricted, matching
-how nodes behave today.
+Egress control is opt-in: disabled (the default) means unrestricted.
 
 **The egress mode**. Egress has a `mode`, declared at the same three levels as
 the allow-list (config on a mechanism or flavor, config on a connector, Wafer on

@@ -870,7 +870,7 @@ or rebuilding the binary.
 ### Egress control
 
 Egress control is **opt-in**; the off-state is full network reach, the permissive
-default, matching how nodes behave today. When enabled, a node's outbound
+default. When enabled, a node's outbound
 destinations must fall within the declared allow-list, and anything outside it
 is denied.
 
@@ -918,6 +918,25 @@ Because `mode` lives at the same three levels as `allow` and follows the same
 lock model, an operator can set `egress.mode: fallback` on a mechanism, flavor,
 or connector in config, and it applies to the nodes that use it, with a Wafer
 node able to override unless the config locks it, exactly as `allow` behaves.
+
+**How the config levels combine.** A node that uses a mechanism which references
+a particular connector has both the mechanism level and the connector level in
+play. The allow-list and the mode compose differently, because one is a list and
+the other is a single value:
+
+- **Allow-list (a list; it combines by union).** A node using a connector is
+  allowed that connector's own scope plus the mechanism's list, and never
+  another connector's hosts (per-connector scoping). Union happens when both
+  contributors are at the same lock value; if either is config-locked, the
+  locked one's content governs alone and is not widened by the other. The Wafer
+  level composes on top: the Wafer may narrow or extend only what is not locked.
+- **Mode (a single value; it resolves, never unions).** A node runs one
+  enforcement path, so mode resolves to exactly one value. Locked beats
+  unlocked at any level; when two modes are both locked and disagree, the
+  connector's value is the one that runs, whatever value it holds. The rule
+  keys off the level, not off which value is more restrictive: the connector
+  wins over the mechanism or flavor whether the connector says `default` or
+  `fallback`. An unlocked mode simply yields to a locked one, with no error.
 
 The egress proxy is a blind tunnel: it reads only the destination and never
 inspects payloads, so it does not become a place a granted secret is visible
