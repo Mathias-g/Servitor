@@ -895,8 +895,17 @@ config-default the config sets the default but the Wafer may narrow or extend it
 when wafer-set the Wafer's declaration governs.
 
 The mechanism used to enforce the allow-list depends on the node type and the
-egress mode, and Servitor uses the simplest mechanism for each. A node's egress
-has a **mode**, one field on every node, with two values:
+egress mode, and Servitor uses the simplest mechanism for each. The distinction
+that matters is who makes the network call: for some nodes Servitor's own code
+makes the call (its `http`, `mcp-http`, and `email_received` operations), so the
+destination is a declared value Servitor can check inside its own request path;
+for others an external command makes the call (`shell`, `mcp-stdio`,
+`singer-tap`/`target`), so Servitor can only enforce at the boundary, not inside
+the program.
+
+Egress has a **mode**, declared at the same three levels as the allow-list and
+governed by the same lock model. It selects how the allow-list is enforced, and
+has two values:
 
 - **`default`** (the default when `mode` is omitted): the node's normal egress
   behavior. For a node whose network operation is built into Servitor (`http`,
@@ -911,9 +920,16 @@ has a **mode**, one field on every node, with two values:
   ignores the proxy and opens its own TCP). Setting `mode: fallback` is the
   whole act of opting in, and it works for any node type without breaking it.
 
+Because `mode` lives at the same three levels as `allow` and follows the same
+lock model, an operator can set `egress.mode: fallback` on a mechanism, flavor,
+or connector in config, and it applies to the nodes that use it, with a Wafer
+node able to override unless the config locks it, exactly as `allow` behaves.
+
 The egress proxy is a blind tunnel: it reads only the destination and never
 inspects payloads, so it does not become a place a granted secret is visible
-outside its node.
+outside its node. The `fallback` packet boundary is payload-blind in the same
+way: it filters on packet headers and destinations, never on packet bodies, so
+neither enforcement point becomes a place a granted secret is visible.
 
 **The `fallback` mode uses the network boundary.** In `fallback`, the node's
 outbound traffic passes through a single network boundary that is enforced at
@@ -924,7 +940,10 @@ topological boundary, not a syscall interceptor, so there is no path that
 bypasses it. We deliberately do not use seccomp-unotify for this boundary: the
 kernel documents that seccomp-unotify cannot be used to implement a security
 policy, because syscall interception leaves other egress paths untouched,
-whereas a packet boundary has none. This mode is rarely needed in Servitor's
+whereas a packet boundary has none. This mode reconfigures the loopback-only
+network namespace that containment otherwise builds, giving the node a veth
+pairing to a boundary-side interface plus routing and DNS for that node only.
+This mode is rarely needed in Servitor's
 bounded-integration model, where
 most nodes use their default behavior.
 
@@ -933,10 +952,15 @@ sees IPs, not hostnames. Enforcing hostnames there requires routing the node's
 DNS through a resolver Servitor observes and maintaining each allowed
 hostname's current IP set at the boundary (refreshed on TTL, so CDN and
 load-balanced destinations keep working), denying any IP with no observed
-allowed resolution. Do not pin a fixed set of IPs. This is best-effort for
-semantics (hostname-vs-IP, DNS rebinding), but it is a real boundary for whether
-traffic can escape the gate. The `default` paths see the hostname
-directly and need none of this.
+allowed resolution. Do not pin a fixed set of IPs. For this to hold, the node
+must not be able to control its own resolution: a `fallback` node's DNS is
+forced through the Servitor-observed resolver by blocking or redirecting
+outbound DNS from the node (port 53), so a node that speaks to an attacker-chosen
+resolver, a hardcoded resolver IP, or DoH cannot make the boundary see an
+"observed allowed resolution" for a destination it was not allowed. This is
+best-effort for semantics (hostname-vs-IP, DNS rebinding), but it is a real
+boundary for whether traffic can escape the gate. The `default` paths see the
+hostname directly and need none of this.
 
 ### Host requirements and the honest ceiling
 

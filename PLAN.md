@@ -506,11 +506,11 @@ test, and later increments depend on earlier ones.
 
 Opt-in destination allow-listing (ADR-0053, SPEC: Egress control). When enabled,
 a node's outbound destinations must be declared values, not runtime data, and
-anything outside the allow-list is denied. The allow-list is declared at three
-levels (config on mechanism or flavor, config on connector, Wafer on node),
-composed through the lock model. Every node has an `egress.mode` field
-(`default`, the default, or `fallback`) that selects how the allow-list is
-enforced. Depends on the execution surface's network namespace (Phase 21).
+anything outside the allow-list is denied. The allow-list and the egress `mode`
+are both declared at three levels (config on mechanism or flavor, config on
+connector, Wafer on node), composed through the lock model. The `egress.mode`
+field selects how the allow-list is enforced (`default`, the default, or
+`fallback`). Depends on the execution surface's network namespace (Phase 21).
 
 - [ ] **Declared-destination semantics and validation.** A destination is
   declared if it is a literal or a reference to a config-declared value; a
@@ -518,7 +518,7 @@ enforced. Depends on the execution surface's network namespace (Phase 21).
   data, not declared, and rejected when egress control is on. The three declaration
   levels compose through the lock model, including per-connector scope so a node
   using one connector does not reach another connector's hosts.
-- [ ] **`default` mode, owned-node check.** For `http`, `mcp-http`, and
+- [ ] **`default` mode, built-in node check.** For `http`, `mcp-http`, and
   `email_received`, the node checks its own declared destination against the
   allow-list before connecting. Hostname-exact, no proxy.
 - [ ] **`default` mode, proxy path.** Route an external-command node (`shell`,
@@ -537,8 +537,20 @@ enforced. Depends on the execution surface's network namespace (Phase 21).
   the kernel documents that it cannot be used to implement a security policy.
   This mode needs real IP networking in the node (a network boundary, routing,
   DNS) and is rarely needed in Servitor's bounded-integration model. There is
-  no auto-detection and no per-node classification: setting `mode: fallback` is
-  the explicit, per-node choice that opts in.
+  no auto-detection and no classification: setting `mode: fallback` is the
+  explicit choice, at whichever of the three levels it is declared, that opts
+  in. This reconfigures the loopback-only
+  network namespace that containment otherwise builds (Phase 21): a `fallback`
+  node gets a veth pairing to a boundary-side interface, with the boundary on
+  that link, plus routing and DNS, so the loopback-only rule is the default-mode
+  shape and `fallback` reconfigures it for that node only. Because hostname
+  semantics depend on observed DNS, a `fallback` node's resolution is forced
+  through the Servitor-observed resolver as part of the design: block or
+  redirect outbound DNS from the node (port 53), so a node speaking to an
+  attacker-chosen resolver, a hardcoded resolver IP, or DoH cannot make the
+  boundary see an "observed allowed resolution" it was not allowed. This is
+  pinned by a test (a node that tries to resolve via an unforced resolver is
+  denied).
 - [ ] **Transport.** A UNIX domain socket bind-mounted into the node's mount
   namespace, in a Servitor-owned non-world-writable directory (the runner's state
   directory, never `/tmp`), stale socket unlinked before binding, `SOCK_STREAM`
@@ -546,14 +558,17 @@ enforced. Depends on the execution surface's network namespace (Phase 21).
   for the user to configure.
 - [ ] **Blind-tunnel rule.** The egress proxy reads only the destination and
   never inspects, logs, or filters payloads, so it does not become a place a
-  granted secret is visible outside its node.
+  granted secret is visible outside its node. The `fallback` packet boundary has
+  the same payload-blindness: it filters on packet headers and destinations,
+  never on packet bodies, so neither enforcement point becomes a place a
+  granted secret is visible.
 - [ ] **Tests.** The declared-versus-data rule, per-connector scoping, lock
   precedence across the three levels, the `mode` selection and default, and the
   blind-tunnel rule. `go test ./...` stays green.
 
 **Done when:** an operator can enable egress control on a mechanism, flavor,
 connector, or node with a static allow-list, data-driven destinations are blocked,
-the `default` modes (owned-node check and proxy path) and the `fallback` mode
+the `default` modes (built-in node check and proxy path) and the `fallback` mode
 enforce it, and the proxy stays a blind tunnel.
 
 ## Phase 23: Mechanism flavors

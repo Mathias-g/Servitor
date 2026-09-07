@@ -101,6 +101,7 @@ stdout to exfiltrate; it can POST the value out directly, and a derived form is
 byte-for-byte indistinguishable from a node legitimately computing data from a
 secret. Closing the deliberate case is the job of the subprocess-isolation
 boundary and the credential-proxy idea, not of output redaction. Open question:
-whether the SPEC should state this limit explicitly (redaction is verbatim-only,
+ whether the SPEC should state this limit explicitly (redaction is verbatim-only,
 not a defense against transformation or deliberate exfiltration) so the
 guarantee is not overstated.
+

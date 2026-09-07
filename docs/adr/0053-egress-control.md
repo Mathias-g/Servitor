@@ -62,8 +62,10 @@ endpoint, a config constant). A destination derived from runtime input
 Egress control is opt-in: disabled (the default) means unrestricted, matching
 how nodes behave today.
 
-**The egress mode**. Every node has an `egress.mode`, one field with two
-values, which selects how the allow-list is enforced:
+**The egress mode**. Egress has a `mode`, declared at the same three levels as
+the allow-list (config on a mechanism or flavor, config on a connector, Wafer on
+a node) and governed by the same lock model. It selects how the allow-list is
+enforced, with two values:
 
 - **`default`** (the default when `mode` is omitted): the node's normal egress
   behavior. For a node whose network operation is built into Servitor (`http`,
@@ -78,6 +80,10 @@ values, which selects how the allow-list is enforced:
   node whose default behavior will not work (for example a `shell` tool that
   ignores the proxy and opens its own TCP). Setting `mode: fallback` is the
   whole act of opting in, and it works for any node type without breaking it.
+  Because `mode` lives at the same three levels as `allow`, an operator can set
+  `egress.mode: fallback` on a mechanism, flavor, or connector in config and it
+  applies to the nodes that use it, with a Wafer node able to override unless
+  the config locks it, exactly as `allow` behaves.
 
 **The `fallback` mode uses a packet boundary**. In `fallback`, the node's
 outbound traffic passes through a single packet boundary: every packet the node
@@ -90,7 +96,7 @@ a security policy, because syscall interception leaves other egress paths
 untouched, whereas a packet boundary has none.
 
 **No classification is required**. Servitor does not detect or label a node as
-owned, cooperating, or non-cooperating, and the operator does not configure
+built-in or external-command, and the operator does not configure
 which enforcement mechanism a node uses beyond the single `mode` field. The
 `default` behavior is chosen by the node type. Neither the `default` nor the
 `fallback` path is auto-detected: detection is not used because a non-cooperating
@@ -106,10 +112,15 @@ controlling the node's resolution: route its DNS through a resolver Servitor
 observes, record each hostname it resolves, and maintain the current IP set for
 each allowed hostname at the packet boundary (refreshed on TTL, so CDN and
 load-balanced destinations keep working), denying any IP with no observed
-allowed resolution. Do not pin a fixed set of IPs. Even the observed-resolution
-path is best-effort, not a hard boundary: a compromised client or resolver can
+allowed resolution. Do not pin a fixed set of IPs. For this to hold, the node
+must not control its own resolution: a `fallback` node's DNS is forced through
+the Servitor-observed resolver by blocking or redirecting outbound DNS from the
+node (port 53), so a node speaking to an attacker-chosen resolver, a hardcoded
+resolver IP, or DoH cannot make the boundary see an "observed allowed
+resolution" for a destination it was not allowed. Even so the path is
+best-effort, not a hard boundary: a compromised client or resolver can
 transiently point an allowed name at a disallowed IP (DNS rebinding), so it
-should not be documented as a cryptographic guarantee. The owned and default
+should not be documented as a cryptographic guarantee. The built-in and default
 paths see the hostname directly and need none of this.
 
 **Transport**. A node in a network namespace with only loopback has no route
@@ -151,7 +162,7 @@ to reach a host can send its granted secret to that host and the proxy lets it
 through, because the destination is allowed. No transport stops that.
 
 **Where the check runs**. The allow-list check runs in one of the places the
-`mode` selects: the Servitor process that makes the request (an owned node's
+`mode` selects: the Servitor process that makes the request (a built-in node's
 `default`), the proxy (an external-command node's `default`), or the packet
 boundary (the `fallback` mode). The allow-list must be delivered to wherever the check
 runs. If it is not handed to the right place, the check does not happen and the
@@ -175,7 +186,7 @@ authoritative and the Wafer cannot override it. When config-default, the config
 sets the default but the Wafer may narrow or extend it per node. When wafer-set,
 the config does not constrain it and the Wafer's declaration governs.
 
-**Per-mechanism mapping**: an owned node (`http`, `mcp-http`, `email_received`)
+**Per-mechanism mapping**: a built-in node (`http`, `mcp-http`, `email_received`)
 checks its declared destination in the node itself (its `default`); an
 external-command node (`shell`, `mcp-stdio`, `singer-tap`/`target`) uses the
 proxy in its `default`, or the packet boundary in `fallback`.
