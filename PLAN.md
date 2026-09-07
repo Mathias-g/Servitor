@@ -512,10 +512,13 @@ connector, Wafer on node), composed through the lock model. The `egress.mode`
 field selects how the allow-list is enforced (`default`, the default, or
 `fallback`). Depends on the execution surface's network namespace (Phase 21).
 
-- [ ] **Allow-list validation and scope.** The three declaration levels (config
-  on mechanism or flavor, config on connector, Wafer on node) compose through
-  the lock model, including per-connector scope so a node
-  using one connector does not reach another connector's hosts.
+- [ ] **Allow-list and mode resolution across levels.** The three declaration
+  levels (config on mechanism or flavor, config on connector, Wafer on node)
+  compose through the lock model. The allow-list unions across the config levels
+  (per-connector scope so a node using one connector does not reach another
+  connector's hosts; a locked scope governs alone); the mode resolves to a
+  single value (locked beats unlocked; when both are locked and disagree, the
+  connector's value wins, whatever it holds, over the mechanism or flavor).
 - [ ] **`default` mode, built-in node check.** For `http`, `mcp-http`, and
   `email_received`, the node checks its own declared destination against the
   allow-list before connecting. Hostname-exact, no proxy.
@@ -561,8 +564,9 @@ field selects how the allow-list is enforced (`default`, the default, or
   never on packet bodies, so neither enforcement point becomes a place a
   granted secret is visible.
 - [ ] **Tests.** Per-connector scoping, lock
-  precedence across the three levels, the `mode` selection and default, and the
-  blind-tunnel rule. `go test ./...` stays green.
+  precedence across the three levels, the allow-list union across config levels,
+  the `mode` resolution (locked beats unlocked, and between two locked modes
+  the connector's value wins, whatever it holds), and the blind-tunnel rule. `go test ./...` stays green.
 
 **Done when:** an operator can enable egress control on a mechanism, flavor,
 connector, or node with a static allow-list, data-driven destinations are blocked,
