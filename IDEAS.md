@@ -486,5 +486,49 @@ dedicated small binary vs re-adding an in-process path; which mechanisms
 qualify (likely `transform` first, then `switch` and `foreach`); and how it
 stays consistent with ADR-0008's single-subprocess-mode rule.
 
+## Privileged parameters must be declared values, not runtime data
+
+A general trust rule for the declared-config model, separate from egress.
+Egress control (ADR-0053) originally bundled it in: "a node's outbound
+destinations must be declared values, not runtime data", with runtime-derived
+destinations (`{event}`, `steps`, a loop variable) rejected. On reflection that
+is a different axis from egress and was pulled out of the egress phase. Egress
+is a runtime network control: it decides which hosts a node may reach, enforced
+where the connection happens. Declared-vs-data is a static authoring and trust
+rule: it decides *who gets to write* a privileged parameter, enforced at
+validation, before anything runs. Different axis (reachability vs provenance),
+different time (runtime vs submit and dry-run), different mechanism. Naming it
+"egress" made egress look like it owned a rule it does not.
+
+The idea: require that privileged parameters (a destination, a connector, a
+script, a secret) be declared values, not runtime data. A value is declared if
+it is a literal in the Wafer or config, or a reference to a config-declared
+value (a connector endpoint, a config constant); a value derived from runtime
+input is data, not declared, and is rejected. This is not a new mechanism, it
+is an existing invariant of the declared-config model surfacing in one more
+field: connectors are declared servers with pinned commands (SPEC: Connectors),
+secrets are declared names delivered through a filtered env (SPEC: Secret
+resolution), scripts-only shell pins the function surface to a named,
+operator-gated script (SPEC: Mechanism flavors), and the lock model exists so
+the config can fix values a Wafer cannot override (SPEC: The lock model). The
+egress destination is just one more privileged parameter.
+
+Why it matters despite the allow-list: even with an allow-list, only the
+hostname is checked, hostname-exact, so data does not just pick the host, it
+picks the form of the request. A literal is fully visible to a human reviewer;
+a data-derived one is computed at runtime from input nobody reviewed. For
+external-command nodes (`shell`, `mcp-stdio`, `singer`) the allow-list check is
+best-effort, so provenance is the layer that stops untrusted input from
+steering even a best-effort check.
+
+Open questions:
+
+- Whether this should be a general declared-config invariant enforced across
+  all privileged parameters, or a narrower rule applied only where a specific
+  attack is real.
+- Whether it belongs in the validator as a warning or a hard rejection, and
+  how it composes with the allow-list (a declared value still has to be in the
+  allow-list to be reachable).
+
 ## (Add more ideas here as they come up; delete them when they become ADRs or
 ## are discarded.)

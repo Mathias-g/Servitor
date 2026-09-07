@@ -18,18 +18,13 @@ interface-impact: new
 Egress is one execution parameter category of the execution surface (ADR-0052).
 It is large and
 self-contained enough to be its own decision. When enabled, a node's outbound
-destinations must be declared values, not runtime data, and anything outside
-the declared allow-list is denied. The purpose is not "we know the destinations
-and list them", it is that data cannot drive where a node connects: a hardcoded
-`curl https://api.github.com/...` passes, a `curl $URL` where `$URL` is runtime
-data is blocked. Egress control is opt-in, the off-state is full network reach,
+destinations must fall within the declared allow-list, and anything outside it
+is denied. Egress control is opt-in, the off-state is full network reach,
 the permissive default. This decision fixes the semantics, the enforcement
 paths, the transport, and the declaration levels.
 
 ## Decision drivers
 
-- Data must not drive where a node connects (the data-to-egress injection
-  boundary), so the destinations must be declared values, not runtime data.
 - The allow-list must be declared at the config level (operator) and the Wafer
   level (author), composed through the lock model (ADR-0051).
 - A per-connector scope is needed so a node using one connector does not get
@@ -41,7 +36,7 @@ paths, the transport, and the declaration levels.
 
 ## Considered options
 
-- Option A: No egress control. Rejected: leaves data-driven connections to
+- Option A: No egress control. Rejected: leaves connections to
   arbitrary hosts unconstrained.
 - Option B: IP-pinning based enforcement. Rejected: for CDN and load-balanced
   destinations the IPs rotate continuously, often on sub-minute TTLs, so a
@@ -55,10 +50,6 @@ paths, the transport, and the declaration levels.
 
 Chosen option: "Option C".
 
-**Semantics of "declared"**. A destination is declared if it is a literal in
-the Wafer or config, or a reference to a value declared in config (a connector
-endpoint, a config constant). A destination derived from runtime input
-(`{event}`, `steps`, a loop variable) is data, not declared, and is blocked.
 Egress control is opt-in: disabled (the default) means unrestricted, matching
 how nodes behave today.
 
@@ -69,8 +60,8 @@ enforced, with two values:
 
 - **`default`** (the default when `mode` is omitted): the node's normal egress
   behavior. For a node whose network operation is built into Servitor (`http`,
-  `mcp-http`, `email_received`), the destination is already a declared value in
-  the node and the node checks it against the allow-list in-process,
+  `mcp-http`, `email_received`), the destination is already known to the node and
+  the node checks it against the allow-list in-process,
   hostname-exact, no proxy. For a node that runs an external command (`shell`,
   `mcp-stdio`, `singer-tap`/`target`), the node reaches allowed destinations
   through an application proxy that reads the hostname from the handshake and
@@ -187,7 +178,7 @@ sets the default but the Wafer may narrow or extend it per node. When wafer-set,
 the config does not constrain it and the Wafer's declaration governs.
 
 **Per-mechanism mapping**: a built-in node (`http`, `mcp-http`, `email_received`)
-checks its declared destination in the node itself (its `default`); an
+checks its destination in the node itself (its `default`); an
 external-command node (`shell`, `mcp-stdio`, `singer-tap`/`target`) uses the
 proxy in its `default`, or the packet boundary in `fallback`.
 For `mcp-stdio`, the server is a local subprocess Servitor spawns and controls,
@@ -198,8 +189,6 @@ egress control stays meaningful for shell.
 
 ### Consequences
 
-- Good: data cannot drive where a node connects, blocking data-to-egress
-  injection.
 - Good: per-connector scoping means a node using one connector does not reach
   every installed connector's hosts.
 - Good: the blind-tunnel rule keeps the proxy from becoming a secret-exposure
@@ -218,8 +207,7 @@ egress control stays meaningful for shell.
 
 ### Confirmation
 
-Tests pin the declared-versus-data rule (a runtime-derived destination is
-rejected when egress control is on), the per-connector scoping (a node using one
+Tests pin the per-connector scoping (a node using one
 connector cannot reach another connector's hosts), the lock precedence across
 the three declaration levels, and the blind-tunnel rule (the proxy must not log
 or inspect payloads). Enforcement-path behavior is verified as each path is
@@ -233,8 +221,7 @@ declared connector beside its command and env, each governed by the lock model
 (ADR-0051). Adds to the Wafer: an egress declaration on a node. Adds to the
 execution surface (ADR-0052): the `egress` execution parameter category,
 opt-in, default-off. The capabilities output surfaces a connector's declared
-egress scope. A destination derived from runtime data is rejected when egress
-control is enabled.
+egress scope.
 
 ## More information
 

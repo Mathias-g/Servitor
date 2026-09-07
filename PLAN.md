@@ -505,18 +505,16 @@ test, and later increments depend on earlier ones.
 ## Phase 22: Egress control
 
 Opt-in destination allow-listing (ADR-0053, SPEC: Egress control). When enabled,
-a node's outbound destinations must be declared values, not runtime data, and
-anything outside the allow-list is denied. The allow-list and the egress `mode`
+a node's outbound destinations must fall within the allow-list, and anything
+outside it is denied. The allow-list and the egress `mode`
 are both declared at three levels (config on mechanism or flavor, config on
 connector, Wafer on node), composed through the lock model. The `egress.mode`
 field selects how the allow-list is enforced (`default`, the default, or
 `fallback`). Depends on the execution surface's network namespace (Phase 21).
 
-- [ ] **Declared-destination semantics and validation.** A destination is
-  declared if it is a literal or a reference to a config-declared value; a
-  destination derived from runtime input (`{event}`, `steps`, a loop variable) is
-  data, not declared, and rejected when egress control is on. The three declaration
-  levels compose through the lock model, including per-connector scope so a node
+- [ ] **Allow-list validation and scope.** The three declaration levels (config
+  on mechanism or flavor, config on connector, Wafer on node) compose through
+  the lock model, including per-connector scope so a node
   using one connector does not reach another connector's hosts.
 - [ ] **`default` mode, built-in node check.** For `http`, `mcp-http`, and
   `email_received`, the node checks its own declared destination against the
@@ -562,7 +560,7 @@ field selects how the allow-list is enforced (`default`, the default, or
   the same payload-blindness: it filters on packet headers and destinations,
   never on packet bodies, so neither enforcement point becomes a place a
   granted secret is visible.
-- [ ] **Tests.** The declared-versus-data rule, per-connector scoping, lock
+- [ ] **Tests.** Per-connector scoping, lock
   precedence across the three levels, the `mode` selection and default, and the
   blind-tunnel rule. `go test ./...` stays green.
 

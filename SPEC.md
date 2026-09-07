@@ -869,16 +869,10 @@ or rebuilding the binary.
 
 ### Egress control
 
-Egress is **opt-in**; the off-state is full network reach, the permissive
+Egress control is **opt-in**; the off-state is full network reach, the permissive
 default, matching how nodes behave today. When enabled, a node's outbound
-destinations must be **declared values**, not runtime data, and anything outside
-the declared allow-list is denied. A destination is declared if it is a literal
-in the Wafer or config, or a reference to a value declared in config (a
-connector endpoint, a config constant). A destination derived from runtime input
-(`{event}`, `steps`, a loop variable) is data, not declared, and is blocked. The
-point is that data cannot drive where a node connects: a hardcoded
-`curl https://api.github.com/...` passes, a `curl $URL` where `$URL` is runtime
-data is blocked.
+destinations must fall within the declared allow-list, and anything outside it
+is denied.
 
 The allow-list is declared at **three levels**, composed through the lock model:
 
@@ -898,7 +892,7 @@ The mechanism used to enforce the allow-list depends on the node type and the
 egress mode, and Servitor uses the simplest mechanism for each. The distinction
 that matters is who makes the network call: for some nodes Servitor's own code
 makes the call (its `http`, `mcp-http`, and `email_received` operations), so the
-destination is a declared value Servitor can check inside its own request path;
+destination is available to Servitor to check inside its own request path;
 for others an external command makes the call (`shell`, `mcp-stdio`,
 `singer-tap`/`target`), so Servitor can only enforce at the boundary, not inside
 the program.
@@ -1042,7 +1036,7 @@ Because agents are first-class authors, the shape of validation errors is part o
 }
 ```
 
-Codes are stable identifiers (`unknown_node_type`, `missing_required_field`, `type_mismatch`, `missing_secret`, `circular_dependency`, `missing_dedupe_key`, `disabled_mechanism` when a Wafer uses a disabled capability, `config_locked_parameter` when a Wafer overrides a config-locked parameter, `unsatisfiable_profile` when a node's execution profile cannot be satisfied by the host, and `data_driven_destination` when egress control is on and a node's destination is derived from runtime data). Paths are JSON Pointers into the submitted YAML. Multiple errors are returned at once, not one-at-a-time, so an agent fixing a malformed workflow makes one round trip per fix-batch rather than one per fix. A `missing_secret` warning is emitted by `dry-run` when a node declares a secret that is not resolvable by the configured provider; the workflow's declared secret names are shown redacted (`<redacted:secret_name>`), never their values.
+Codes are stable identifiers (`unknown_node_type`, `missing_required_field`, `type_mismatch`, `missing_secret`, `circular_dependency`, `missing_dedupe_key`, `disabled_mechanism` when a Wafer uses a disabled capability, `config_locked_parameter` when a Wafer overrides a config-locked parameter, `unsatisfiable_profile` when a node's execution profile cannot be satisfied by the host). Paths are JSON Pointers into the submitted YAML. Multiple errors are returned at once, not one-at-a-time, so an agent fixing a malformed workflow makes one round trip per fix-batch rather than one per fix. A `missing_secret` warning is emitted by `dry-run` when a node declares a secret that is not resolvable by the configured provider; the workflow's declared secret names are shown redacted (`<redacted:secret_name>`), never their values.
 
 The full workflow JSON Schema and every capability's config schema are also retrievable through `servitor capabilities`, so agents can validate locally before submitting.
 
