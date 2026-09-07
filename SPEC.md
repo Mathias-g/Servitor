@@ -809,6 +809,18 @@ wafer-set is the Wafer's choice, and an omitted wafer-set parameter is unset
 absent). One parameter is governed by exactly one lock value; there
 is no layering of locks within a single parameter.
 
+The precedence above is between the config and the Wafer. A parameter may also
+be declared at more than one config location (for example on a mechanism or
+flavor and on a connector). Two config locations composing is not a
+Wafer-vs-config override, it is two declarations on the operator side, so it
+has its own rule, shaped by the parameter: a parameter that is a list combines
+by union (union happens when the contributors are at the same lock value; if
+either is config-locked, the locked one's content governs alone and is not
+widened by the other); a parameter that is a single value resolves to exactly
+one value (config-locked beats config-default, and between two config-locked
+declarations the more specific location wins). The specific composition of each
+parameter is described with the parameter itself.
+
 ### Mechanism flavors
 
 A **flavor** is a config-declared, named, **synthetic** mechanism: it has no
