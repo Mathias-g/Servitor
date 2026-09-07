@@ -956,11 +956,11 @@ allowed resolution. Do not pin a fixed set of IPs. For this to hold, the node
 must not be able to control its own resolution: a `fallback` node's DNS is
 forced through the Servitor-observed resolver by blocking or redirecting
 outbound DNS from the node (port 53), so a node that speaks to an attacker-chosen
-resolver, a hardcoded resolver IP, or DoH cannot make the boundary see an
-"observed allowed resolution" for a destination it was not allowed. This is
-best-effort for semantics (hostname-vs-IP, DNS rebinding), but it is a real
-boundary for whether traffic can escape the gate. The `default` paths see the
-hostname directly and need none of this.
+resolver or a hardcoded resolver IP cannot make the boundary see an
+"observed allowed resolution" for a destination it was not allowed. This is best-effort for
+semantics (hostname-vs-IP, DNS rebinding), but it is a real boundary for whether
+traffic can escape the gate. The `default` paths see the hostname directly and
+need none of this.
 
 ### Host requirements and the honest ceiling
 

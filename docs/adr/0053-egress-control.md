@@ -115,8 +115,8 @@ load-balanced destinations keep working), denying any IP with no observed
 allowed resolution. Do not pin a fixed set of IPs. For this to hold, the node
 must not control its own resolution: a `fallback` node's DNS is forced through
 the Servitor-observed resolver by blocking or redirecting outbound DNS from the
-node (port 53), so a node speaking to an attacker-chosen resolver, a hardcoded
-resolver IP, or DoH cannot make the boundary see an "observed allowed
+node (port 53), so a node speaking to an attacker-chosen resolver or a hardcoded
+resolver IP cannot make the boundary see an "observed allowed
 resolution" for a destination it was not allowed. Even so the path is
 best-effort, not a hard boundary: a compromised client or resolver can
 transiently point an allowed name at a disallowed IP (DNS rebinding), so it

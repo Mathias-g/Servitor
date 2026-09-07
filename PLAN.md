@@ -547,7 +547,7 @@ field selects how the allow-list is enforced (`default`, the default, or
   semantics depend on observed DNS, a `fallback` node's resolution is forced
   through the Servitor-observed resolver as part of the design: block or
   redirect outbound DNS from the node (port 53), so a node speaking to an
-  attacker-chosen resolver, a hardcoded resolver IP, or DoH cannot make the
+  attacker-chosen resolver or a hardcoded resolver IP cannot make the
   boundary see an "observed allowed resolution" it was not allowed. This is
   pinned by a test (a node that tries to resolve via an unforced resolver is
   denied).
